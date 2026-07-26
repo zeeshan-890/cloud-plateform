@@ -1,0 +1,913 @@
+# jp Cloud Platform — Compose stack (resource-adaptive)
+#
+# Limits in this file are baseline defaults. Prefer:
+#   .\scripts\size-host.ps1   /  ./scripts/size-host.sh
+#   .\scripts\jp-up.ps1       /  ./scripts/jp-up.sh
+# which detect host RAM/CPU and apply infra/compose/sizing/{small,medium,large,xlarge}.yml
+# plus --scale worker=N. 4GB is the *small* tier, not the product ceiling.
+#
+# Profiles:
+#   (default / core)  traefik, gateway, identity, organization, project, notification, postgres, redis
+#   ui                Next.js dashboard (port 3000)
+#   platform          repository, deployment, build, worker, registry-api, registry:2,
+#                     runtime, scheduler, domain, certificate, secret, logging, metrics, ai, billing
+#   data              MinIO, storage, database
+#   monitoring        prometheus, grafana, loki, tempo, promtail
+#   dev               MailHog + extra tooling
+#
+# Usage (adaptive — recommended):
+#   .\scripts\jp-up.ps1 -Profiles platform,ui
+# Manual:
+#   docker compose -f infra/compose/docker-compose.yml -f infra/compose/sizing/medium.yml --env-file .env --profile platform up -d --build --scale worker=2
+
+name: jp
+
+x-service-defaults: &service-defaults
+  restart: unless-stopped
+  networks:
+    - jp
+
+x-go-build: &go-build
+  context: ../..
+  dockerfile: infra/docker/Dockerfile.service
+
+services:
+  traefik:
+    <<: *service-defaults
+    image: traefik:v3.2
+    command:
+      - --api.dashboard=true
+      - --api.insecure=true
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.file.directory=/etc/traefik/dynamic
+      - --providers.file.watch=true
+      - --entrypoints.web.address=:80
+    ports:
+      - "80:80"
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ../traefik/dynamic:/etc/traefik/dynamic
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.25"
+
+  postgres:
+    <<: *service-defaults
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-jp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-jp_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-jp}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-jp} -d ${POSTGRES_DB:-jp}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.50"
+
+  redis:
+    <<: *service-defaults
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "60", "1", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 160M
+          cpus: "0.25"
+
+  gateway:
+    <<: *service-defaults
+    build:
+      <<: *go-build
+      args:
+        SERVICE: gateway
+    environment:
+      PORT: "8000"
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-15m}
+      JWT_REFRESH_TTL: ${JWT_REFRESH_TTL:-168h}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:5173}
+      IDENTITY_URL: http://identity:8001
+      ORGANIZATION_URL: http://organization:8002
+      PROJECT_URL: http://project:8003
+      NOTIFICATION_URL: http://notification:8004
+      REPOSITORY_URL: http://repository:8005
+      DEPLOYMENT_URL: http://deployment:8006
+      BUILD_URL: http://build:8007
+      REGISTRY_URL: http://registry-api:8009
+      RUNTIME_URL: http://runtime:8010
+      SCHEDULER_URL: http://scheduler:8011
+      DOMAIN_URL: http://domain:8012
+      CERTIFICATE_URL: http://certificate:8013
+      SECRET_URL: http://secret:8014
+      LOGGING_URL: http://logging:8015
+      METRICS_URL: http://metrics:8016
+      STORAGE_URL: http://storage:8017
+      DATABASE_SVC_URL: http://database:8018
+      AI_URL: http://ai:8019
+      BILLING_URL: http://billing:8020
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_SERVICE_NAME: gateway
+      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
+    ports:
+      - "8000:8000"
+    depends_on:
+      identity:
+        condition: service_started
+      organization:
+        condition: service_started
+      project:
+        condition: service_started
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.gateway.rule=PathPrefix(`/api`)
+      - traefik.http.routers.gateway.entrypoints=web
+      - traefik.http.services.gateway.loadbalancer.server.port=8000
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.25"
+  identity:
+    <<: *service-defaults
+    build:
+      <<: *go-build
+      args:
+        SERVICE: identity
+    environment:
+      PORT: "8001"
+      DATABASE_URL: ${DATABASE_URL:-postgres://jp:jp_dev_password@postgres:5432/jp?sslmode=disable}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-15m}
+      JWT_REFRESH_TTL: ${JWT_REFRESH_TTL:-168h}
+      MIGRATIONS_DIR: /app/migrations
+      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 192M
+          cpus: "0.35"
+
+  organization:
+    <<: *service-defaults
+    build:
+      <<: *go-build
+      args:
+        SERVICE: organization
+    environment:
+      PORT: "8002"
+      DATABASE_URL: ${DATABASE_URL:-postgres://jp:jp_dev_password@postgres:5432/jp?sslmode=disable}
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-15m}
+      JWT_REFRESH_TTL: ${JWT_REFRESH_TTL:-168h}
+      IDENTITY_URL: http://identity:8001
+      NOTIFICATION_URL: http://notification:8004
+      MIGRATIONS_DIR: /app/migrations
+      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      identity:
+        condition: service_started
+      notification:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          memory: 160M
+          cpus: "0.30"
+
+  project:
+    <<: *service-defaults
+    build:
+      <<: *go-build
+      args:
+        SERVICE: project
+    environment:
+      PORT: "8003"
+      DATABASE_URL: ${DATABASE_URL:-postgres://jp:jp_dev_password@postgres:5432/jp?sslmode=disable}
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-15m}
+      JWT_REFRESH_TTL: ${JWT_REFRESH_TTL:-168h}
+      ORGANIZATION_URL: http://organization:8002
+      MIGRATIONS_DIR: /app/migrations
+      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      organization:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          memory: 160M
+          cpus: "0.30"
+
+  notification:
+    <<: *service-defaults
+    build:
+      <<: *go-build
+      args:
+        SERVICE: notification
+    environment:
+      PORT: "8004"
+      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: "0.15"
+
+  # --- UI profile (dashboard) ---
+  dashboard:
+    <<: *service-defaults
+    profiles: ["ui"]
+    build:
+      context: ../../apps/dashboard
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${PUBLIC_BASE_URL:-http://localhost:8000}/api/v1
+    environment:
+      PORT: "3000"
+      HOSTNAME: "0.0.0.0"
+    ports:
+      - "3000:3000"
+    depends_on:
+      gateway:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.35"
+
+  # --- Dev profile ---
+  mailhog:
+    <<: *service-defaults
+    image: mailhog/mailhog:v1.0.1
+    profiles: ["dev"]
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: "0.10"
+
+  # --- Monitoring profile (optional; keep off on small VPS unless needed) ---
+  prometheus:
+    <<: *service-defaults
+    image: prom/prometheus:v2.54.1
+    profiles: ["monitoring"]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=24h
+      - --web.enable-lifecycle
+    volumes:
+      - ../monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.25"
+
+  grafana:
+    <<: *service-defaults
+    image: grafana/grafana:11.2.0
+    profiles: ["monitoring"]
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_USERS_DEFAULT_THEME: light
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+    volumes:
+      - ../monitoring/grafana:/etc/grafana/provisioning/datasources:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3001:3000"
+    depends_on:
+      - prometheus
+      - loki
+      - tempo
+    deploy:
+      resources:
+        limits:
+          memory: 192M
+          cpus: "0.20"
+
+  loki:
+    <<: *service-defaults
+    image: grafana/loki:3.1.1
+    profiles: ["monitoring"]
+    command: ["-config.file=/etc/loki/loki-config.yml"]
+    volumes:
+      - ../monitoring/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki_data:/loki
+    ports:
+      - "3100:3100"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.25"
+
+  tempo:
+    <<: *service-defaults
+    image: grafana/tempo:2.6.0
+    profiles: ["monitoring"]
+    command: ["-config.file=/etc/tempo/tempo.yml"]
+    volumes:
+      - ../monitoring/tempo.yml:/etc/tempo/tempo.yml:ro
+      - tempo_data:/tmp/tempo
+    ports:
+      - "3200:3200"
+      - "4317:4317"
+      - "4318:4318"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.25"
+
+  promtail:
+    <<: *service-defaults
+    image: grafana/promtail:3.1.1
+    profiles: ["monitoring"]
+    command: ["-config.file=/etc/promtail/promtail-config.yml"]
+    volumes:
+      - ../monitoring/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - loki
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.15"
+
+  # --- Platform profile (Phase 2/3 delivery pipeline) ---
+  repository:
+    <<: *service-defaults
+    profiles: ["platform"]
+    build:
+      <<: *go-build
+      args:
+        SERVICE: repository
+    environment:
+      PORT: "8005"
+      DATABASE_URL: ${DATABASE_URL:-postgres://jp:jp_dev_password@postgres:5432/jp?sslmode=disable}
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      ORGANIZATION_URL: http://organization:8002
+      DEPLOYMENT_URL: http://deployment:8006
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8000}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-dev-webhook-secret}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      MIGRATIONS_DIR: /app/migrations
+      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      organization:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.25"
+
+  deployment:
+    <<: *service-defaults
+    profiles: ["platform"]
+    build:
+      <<: *go-build
+      args:
+        SERVICE: deployment
+    environment:
+      PORT: "8006"
+      DATABASE_URL: ${DATABASE_URL:-postgres://jp:jp_dev_password@postgres:5432/jp?sslmode=disable}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      ORGANIZATION_URL: http://organization:8002
+      BUILD_URL: http://build:8007
+      MIGRATIONS_DIR: /app/migrations
+      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      build:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.25"
+
+  build:
+    <<: *service-defaults
+    profiles: ["platform"]
+    build:
+      <<: *go-build
+      args:
+        SERVICE: build
+    environment:
+      PORT: "8007"
+      DATABASE_URL: ${DATABASE_URL:-postgres://jp:jp_dev_password@postgres:5432/jp?sslmode=disable}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      ORGANIZATION_URL: http://organization:8002
+      MIGRATIONS_DIR: /app/migrations
+      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.25"
+
+  worker:
+    <<: *service-defaults
+    profiles: ["platform"]
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.worker
+    environment:
+      PORT: "8008"
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      BUILD_URL: http://build:8007
+      DEPLOYMENT_URL: http://deployment:8006
+      REGISTRY_URL: http://registry-api:8009
+      REGISTRY_PUSH_URL: registry:5000
+      REGISTRY_HOST: registry:5000
+      BUILD_MODE: ${BUILD_MODE:-docker}
+      SIMULATE_BUILD: ${SIMULATE_BUILD:-false}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-1}
+      WORKER_NAME: ${WORKER_NAME:-}
+      WORK_DIR: /tmp/jp-builds
+      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
+      DOCKER_HOST: ${DOCKER_HOST:-unix:///var/run/docker.sock}
+      # Host Docker daemon must reach the published registry port
+      REGISTRY_PUSH_URL: ${REGISTRY_PUSH_URL:-host.docker.internal:5000}
+      REGISTRY_HOST: ${REGISTRY_HOST:-host.docker.internal:5000}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - worker_build_cache:/tmp/jp-builds
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      redis:
+        condition: service_healthy
+      build:
+        condition: service_started
+      deployment:
+        condition: service_started
+      registry-api:
+        condition: service_started
+      registry:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          memory: ${WORKER_MEM_LIMIT:-512M}
+          cpus: "${WORKER_CPU_LIMIT:-0.75}"
+
+  registry-api:
+    <<: *service-defaults
+    profiles: ["platform"]
+    build:
+      <<: *go-build
+      args:
+        SERVICE: registry
+    environment:
+      PORT: "8009"
+      DATABASE_URL: ${DATABASE_URL:-postgres://jp:jp_dev_password@postgres:5432/jp?sslmode=disable}
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      ORGANIZATION_URL: http://organization:8002
+      MIGRATIONS_DIR: /app/migrations
+      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 96M
+          cpus: "0.20"
+
+  registry:
+    <<: *service-defaults
+    profiles: ["platform"]
+    image: registry:2
+    ports:
+      - "5000:5000"
+    volumes:
+      - registry_data:/var/lib/registry
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.20"
+
+  runtime:
+    <<: *service-defaults
+    profiles: ["platform"]
+    build:
+      <<: *go-build
+      args:
+        SERVICE: runtime
+    environment:
+      PORT: "8010"
+      DATABASE_URL: ${DATABASE_URL:-postgres://jp:jp_dev_password@postgres:5432/jp?sslmode=disable}
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      ORGANIZATION_URL: http://organization:8002
+      RUNTIME_MODE: ${RUNTIME_MODE:-docker}
+      DOCKER_HOST: ${DOCKER_HOST:-unix:///var/run/docker.sock}
+      MIGRATIONS_DIR: /app/migrations
+      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      postgres:
+        condition: service_healthy
+      organization:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          memory: 96M
+          cpus: "0.20"
+
+  scheduler:
+    <<: *service-defaults
+    profiles: ["platform"]
+    build:
+      <<: *go-build
+      args:
+        SERVICE: scheduler
+    environment:
+      PORT: "8011"
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      RUNTIME_URL: http://runtime:8010
+      REGISTRY_URL: http://registry-api:8009
+      DEPLOYMENT_URL: http://deployment:8006
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      SCHEDULER_SLOT: ${SCHEDULER_SLOT:-node-1}
+      CLEANUP_INTERVAL: ${CLEANUP_INTERVAL:-1h}
+      PREVIEW_TTL: ${PREVIEW_TTL:-72h}
+      ORPHAN_IMAGE_TTL: ${ORPHAN_IMAGE_TTL:-168h}
+      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
+    depends_on:
+      redis:
+        condition: service_healthy
+      runtime:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: "0.15"
+
+  domain:
+    <<: *service-defaults
+    profiles: ["platform"]
+    build:
+      <<: *go-build
+      args:
+        SERVICE: domain
+    environment:
+      PORT: "8012"
+      DATABASE_URL: ${DATABASE_URL:-postgres://jp:jp_dev_password@postgres:5432/jp?sslmode=disable}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      ORGANIZATION_URL: http://organization:8002
+      CERTIFICATE_URL: http://certificate:8013
+      DOMAIN_DNS_STUB: ${DOMAIN_DNS_STUB:-false}
+      DOMAIN_CNAME_TARGET: ${DOMAIN_CNAME_TARGET:-cname.jp.localhost}
+      TRAEFIK_DYNAMIC_DIR: /etc/traefik/dynamic
+      TRAEFIK_BACKEND_URL: ${TRAEFIK_BACKEND_URL:-http://gateway:8000}
+      TRAEFIK_CERT_RESOLVER: ${TRAEFIK_CERT_RESOLVER:-}
+      MIGRATIONS_DIR: /app/migrations
+      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
+    volumes:
+      - ../traefik/dynamic:/etc/traefik/dynamic
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      certificate:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          memory: 96M
+          cpus: "0.20"
+
+  certificate:
+    <<: *service-defaults
+    profiles: ["platform"]
+    build:
+      <<: *go-build
+      args:
+        SERVICE: certificate
+    environment:
+      PORT: "8013"
+      DATABASE_URL: ${DATABASE_URL:-postgres://jp:jp_dev_password@postgres:5432/jp?sslmode=disable}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      ORGANIZATION_URL: http://organization:8002
+      CERT_SIMULATE: ${CERT_SIMULATE:-false}
+      TRAEFIK_CERT_RESOLVER: ${TRAEFIK_CERT_RESOLVER:-}
+      MIGRATIONS_DIR: /app/migrations
+      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: "0.15"
+
+  secret:
+    <<: *service-defaults
+    profiles: ["platform"]
+    build:
+      <<: *go-build
+      args:
+        SERVICE: secret
+    environment:
+      PORT: "8014"
+      DATABASE_URL: ${DATABASE_URL:-postgres://jp:jp_dev_password@postgres:5432/jp?sslmode=disable}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      ORGANIZATION_URL: http://organization:8002
+      SECRETS_MASTER_KEY: ${SECRETS_MASTER_KEY:-}
+      MIGRATIONS_DIR: /app/migrations
+      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 96M
+          cpus: "0.15"
+
+  logging:
+    <<: *service-defaults
+    profiles: ["platform"]
+    build:
+      <<: *go-build
+      args:
+        SERVICE: logging
+    environment:
+      PORT: "8015"
+      DATABASE_URL: ${DATABASE_URL:-postgres://jp:jp_dev_password@postgres:5432/jp?sslmode=disable}
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      ORGANIZATION_URL: http://organization:8002
+      BUILD_URL: http://build:8007
+      LOKI_URL: ${LOKI_URL:-}
+      MIGRATIONS_DIR: /app/migrations
+      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 96M
+          cpus: "0.15"
+
+  metrics:
+    <<: *service-defaults
+    profiles: ["platform"]
+    build:
+      <<: *go-build
+      args:
+        SERVICE: metrics
+    environment:
+      PORT: "8016"
+      DATABASE_URL: ${DATABASE_URL:-postgres://jp:jp_dev_password@postgres:5432/jp?sslmode=disable}
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      ORGANIZATION_URL: http://organization:8002
+      METRICS_MODE: ${METRICS_MODE:-live}
+      PROMETHEUS_URL: ${PROMETHEUS_URL:-http://prometheus:9090}
+      MIGRATIONS_DIR: /app/migrations
+      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: "0.15"
+
+  # --- Platform profile (empty control-plane stub removed; use services above) ---
+  platform-stub:
+    <<: *service-defaults
+    image: alpine:3.20
+    profiles: ["platform-legacy"]
+    command: ["sh", "-c", "echo platform services stub; sleep infinity"]
+    deploy:
+      resources:
+        limits:
+          memory: 32M
+
+  # --- Data profile: MinIO + storage + database ---
+  minio:
+    <<: *service-defaults
+    profiles: ["data"]
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 192M
+          cpus: "0.25"
+
+  storage:
+    <<: *service-defaults
+    profiles: ["data"]
+    build:
+      <<: *go-build
+      args:
+        SERVICE: storage
+    environment:
+      PORT: "8017"
+      DATABASE_URL: ${DATABASE_URL:-postgres://jp:jp_dev_password@postgres:5432/jp?sslmode=disable}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      ORGANIZATION_URL: http://organization:8002
+      STORAGE_MODE: ${STORAGE_MODE:-minio}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_USE_SSL: "false"
+      MINIO_PUBLIC_URL: ${MINIO_PUBLIC_URL:-http://localhost:9000}
+      MIGRATIONS_DIR: /app/migrations
+      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          memory: 96M
+          cpus: "0.15"
+
+  database:
+    <<: *service-defaults
+    profiles: ["data"]
+    build:
+      <<: *go-build
+      args:
+        SERVICE: database
+    environment:
+      PORT: "8018"
+      DATABASE_URL: ${DATABASE_URL:-postgres://jp:jp_dev_password@postgres:5432/jp?sslmode=disable}
+      DATABASE_PROVISION_URL: ${DATABASE_URL:-postgres://jp:jp_dev_password@postgres:5432/jp?sslmode=disable}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      ORGANIZATION_URL: http://organization:8002
+      SECRET_URL: http://secret:8014
+      DB_MODE: ${DB_MODE:-schema}
+      MIGRATIONS_DIR: /app/migrations
+      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 96M
+          cpus: "0.15"
+
+  ai:
+    <<: *service-defaults
+    profiles: ["platform"]
+    build:
+      <<: *go-build
+      args:
+        SERVICE: ai
+    environment:
+      PORT: "8019"
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      ORGANIZATION_URL: http://organization:8002
+      BUILD_URL: http://build:8007
+      LOGGING_URL: http://logging:8015
+      DEPLOYMENT_URL: http://deployment:8006
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      AI_BASE_URL: ${AI_BASE_URL:-https://api.openai.com/v1}
+      AI_MODEL: ${AI_MODEL:-gpt-4o-mini}
+      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
+    depends_on:
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 96M
+          cpus: "0.15"
+
+  billing:
+    <<: *service-defaults
+    profiles: ["platform"]
+    build:
+      <<: *go-build
+      args:
+        SERVICE: billing
+    environment:
+      PORT: "8020"
+      DATABASE_URL: ${DATABASE_URL:-postgres://jp:jp_dev_password@postgres:5432/jp?sslmode=disable}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      ORGANIZATION_URL: http://organization:8002
+      MIGRATIONS_DIR: /app/migrations
+      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 96M
+          cpus: "0.15"
+
+networks:
+  jp:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  registry_data:
+  worker_build_cache:
+  prometheus_data:
+  grafana_data:
+  loki_data:
+  tempo_data:
+  minio_data:

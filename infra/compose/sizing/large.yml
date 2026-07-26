@@ -1,0 +1,101 @@
+# Resource overlay: large (~16–32GB RAM / 8+ vCPU)
+services:
+  traefik:
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+  postgres:
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "2.0"
+  redis:
+    command: ["redis-server", "--save", "60", "1", "--maxmemory", "1gb", "--maxmemory-policy", "allkeys-lru"]
+    deploy:
+      resources:
+        limits:
+          memory: 1280M
+          cpus: "1.0"
+  gateway:
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+  identity:
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+  organization:
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+          cpus: "0.75"
+  project:
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+          cpus: "0.75"
+  worker:
+    environment:
+      WORKER_CONCURRENCY: "2"
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+          cpus: "2.0"
+  build:
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+  runtime:
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+  registry:
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+  minio:
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
+  prometheus:
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
+  grafana:
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.50"
+  loki:
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
+  tempo:
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
