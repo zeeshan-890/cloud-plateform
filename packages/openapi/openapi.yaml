@@ -1,0 +1,1636 @@
+openapi: 3.0.3
+info:
+  title: jp Cloud Platform API
+  version: 0.1.0
+  description: Phase 1–7 public API via gateway (`/api/v1`).
+servers:
+  - url: http://localhost:8000/api/v1
+    description: Local gateway
+tags:
+  - name: Auth
+  - name: Orgs
+  - name: Projects
+  - name: Git
+  - name: Deployments
+  - name: Builds
+  - name: Runtime
+  - name: Domains
+  - name: Certificates
+  - name: Secrets
+  - name: Logs
+  - name: Metrics
+  - name: Storage
+  - name: Databases
+  - name: Cron
+  - name: Queues
+  - name: Config
+  - name: AI
+  - name: Billing
+paths:
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Register a new user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, name]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, minLength: 8 }
+                name: { type: string }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthResponse" }
+        "400":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthResponse" }
+        "401":
+          $ref: "#/components/responses/Error"
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Refresh tokens
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TokenPair" }
+        "401":
+          $ref: "#/components/responses/Error"
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Logout current session
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: No Content }
+        "401":
+          $ref: "#/components/responses/Error"
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Current user
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: "#/components/schemas/User" }
+        "401":
+          $ref: "#/components/responses/Error"
+  /auth/sessions:
+    get:
+      tags: [Auth]
+      summary: List sessions
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessions:
+                    type: array
+                    items: { $ref: "#/components/schemas/Session" }
+  /auth/sessions/{id}:
+    delete:
+      tags: [Auth]
+      summary: Revoke session
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204": { description: No Content }
+        "404":
+          $ref: "#/components/responses/Error"
+  /auth/pats:
+    get:
+      tags: [Auth]
+      summary: List PATs
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pats:
+                    type: array
+                    items: { $ref: "#/components/schemas/PAT" }
+    post:
+      tags: [Auth]
+      summary: Create PAT (token shown once)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                scopes:
+                  type: array
+                  items: { type: string }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PATCreated" }
+  /auth/pats/{id}:
+    delete:
+      tags: [Auth]
+      summary: Revoke PAT
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204": { description: No Content }
+  /orgs:
+    get:
+      tags: [Orgs]
+      summary: List organizations for current user
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  orgs:
+                    type: array
+                    items: { $ref: "#/components/schemas/Org" }
+    post:
+      tags: [Orgs]
+      summary: Create organization
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, slug]
+              properties:
+                name: { type: string }
+                slug: { type: string, pattern: "^[a-z0-9-]+$" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  org: { $ref: "#/components/schemas/Org" }
+  /orgs/{orgId}:
+    get:
+      tags: [Orgs]
+      summary: Get organization
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  org: { $ref: "#/components/schemas/Org" }
+  /orgs/{orgId}/invites:
+    post:
+      tags: [Orgs]
+      summary: Invite member by email
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, role]
+              properties:
+                email: { type: string, format: email }
+                role:
+                  type: string
+                  enum: [owner, admin, member, viewer]
+      responses:
+        "201":
+          description: Invite created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Invite" }
+  /orgs/invites/accept:
+    post:
+      tags: [Orgs]
+      summary: Accept invite token
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+      responses:
+        "200":
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  org: { $ref: "#/components/schemas/Org" }
+                  role: { type: string }
+  /orgs/{orgId}/members:
+    get:
+      tags: [Orgs]
+      summary: List members
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  members:
+                    type: array
+                    items: { $ref: "#/components/schemas/Member" }
+  /orgs/{orgId}/projects:
+    get:
+      tags: [Projects]
+      summary: List projects
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  projects:
+                    type: array
+                    items: { $ref: "#/components/schemas/Project" }
+    post:
+      tags: [Projects]
+      summary: Create project
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, slug]
+              properties:
+                name: { type: string }
+                slug: { type: string }
+                description: { type: string }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  project: { $ref: "#/components/schemas/Project" }
+  /orgs/{orgId}/projects/{projectId}:
+    get:
+      tags: [Projects]
+      summary: Get project
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  project: { $ref: "#/components/schemas/Project" }
+    patch:
+      tags: [Projects]
+      summary: Update project
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                slug: { type: string }
+                description: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  project: { $ref: "#/components/schemas/Project" }
+    delete:
+      tags: [Projects]
+      summary: Delete project
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+      responses:
+        "204": { description: No Content }
+
+  /orgs/{orgId}/github/install/start:
+    post:
+      tags: [Git]
+      summary: Start GitHub App install (stub URL)
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/orgId" }]
+      responses:
+        "200":
+          description: OK
+  /orgs/{orgId}/github/install/callback:
+    post:
+      tags: [Git]
+      summary: Complete GitHub install stub
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/orgId" }]
+      responses:
+        "201":
+          description: Created
+  /orgs/{orgId}/github/installations:
+    get:
+      tags: [Git]
+      summary: List GitHub installations
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/orgId" }]
+      responses:
+        "200":
+          description: OK
+  /orgs/{orgId}/github/repos:
+    get:
+      tags: [Git]
+      summary: List available repos (mock or GitHub API)
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/orgId" }]
+      responses:
+        "200":
+          description: OK
+  /orgs/{orgId}/projects/{projectId}/repos:
+    get:
+      tags: [Git]
+      summary: List connected repos
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+      responses:
+        "200":
+          description: OK
+    post:
+      tags: [Git]
+      summary: Connect a repo to a project
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [full_name]
+              properties:
+                full_name: { type: string }
+                clone_url: { type: string }
+                default_branch: { type: string }
+                installation_id: { type: string }
+      responses:
+        "201":
+          description: Created
+  /orgs/{orgId}/projects/{projectId}/repos/{repoId}:
+    delete:
+      tags: [Git]
+      summary: Disconnect repo
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+        - name: repoId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204": { description: No Content }
+  /webhooks/github:
+    post:
+      tags: [Git]
+      summary: GitHub webhook (HMAC X-Hub-Signature-256)
+      responses:
+        "200":
+          description: OK
+        "401":
+          $ref: "#/components/responses/Error"
+
+  /orgs/{orgId}/projects/{projectId}/deployments:
+    get:
+      tags: [Deployments]
+      summary: List deployments
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deployments:
+                    type: array
+                    items: { $ref: "#/components/schemas/Deployment" }
+    post:
+      tags: [Deployments]
+      summary: Create deployment (queues build)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                git_sha: { type: string }
+                git_branch: { type: string }
+                clone_url: { type: string }
+                full_name: { type: string }
+                message: { type: string }
+                repo_id: { type: string, format: uuid }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deployment: { $ref: "#/components/schemas/Deployment" }
+  /orgs/{orgId}/projects/{projectId}/deployments/{deploymentId}:
+    get:
+      tags: [Deployments]
+      summary: Get deployment
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+        - name: deploymentId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: OK
+  /orgs/{orgId}/projects/{projectId}/deployments/rollback:
+    post:
+      tags: [Deployments]
+      summary: Rollback to latest successful deployment
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+      responses:
+        "201":
+          description: Created
+  /orgs/{orgId}/projects/{projectId}/deployments/{deploymentId}/rollback:
+    post:
+      tags: [Deployments]
+      summary: Rollback to a specific successful deployment
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+        - name: deploymentId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "201":
+          description: Created
+
+  /orgs/{orgId}/projects/{projectId}/builds:
+    get:
+      tags: [Builds]
+      summary: List builds
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  builds:
+                    type: array
+                    items: { $ref: "#/components/schemas/Build" }
+  /orgs/{orgId}/projects/{projectId}/builds/{buildId}:
+    get:
+      tags: [Builds]
+      summary: Get build
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+        - name: buildId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: OK
+  /orgs/{orgId}/projects/{projectId}/builds/{buildId}/logs:
+    get:
+      tags: [Builds]
+      summary: Fetch build logs
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+        - name: buildId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: OK
+  /orgs/{orgId}/projects/{projectId}/images:
+    get:
+      tags: [Builds]
+      summary: List registered image metadata
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+      responses:
+        "200":
+          description: OK
+
+  /orgs/{orgId}/projects/{projectId}/runtime/instances:
+    get:
+      tags: [Runtime]
+      summary: List runtime instances
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+      responses:
+        "200":
+          description: OK
+    post:
+      tags: [Runtime]
+      summary: Create runtime instance (desired state)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [image_ref]
+              properties:
+                image_ref: { type: string }
+                kind: { type: string, enum: [static, node, container] }
+                deployment_id: { type: string, format: uuid }
+                restart_policy: { type: string }
+                start: { type: boolean }
+      responses:
+        "201":
+          description: Created
+  /orgs/{orgId}/projects/{projectId}/runtime/instances/{instanceId}:
+    get:
+      tags: [Runtime]
+      summary: Get runtime instance
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+        - name: instanceId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: OK
+  /orgs/{orgId}/projects/{projectId}/runtime/instances/{instanceId}/start:
+    post:
+      tags: [Runtime]
+      summary: Start instance
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+        - name: instanceId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: OK
+  /orgs/{orgId}/projects/{projectId}/runtime/instances/{instanceId}/stop:
+    post:
+      tags: [Runtime]
+      summary: Stop instance
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+        - name: instanceId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: OK
+  /orgs/{orgId}/projects/{projectId}/runtime/containers:
+    get:
+      tags: [Runtime]
+      summary: List Docker containers (or empty in simulate mode)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+      responses:
+        "200":
+          description: OK
+
+  /orgs/{orgId}/projects/{projectId}/domains:
+    get:
+      tags: [Domains]
+      summary: List domains
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+      responses:
+        "200":
+          description: OK
+    post:
+      tags: [Domains]
+      summary: Add domain
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [hostname]
+              properties:
+                hostname: { type: string }
+                verification_type: { type: string, enum: [cname, txt] }
+                deployment_id: { type: string, format: uuid }
+      responses:
+        "201":
+          description: Created
+  /orgs/{orgId}/projects/{projectId}/domains/{domainId}:
+    get:
+      tags: [Domains]
+      summary: Get domain
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+        - name: domainId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: OK
+    delete:
+      tags: [Domains]
+      summary: Delete domain
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+        - name: domainId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204":
+          description: No Content
+  /orgs/{orgId}/projects/{projectId}/domains/{domainId}/verify:
+    post:
+      tags: [Domains]
+      summary: Verify domain DNS (TXT/CNAME) or force stub
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+        - name: domainId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                force: { type: boolean }
+      responses:
+        "200":
+          description: OK
+
+  /orgs/{orgId}/projects/{projectId}/certificates:
+    get:
+      tags: [Certificates]
+      summary: List certificates
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+      responses:
+        "200":
+          description: OK
+  /orgs/{orgId}/projects/{projectId}/certificates/{certId}:
+    get:
+      tags: [Certificates]
+      summary: Get certificate
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+        - name: certId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: OK
+  /orgs/{orgId}/projects/{projectId}/certificates/{certId}/renew:
+    post:
+      tags: [Certificates]
+      summary: Renew certificate metadata (Traefik ACME when configured)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+        - name: certId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: OK
+
+  /orgs/{orgId}/projects/{projectId}/environments:
+    get:
+      tags: [Secrets]
+      summary: List project environments (auto-provisions defaults)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+      responses:
+        "200":
+          description: OK
+    post:
+      tags: [Secrets]
+      summary: Ensure an environment exists
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, enum: [development, preview, staging, production] }
+      responses:
+        "201":
+          description: Created
+  /orgs/{orgId}/projects/{projectId}/environments/{env}/secrets:
+    get:
+      tags: [Secrets]
+      summary: List secrets (hints only; never plaintext)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+        - $ref: "#/components/parameters/env"
+      responses:
+        "200":
+          description: OK
+    post:
+      tags: [Secrets]
+      summary: Create secret (returns metadata + value_hint only)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+        - $ref: "#/components/parameters/env"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, value]
+              properties:
+                name: { type: string }
+                value: { type: string }
+      responses:
+        "201":
+          description: Created
+  /orgs/{orgId}/projects/{projectId}/environments/{env}/secrets/{name}:
+    get:
+      tags: [Secrets]
+      summary: Get secret metadata + versions (no values)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+        - $ref: "#/components/parameters/env"
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+    put:
+      tags: [Secrets]
+      summary: Set or rotate secret value
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+        - $ref: "#/components/parameters/env"
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [value]
+              properties:
+                value: { type: string }
+      responses:
+        "200":
+          description: OK
+    delete:
+      tags: [Secrets]
+      summary: Delete secret
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+        - $ref: "#/components/parameters/env"
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "204":
+          description: No Content
+
+  /orgs/{orgId}/projects/{projectId}/logs:
+    get:
+      tags: [Logs]
+      summary: Query ingested logs (optional build log merge)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+        - name: source
+          in: query
+          schema: { type: string }
+        - name: build_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: q
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer }
+      responses:
+        "200":
+          description: OK
+    post:
+      tags: [Logs]
+      summary: Ingest log line(s)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                source: { type: string }
+                level: { type: string }
+                message: { type: string }
+                lines:
+                  type: array
+                  items: { type: string }
+                build_id: { type: string, format: uuid }
+      responses:
+        "201":
+          description: Created
+
+  /orgs/{orgId}/projects/{projectId}/metrics:
+    get:
+      tags: [Metrics]
+      summary: Project metrics summary (simulate seeds samples)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+      responses:
+        "200":
+          description: OK
+    post:
+      tags: [Metrics]
+      summary: Ingest a metric sample
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                value: { type: number }
+                labels:
+                  type: object
+                  additionalProperties: { type: string }
+      responses:
+        "201":
+          description: Created
+  /orgs/{orgId}/projects/{projectId}/metrics/targets:
+    get:
+      tags: [Metrics]
+      summary: List scrape targets / Prometheus SD annotations
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+      responses:
+        "200":
+          description: OK
+
+  /orgs/{orgId}/projects/{projectId}/storage/bucket:
+    get:
+      tags: [Storage]
+      summary: Get or ensure project storage bucket
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+      responses:
+        "200":
+          description: OK
+    post:
+      tags: [Storage]
+      summary: Ensure project storage bucket
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+      responses:
+        "200":
+          description: OK
+  /orgs/{orgId}/projects/{projectId}/storage/objects:
+    get:
+      tags: [Storage]
+      summary: List objects
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+        - name: prefix
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+    post:
+      tags: [Storage]
+      summary: Upload object (base64 body, max 5MB)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [key, data_base64]
+              properties:
+                key: { type: string }
+                data_base64: { type: string }
+                content_type: { type: string }
+      responses:
+        "201":
+          description: Created
+    delete:
+      tags: [Storage]
+      summary: Delete object by key query param
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+        - name: key
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "204":
+          description: Deleted
+  /orgs/{orgId}/projects/{projectId}/storage/signed-url:
+    post:
+      tags: [Storage]
+      summary: Create signed GET URL
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [key]
+              properties:
+                key: { type: string }
+                expires: { type: string, example: "15m" }
+      responses:
+        "200":
+          description: OK
+  /orgs/{orgId}/projects/{projectId}/databases:
+    get:
+      tags: [Databases]
+      summary: List managed databases
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+      responses:
+        "200":
+          description: OK
+    post:
+      tags: [Databases]
+      summary: Provision a database
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                env: { type: string, default: development }
+      responses:
+        "201":
+          description: Created
+  /orgs/{orgId}/projects/{projectId}/databases/{dbId}:
+    get:
+      tags: [Databases]
+      summary: Get database
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+        - name: dbId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: OK
+    delete:
+      tags: [Databases]
+      summary: Delete database
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+        - name: dbId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204":
+          description: Deleted
+  /orgs/{orgId}/projects/{projectId}/cron:
+    get:
+      tags: [Cron]
+      summary: List cron schedules
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+      responses:
+        "200":
+          description: OK
+    post:
+      tags: [Cron]
+      summary: Create cron schedule (triggers runtime job)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                cron: { type: string, example: "@hourly" }
+                image_ref: { type: string }
+      responses:
+        "201":
+          description: Created
+  /orgs/{orgId}/projects/{projectId}/cron/{cronId}:
+    delete:
+      tags: [Cron]
+      summary: Delete cron schedule
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+        - name: cronId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204":
+          description: Deleted
+  /orgs/{orgId}/projects/{projectId}/queues:
+    get:
+      tags: [Queues]
+      summary: List platform queues (stub)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+      responses:
+        "200":
+          description: OK
+  /orgs/{orgId}/projects/{projectId}/config:
+    get:
+      tags: [Config]
+      summary: Get last-applied jp.yaml config
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+      responses:
+        "200":
+          description: OK
+    put:
+      tags: [Config]
+      summary: Apply jp.yaml desired state (validated)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                raw: { type: string }
+                config: { type: object }
+                manifest: { type: object }
+      responses:
+        "200":
+          description: Applied
+    post:
+      tags: [Config]
+      summary: Apply jp.yaml desired state (alias)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+      responses:
+        "200":
+          description: Applied
+  /orgs/{orgId}/projects/{projectId}/config/drift:
+    get:
+      tags: [Config]
+      summary: Config drift stub
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+      responses:
+        "200":
+          description: OK
+  /orgs/{orgId}/projects/{projectId}/ai/explain:
+    post:
+      tags: [AI]
+      summary: Explain failed deployment/build (LLM or simulate)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deployment_id: { type: string }
+                build_id: { type: string }
+                prompt: { type: string }
+      responses:
+        "200":
+          description: Explanation
+  /orgs/{orgId}/ai/ask:
+    post:
+      tags: [AI]
+      summary: Ask AI ops a prompt
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [prompt]
+              properties:
+                prompt: { type: string }
+                project_id: { type: string }
+      responses:
+        "200":
+          description: Answer
+  /orgs/{orgId}/ai/status:
+    get:
+      tags: [AI]
+      summary: AI mode (simulate|openai)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+      responses:
+        "200":
+          description: OK
+  /billing/plans:
+    get:
+      tags: [Billing]
+      summary: List billing plans
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: OK
+  /orgs/{orgId}/billing/plans:
+    get:
+      tags: [Billing]
+      summary: List billing plans (org-scoped)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+      responses:
+        "200":
+          description: OK
+  /orgs/{orgId}/billing/usage:
+    get:
+      tags: [Billing]
+      summary: Usage summary (stub meters)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+      responses:
+        "200":
+          description: OK
+  /orgs/{orgId}/billing/events:
+    get:
+      tags: [Billing]
+      summary: List usage events
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+      responses:
+        "200":
+          description: OK
+    post:
+      tags: [Billing]
+      summary: Ingest usage event
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+      responses:
+        "201":
+          description: Created
+  /orgs/{orgId}/billing/plan:
+    get:
+      tags: [Billing]
+      summary: Get org plan
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+      responses:
+        "200":
+          description: OK
+    put:
+      tags: [Billing]
+      summary: Set org plan
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+      responses:
+        "200":
+          description: OK
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    orgId:
+      name: orgId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    projectId:
+      name: projectId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    env:
+      name: env
+      in: path
+      required: true
+      schema: { type: string, enum: [development, preview, staging, production] }
+  responses:
+    Error:
+      description: Error
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string }
+        name: { type: string }
+        created_at: { type: string, format: date-time }
+    TokenPair:
+      type: object
+      properties:
+        access_token: { type: string }
+        refresh_token: { type: string }
+    AuthResponse:
+      allOf:
+        - $ref: "#/components/schemas/TokenPair"
+        - type: object
+          properties:
+            user: { $ref: "#/components/schemas/User" }
+    Session:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        user_agent: { type: string }
+        ip: { type: string }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+    PAT:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        token_prefix: { type: string }
+        scopes:
+          type: array
+          items: { type: string }
+        created_at: { type: string, format: date-time }
+        last_used_at: { type: string, format: date-time, nullable: true }
+    PATCreated:
+      allOf:
+        - $ref: "#/components/schemas/PAT"
+        - type: object
+          properties:
+            token: { type: string }
+    Org:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        slug: { type: string }
+        role: { type: string }
+        created_at: { type: string, format: date-time }
+    Invite:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string }
+        role: { type: string }
+        token: { type: string }
+        expires_at: { type: string, format: date-time }
+    Member:
+      type: object
+      properties:
+        user_id: { type: string, format: uuid }
+        email: { type: string }
+        name: { type: string }
+        role: { type: string }
+        joined_at: { type: string, format: date-time }
+    Project:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        org_id: { type: string, format: uuid }
+        name: { type: string }
+        slug: { type: string }
+        description: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    Deployment:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        org_id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        status: { type: string, enum: [queued, building, ready, failed] }
+        source: { type: string }
+        git_sha: { type: string }
+        git_branch: { type: string }
+        image_ref: { type: string }
+        build_id: { type: string, format: uuid }
+        rollback_of: { type: string, format: uuid }
+        commit_status: { type: string }
+        created_at: { type: string, format: date-time }
+    Build:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        org_id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        deployment_id: { type: string, format: uuid }
+        status: { type: string, enum: [queued, running, succeeded, failed] }
+        framework: { type: string }
+        image_ref: { type: string }
+        git_sha: { type: string }
+        logs: { type: string }
+        created_at: { type: string, format: date-time }
+    RuntimeInstance:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string }
+        image_ref: { type: string }
+        status: { type: string }
+        desired_state: { type: string }
+        mode: { type: string, enum: [simulate, docker] }
+        health_status: { type: string }
+        container_id: { type: string }
+    Domain:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        hostname: { type: string }
+        status: { type: string }
+        verification_type: { type: string }
+        certificate_id: { type: string, format: uuid }
+    Certificate:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        hostname: { type: string }
+        status: { type: string }
+        provider: { type: string }
+        expires_at: { type: string, format: date-time }
+        renewed_at: { type: string, format: date-time }
