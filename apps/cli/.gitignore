@@ -1,0 +1,6 @@
+# Built binaries
+/jp
+/jp.exe
+*.exe
+*.test
+*.out
