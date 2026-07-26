@@ -1,0 +1,25 @@
+# syntax=docker/dockerfile:1
+# Build worker: git + Docker CLI (talks to host via mounted docker.sock).
+
+FROM golang:1.22-alpine AS build
+WORKDIR /src
+RUN apk add --no-cache git ca-certificates
+ENV GOCACHE=/tmp/go-cache
+ENV GOMODCACHE=/tmp/go-mod
+
+COPY packages/go-common ./packages/go-common
+COPY packages/events ./packages/events
+COPY services/worker ./services/worker
+
+WORKDIR /src/services/worker
+RUN go mod tidy && CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /out/service ./cmd
+
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates tzdata git docker-cli docker-cli-buildx
+WORKDIR /app
+COPY --from=build /out/service /app/service
+RUN mkdir -p /tmp/jp-builds
+# Runs as root so the mounted docker.sock is usable (DinD-via-socket).
+ENV WORK_DIR=/tmp/jp-builds
+ENV BUILD_MODE=docker
+ENTRYPOINT ["/app/service"]
