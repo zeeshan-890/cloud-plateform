@@ -1,0 +1,14 @@
+# Base Traefik routes (file provider directory).
+# Per-app domain routers are written here by the domain service as domain-*.yml
+http:
+  routers:
+    gateway:
+      rule: Host(`localhost`) || Host(`jp.localhost`) || PathPrefix(`/api`)
+      entryPoints:
+        - web
+      service: gateway
+  services:
+    gateway:
+      loadBalancer:
+        servers:
+          - url: http://gateway:8000
