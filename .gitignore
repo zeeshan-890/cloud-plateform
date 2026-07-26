@@ -1,0 +1,63 @@
+# Binaries
+bin/
+dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go
+vendor/
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+.env.resources
+.env.merged
+*.pem
+*.key
+!.env.example
+
+# Node / frontend (dashboard, CLI deps)
+node_modules/
+.pnpm-store/
+.next/
+.nuxt/
+dist/
+coverage/
+*.tsbuildinfo
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Logs / temp
+*.log
+tmp/
+temp/
+.cache/
+
+# Docker volumes / local data
+data/
+postgres-data/
+redis-data/
+
+# Terraform / infra state
+*.tfstate
+*.tfstate.*
+.terraform/
+
+# Misc
+*.bak
+*.tmp
+.claude/
+.cursor/
