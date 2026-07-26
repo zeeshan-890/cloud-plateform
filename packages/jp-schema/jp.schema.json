@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jp.dev/schemas/jp.yaml.json",
+  "title": "jp.yaml",
+  "description": "jp project manifest (Phase 7).",
+  "type": "object",
+  "required": ["name", "runtime"],
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 63,
+      "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 512
+    },
+    "runtime": {
+      "type": "string",
+      "enum": ["nodejs", "python", "go", "docker", "static", "node22", "node"]
+    },
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "command": { "type": "string" },
+        "dockerfile": { "type": "string" },
+        "context": { "type": "string", "default": "." },
+        "output": { "type": "string" }
+      }
+    },
+    "deploy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "region": { "type": "string" },
+        "replicas": { "type": "integer", "minimum": 1, "maximum": 10, "default": 1 },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "strategy": {
+          "type": "string",
+          "enum": ["rolling", "blue_green"],
+          "default": "rolling",
+          "description": "rolling (default) or blue_green flip stub"
+        },
+        "healthcheck": { "type": "string" },
+        "env": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "domains": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "hostname"
+      }
+    },
+    "env": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    }
+  }
+}
