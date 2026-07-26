@@ -1,0 +1,28 @@
+go 1.22
+
+use (
+	./apps/cli
+	./packages/events
+	./packages/go-common
+	./services/ai
+	./services/billing
+	./services/build
+	./services/certificate
+	./services/database
+	./services/deployment
+	./services/domain
+	./services/gateway
+	./services/identity
+	./services/logging
+	./services/metrics
+	./services/notification
+	./services/organization
+	./services/project
+	./services/registry
+	./services/repository
+	./services/runtime
+	./services/scheduler
+	./services/secret
+	./services/storage
+	./services/worker
+)
