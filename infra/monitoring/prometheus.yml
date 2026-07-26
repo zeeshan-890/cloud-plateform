@@ -1,0 +1,23 @@
+# Prometheus — scrapes jp metrics service + self (monitoring profile)
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: jp-metrics
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["metrics:8016"]
+        labels:
+          service: metrics
+
+  - job_name: jp-gateway
+    metrics_path: /healthz
+    static_configs:
+      - targets: ["gateway:8000"]
+        labels:
+          service: gateway
