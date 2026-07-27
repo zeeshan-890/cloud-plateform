@@ -136,9 +136,10 @@ Defaults are **real** (`scripts/go-real.*` / `.env`). Simulate only if you expli
 
 | Piece | Behavior |
 |-------|----------|
-| GitHub OAuth/install | **Stub** (no real GitHub App yet) |
-| Repo list | Mock, or **real** with `GITHUB_TOKEN` |
-| Webhooks / deploys / rollback / build queue | **Real** |
+| GitHub OAuth/install | **Real GitHub App** when `GITHUB_APP_ID` + key set; else **stub** |
+| Repo list | Installation repos (App), or `GITHUB_TOKEN`, or mock |
+| Webhooks / deploys / rollback / build queue | **Real** (push + pull_request previews) |
+| Commit statuses | **Real** via App installation token; no-op without App |
 | Worker build | **Docker BuildKit** (`BUILD_MODE=docker`) |
 | Image push | Host Docker → `localhost:5000` (add insecure-registries) |
 | Runtime | **Docker Engine** (`RUNTIME_MODE=docker`) |
@@ -166,7 +167,7 @@ Defaults are **real** (`scripts/go-real.*` / `.env`). Simulate only if you expli
 | **7** | jp.yaml IaC, deploy strategies, AI ops, billing |
 | **8** | Scale-out path documented ([docs/scale-out.md](docs/scale-out.md)) |
 
-See [docs/phases.md](docs/phases.md) and [docs/vps-runbook.md](docs/vps-runbook.md).
+See [docs/full-platform-reference.md](docs/full-platform-reference.md) (complete architecture / endpoints / diagrams), [docs/phases.md](docs/phases.md), and [docs/vps-runbook.md](docs/vps-runbook.md).
 
 ## API contract
 
