@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Alert, EmptyState, PageHeader } from "@/components/ui/page";
@@ -13,13 +14,19 @@ import type {
   Project,
 } from "@/lib/types";
 
+const API_BASE =
+  process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ||
+  "http://localhost:8000/api/v1";
+
 export default function ConnectGitPage() {
   const { currentOrg } = useOrg();
+  const searchParams = useSearchParams();
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState("");
   const [installations, setInstallations] = useState<GitInstallation[]>([]);
   const [available, setAvailable] = useState<AvailableRepo[]>([]);
   const [mode, setMode] = useState("mock");
+  const [installMode, setInstallMode] = useState("");
   const [connected, setConnected] = useState<ConnectedRepo[]>([]);
   const [fullName, setFullName] = useState("");
   const [error, setError] = useState("");
@@ -46,6 +53,29 @@ export default function ConnectGitPage() {
     (async () => {
       try {
         await refresh();
+        if (searchParams.get("installed") === "1" && mounted) {
+          setSuccess("GitHub App installation saved.");
+        }
+        const errParam = searchParams.get("error");
+        if (errParam && mounted) {
+          setError(`GitHub setup: ${errParam}`);
+        }
+        const pendingInstall = searchParams.get("installation_id");
+        if (pendingInstall && mounted) {
+          try {
+            await api.completeGitInstall(currentOrg.id, {
+              installation_id: pendingInstall,
+            });
+            setSuccess("GitHub installation linked to this organization.");
+            await refresh();
+          } catch (err) {
+            setError(
+              err instanceof ApiError
+                ? err.message
+                : "Failed to link installation",
+            );
+          }
+        }
       } catch (err) {
         if (mounted) {
           setError(
@@ -83,17 +113,26 @@ export default function ConnectGitPage() {
     };
   }, [currentOrg, projectId]);
 
-  async function onStubInstall() {
+  async function onInstall() {
     if (!currentOrg) return;
     setBusy(true);
     setError("");
     setSuccess("");
     try {
-      await api.startGitInstall(currentOrg.id);
+      const start = await api.startGitInstall(currentOrg.id);
+      setInstallMode(start.mode);
+      if (start.mode === "github_app" && start.install_url) {
+        window.open(start.install_url, "_blank", "noopener,noreferrer");
+        setSuccess(
+          "GitHub App install opened in a new tab. After approving, return here and refresh.",
+        );
+        return;
+      }
+      // Stub path
       await api.completeGitInstall(currentOrg.id, {
         account_login: "stub-github-org",
       });
-      setSuccess("GitHub install stub completed.");
+      setSuccess("GitHub install stub completed (no App credentials configured).");
       await refresh();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Install failed");
@@ -114,7 +153,7 @@ export default function ConnectGitPage() {
         full_name: fullName.trim(),
         clone_url: match?.clone_url,
         default_branch: match?.default_branch || "main",
-        installation_id: installations[0]?.id,
+        installation_id: installations[0]?.installation_id,
       });
       setSuccess(`Connected ${fullName.trim()}.`);
       setFullName("");
@@ -153,7 +192,7 @@ export default function ConnectGitPage() {
     <div className="mx-auto max-w-2xl animate-fade-up">
       <PageHeader
         title="Connect Git"
-        description="Link a GitHub installation (stub) and connect repositories to a project."
+        description="Install the GitHub App (or stub locally), then connect repositories to a project."
       />
 
       {error ? <Alert>{error}</Alert> : null}
@@ -164,10 +203,27 @@ export default function ConnectGitPage() {
         <p className="text-sm text-[var(--ink-muted)]">
           Installations: {installations.length || "none"} · Repo list mode:{" "}
           {mode}
+          {installMode ? ` · last start: ${installMode}` : ""}
         </p>
-        <Button type="button" onClick={onStubInstall} disabled={busy}>
-          {busy ? "Working…" : "Complete stub install"}
-        </Button>
+        <p className="text-xs text-[var(--ink-faint)] font-[family-name:var(--font-mono)]">
+          Webhook URL: {API_BASE}/webhooks/github
+        </p>
+        <p className="text-xs text-[var(--ink-faint)] font-[family-name:var(--font-mono)]">
+          Setup URL: {API_BASE}/github/setup
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" onClick={onInstall} disabled={busy}>
+            {busy ? "Working…" : "Install GitHub App"}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            disabled={busy}
+            onClick={() => refresh().catch(() => undefined)}
+          >
+            Refresh
+          </Button>
+        </div>
         {installations.length > 0 ? (
           <ul className="text-sm text-[var(--ink-muted)]">
             {installations.map((i) => (
