@@ -14,6 +14,7 @@ import (
 	"github.com/jp-cloud/go-common/middleware"
 	"github.com/jp-cloud/go-common/postgres"
 	redisx "github.com/jp-cloud/go-common/redis"
+	"github.com/jp-cloud/repository/internal/githubapp"
 	"github.com/jp-cloud/repository/internal/handlers"
 	"github.com/jp-cloud/repository/internal/store"
 	"github.com/redis/go-redis/v9"
@@ -52,6 +53,18 @@ func main() {
 	}
 
 	jm := jwtutil.NewManager(cfg.JWTSecret, cfg.JWTAccessTTL, cfg.JWTRefreshTTL)
+	httpClient := &http.Client{Timeout: 15 * time.Second}
+	var ghClient *githubapp.Client
+	if c, err := githubapp.NewFromEnv(httpClient); err != nil {
+		log.Info("github app not configured; install/status stub mode", "err", err)
+	} else {
+		ghClient = c
+		log.Info("github app configured", "app_id", c.AppID, "slug", c.Slug)
+	}
+	dashboardURL := os.Getenv("DASHBOARD_URL")
+	if dashboardURL == "" {
+		dashboardURL = "http://localhost:3000"
+	}
 	h := &handlers.Handler{
 		Store:           store.New(pool),
 		JWT:             jm,
@@ -59,8 +72,11 @@ func main() {
 		DeploymentURL:   cfg.DeploymentURL,
 		WebhookSecret:   cfg.GitHubWebhookSecret,
 		PublicBaseURL:   cfg.PublicBaseURL,
-		HTTP:            &http.Client{Timeout: 10 * time.Second},
+		DashboardURL:    dashboardURL,
+		HTTP:            httpClient,
 		Redis:           redisClient,
+		GitHub:          ghClient,
+		Log:             log,
 	}
 
 	mux := http.NewServeMux()
