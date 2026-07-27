@@ -17,10 +17,10 @@
 
 ## Phase 2 — Git + deployments (implemented)
 
-- **repository** (8005): GitHub App install (real when `GITHUB_APP_*` set, else stub), installation-token or `GITHUB_TOKEN` / mock repo list, connect/disconnect repos, webhook receiver (`push` + `pull_request` previews) with HMAC signature verification, emit events; internal commit-status API for deployment service
-- **deployment** (8006): create/list deployments; trigger from webhook push/PR or API; status lifecycle `queued → building → ready|failed`; rollback creates a new deploy with `rollback_of` pointing at a previous successful deploy; posts GitHub commit statuses via repository service
+- **repository** (8005): GitHub App install (real when `GITHUB_APP_*` set, else stub), installation-token or `GITHUB_TOKEN` / mock repo list, connect/disconnect repos, webhook receiver (`push` + `pull_request` previews) with HMAC signature verification, emit events; PR `closed` tears down preview runtime + domain; internal commit-status API for deployment service
+- **deployment** (8006): create/list deployments; trigger from webhook push/PR or API; status lifecycle `queued → building → ready|failed`; rollback creates a new deploy with `rollback_of` pointing at a previous successful deploy; posts GitHub commit statuses via repository service (status `target_url` = `preview_url` when set); preview URL + teardown internals
 - Gateway routes under `/api/v1` for git + deployments (+ public `GET /api/v1/github/setup`)
-- Dashboard: Connect Git (Install GitHub App), Deployments pages (preview badge)
+- Dashboard: Connect Git (Install GitHub App), Deployments pages (preview badge + clickable `preview_url`)
 - CLI: `jp deploy`, `jp status`, `jp rollback`, `jp builds`
 
 ## Phase 3 — Build farm (implemented)
@@ -34,9 +34,9 @@
 
 ## Phase 4 — Runtime, scheduler, domains, SSL (implemented)
 
-- **runtime** (8010): desired-state instances (`static`/`node`/`container`); start/stop/list via Docker Engine API or `RUNTIME_MODE=simulate`
-- **scheduler** (8011): single-node slot (`node-1`), consumes `jp.deploy` (`deploy.updated` when ready), health loop + restart policy, rolling-update stub → calls runtime
-- **domain** (8012): add/list/delete domains; TXT/CNAME verify or force/`DOMAIN_DNS_STUB`; writes Traefik file-provider configs under `infra/traefik/dynamic/`
+- **runtime** (8010): desired-state instances (`static`/`node`/`container`); start/stop/list via Docker Engine API or `RUNTIME_MODE=simulate`; preview starts (`preview=true`) do not stop production
+- **scheduler** (8011): single-node slot (`node-1`), consumes `jp.deploy` (`deploy.updated` when ready), health loop + restart policy, rolling-update stub → calls runtime; after preview start provisions Traefik hostname (`PREVIEW_BASE_DOMAIN`) and sets deployment `preview_url`
+- **domain** (8012): add/list/delete domains; TXT/CNAME verify or force/`DOMAIN_DNS_STUB`; writes Traefik file-provider configs under `infra/traefik/dynamic/`; internal preview provision + delete-by-deployment
 - **certificate** (8013): cert status + renew metadata; Traefik ACME resolver labels when configured (`CERT_SIMULATE=true` by default)
 - After deploy+build succeeds → deployment publishes `deploy.updated` → scheduler auto-starts runtime from `image_ref`
 - Gateway routes for runtime, domains, certificates
@@ -63,7 +63,7 @@
 - **database** (8018): one-click Postgres — `DB_MODE=schema` creates schema+role on shared Postgres, or `simulate`; connection string stored via secret service (`secret_ref`)
 - Platform queues via Redis Streams: `jp.build`, `jp.cleanup`, `jp.jobs` (+ user-facing `/queues` stub)
 - **scheduler** cron API: create/list/delete schedules (`@hourly`, `@every 5m`, …) → publishes `jp.jobs` → triggers runtime jobs
-- Cleanup jobs on `jp.cleanup`: orphaned image metadata + expired preview deploys (branch/message heuristic)
+- Cleanup jobs on `jp.cleanup`: orphaned image metadata + expired preview deploys (marks failed, stops runtime, removes Traefik/domain)
 - Gateway routes for storage, databases, cron, queues
 - Dashboard: Storage + Databases pages
 - CLI: `jp storage`, `jp db`
