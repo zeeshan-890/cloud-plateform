@@ -432,6 +432,8 @@ services:
       ORGANIZATION_URL: http://organization:8002
       BUILD_URL: http://build:8007
       REPOSITORY_URL: http://repository:8005
+      RUNTIME_URL: http://runtime:8010
+      DOMAIN_URL: http://domain:8012
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8000}
       MIGRATIONS_DIR: /app/migrations
       JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
@@ -599,10 +601,12 @@ services:
       RUNTIME_URL: http://runtime:8010
       REGISTRY_URL: http://registry-api:8009
       DEPLOYMENT_URL: http://deployment:8006
+      DOMAIN_URL: http://domain:8012
       JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
       SCHEDULER_SLOT: ${SCHEDULER_SLOT:-node-1}
       CLEANUP_INTERVAL: ${CLEANUP_INTERVAL:-1h}
       PREVIEW_TTL: ${PREVIEW_TTL:-72h}
+      PREVIEW_BASE_DOMAIN: ${PREVIEW_BASE_DOMAIN:-preview.jp.localhost}
       ORPHAN_IMAGE_TTL: ${ORPHAN_IMAGE_TTL:-168h}
       JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
     depends_on:
