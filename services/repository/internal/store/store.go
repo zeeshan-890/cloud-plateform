@@ -81,6 +81,92 @@ func (s *Store) ListInstallations(ctx context.Context, orgID string) ([]Installa
 	return out, rows.Err()
 }
 
+// LatestInstallation returns the most recent active installation for an org.
+func (s *Store) LatestInstallation(ctx context.Context, orgID string) (*Installation, error) {
+	i := &Installation{}
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, org_id, installation_id, account_login, status, created_at
+		FROM github_installations WHERE org_id=$1 AND status='active'
+		ORDER BY created_at DESC LIMIT 1
+	`, orgID).Scan(&i.ID, &i.OrgID, &i.InstallationID, &i.AccountLogin, &i.Status, &i.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return i, err
+}
+
+// FindInstallationByGitHubID finds any org's installation by GitHub installation_id.
+func (s *Store) FindInstallationByGitHubID(ctx context.Context, githubInstallationID string) (*Installation, error) {
+	i := &Installation{}
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, org_id, installation_id, account_login, status, created_at
+		FROM github_installations WHERE installation_id=$1
+		ORDER BY created_at DESC LIMIT 1
+	`, githubInstallationID).Scan(&i.ID, &i.OrgID, &i.InstallationID, &i.AccountLogin, &i.Status, &i.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return i, err
+}
+
+// ResolveInstallationIDForRepo returns GitHub installation_id for a full_name.
+func (s *Store) ResolveInstallationIDForRepo(ctx context.Context, fullName, hint string) (string, error) {
+	if hint != "" {
+		return hint, nil
+	}
+	var inst *string
+	err := s.pool.QueryRow(ctx, `
+		SELECT installation_id FROM connected_repos
+		WHERE full_name=$1 AND installation_id IS NOT NULL AND installation_id <> ''
+		ORDER BY created_at DESC LIMIT 1
+	`, fullName).Scan(&inst)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	if inst == nil || *inst == "" {
+		return "", ErrNotFound
+	}
+	return *inst, nil
+}
+
+// UpsertInstallation inserts or refreshes an installation for the org.
+func (s *Store) UpsertInstallation(ctx context.Context, orgID, installationID, login string) (*Installation, error) {
+	existing, err := s.FindInstallationByGitHubID(ctx, installationID)
+	if err == nil && existing.OrgID == orgID {
+		_, _ = s.pool.Exec(ctx, `
+			UPDATE github_installations SET account_login=$1, status='active' WHERE id=$2
+		`, login, existing.ID)
+		existing.AccountLogin = login
+		existing.Status = "active"
+		return existing, nil
+	}
+	if err == nil && existing.OrgID != orgID {
+		// Same GitHub install claimed by another org — update login only if same org path fails insert
+	}
+	inst, err := s.CreateInstallation(ctx, orgID, installationID, login)
+	if errors.Is(err, ErrAlreadyExists) {
+		list, listErr := s.ListInstallations(ctx, orgID)
+		if listErr != nil {
+			return nil, listErr
+		}
+		for i := range list {
+			if list[i].InstallationID == installationID {
+				_, _ = s.pool.Exec(ctx, `
+					UPDATE github_installations SET account_login=$1, status='active' WHERE id=$2
+				`, login, list[i].ID)
+				list[i].AccountLogin = login
+				list[i].Status = "active"
+				return &list[i], nil
+			}
+		}
+		return nil, ErrAlreadyExists
+	}
+	return inst, err
+}
+
 func (s *Store) ConnectRepo(ctx context.Context, orgID, projectID, installationID, fullName, cloneURL, branch, secret string) (*Repo, error) {
 	r := &Repo{
 		ID: uuid.NewString(), OrgID: orgID, ProjectID: projectID,
