@@ -120,3 +120,53 @@ func (s *Store) Delete(ctx context.Context, orgID, projectID, id string) error {
 	}
 	return nil
 }
+
+func (s *Store) FindByDeploymentID(ctx context.Context, deploymentID string) ([]Domain, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, org_id, project_id, deployment_id, hostname, status, verification_type,
+		       verification_token, verified_at, force_verified, traefik_file, certificate_id, created_at, updated_at
+		FROM domains WHERE deployment_id=$1::uuid
+	`, deploymentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Domain
+	for rows.Next() {
+		var d Domain
+		if err := rows.Scan(&d.ID, &d.OrgID, &d.ProjectID, &d.DeploymentID, &d.Hostname, &d.Status, &d.VerificationType,
+			&d.VerificationToken, &d.VerifiedAt, &d.ForceVerified, &d.TraefikFile, &d.CertificateID, &d.CreatedAt, &d.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	if out == nil {
+		out = []Domain{}
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) FindByHostname(ctx context.Context, hostname string) (*Domain, error) {
+	d := &Domain{}
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, org_id, project_id, deployment_id, hostname, status, verification_type,
+		       verification_token, verified_at, force_verified, traefik_file, certificate_id, created_at, updated_at
+		FROM domains WHERE hostname=$1
+	`, hostname).Scan(&d.ID, &d.OrgID, &d.ProjectID, &d.DeploymentID, &d.Hostname, &d.Status, &d.VerificationType,
+		&d.VerificationToken, &d.VerifiedAt, &d.ForceVerified, &d.TraefikFile, &d.CertificateID, &d.CreatedAt, &d.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return d, err
+}
+
+func (s *Store) DeleteByID(ctx context.Context, id string) error {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM domains WHERE id=$1`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
