@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -591,7 +592,7 @@ func (h *Handler) handlePullRequestWebhook(w http.ResponseWriter, r *http.Reques
 	case "opened", "synchronize", "reopened":
 		// create preview deploy
 	case "closed":
-		httpx.JSON(w, http.StatusOK, map[string]any{"ok": true, "ignored": "closed", "note": "preview TTL cleanup handles expiry"})
+		h.teardownPreviewPR(w, r, payload.Repository.FullName, payload.Number)
 		return
 	default:
 		httpx.JSON(w, http.StatusOK, map[string]any{"ok": true, "ignored": payload.Action})
@@ -619,6 +620,47 @@ func (h *Handler) handlePullRequestWebhook(w http.ResponseWriter, r *http.Reques
 	httpx.JSON(w, http.StatusOK, map[string]any{
 		"ok": true, "preview": true, "pr": payload.Number,
 		"repos_matched": len(repos), "deployments_created": created,
+	})
+}
+
+func (h *Handler) teardownPreviewPR(w http.ResponseWriter, r *http.Request, fullName string, prNumber int) {
+	gitBranch := fmt.Sprintf("preview/pr-%d", prNumber)
+	repos, err := h.Store.FindReposByFullName(r.Context(), fullName)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "internal", "lookup failed")
+		return
+	}
+	torn := 0
+	if h.DeploymentURL != "" && h.HTTP != nil {
+		for _, repo := range repos {
+			body, _ := json.Marshal(map[string]any{
+				"org_id": repo.OrgID, "project_id": repo.ProjectID,
+				"full_name": fullName, "git_branch": gitBranch,
+			})
+			req, err := http.NewRequestWithContext(r.Context(), http.MethodPost,
+				strings.TrimRight(h.DeploymentURL, "/")+"/internal/preview/teardown",
+				bytes.NewReader(body))
+			if err != nil {
+				continue
+			}
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := h.HTTP.Do(req)
+			if err != nil {
+				continue
+			}
+			_ = resp.Body.Close()
+			if resp.StatusCode < 300 {
+				torn++
+			}
+		}
+	}
+	h.emit(r, events.TopicDeploy, events.TypeGitPush, "", "", map[string]any{
+		"full_name": fullName, "branch": gitBranch, "pr": prNumber,
+		"teardown": true, "repos_matched": len(repos), "teardown_calls": torn,
+	})
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"ok": true, "teardown": true, "pr": prNumber, "git_branch": gitBranch,
+		"repos_matched": len(repos), "teardown_calls": torn,
 	})
 }
 
