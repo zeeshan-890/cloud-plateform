@@ -42,17 +42,19 @@ func main() {
 
 	cronStore := cron.NewStore(rdb)
 	sched := loop.New(loop.Config{
-		Redis:         rdb,
-		RuntimeURL:    runtimeURL,
-		RegistryURL:   cfg.RegistryURL,
-		DeploymentURL: cfg.DeploymentURL,
-		Log:           log,
-		Slot:          getenv("SCHEDULER_SLOT", "node-1"),
-		HealthEvery:   20 * time.Second,
-		CleanupEvery:  parseDurationEnv("CLEANUP_INTERVAL", time.Hour),
-		Cron:          cronStore,
-		PreviewTTL:    parseDurationEnv("PREVIEW_TTL", 72*time.Hour),
-		ImageTTL:      parseDurationEnv("ORPHAN_IMAGE_TTL", 168*time.Hour),
+		Redis:             rdb,
+		RuntimeURL:        runtimeURL,
+		RegistryURL:       cfg.RegistryURL,
+		DeploymentURL:     cfg.DeploymentURL,
+		DomainURL:         cfg.DomainURL,
+		PreviewBaseDomain: getenv("PREVIEW_BASE_DOMAIN", "preview.jp.localhost"),
+		Log:               log,
+		Slot:              getenv("SCHEDULER_SLOT", "node-1"),
+		HealthEvery:       20 * time.Second,
+		CleanupEvery:      parseDurationEnv("CLEANUP_INTERVAL", time.Hour),
+		Cron:              cronStore,
+		PreviewTTL:        parseDurationEnv("PREVIEW_TTL", 72*time.Hour),
+		ImageTTL:          parseDurationEnv("ORPHAN_IMAGE_TTL", 168*time.Hour),
 	})
 
 	jm := jwtutil.NewManager(cfg.JWTSecret, cfg.JWTAccessTTL, cfg.JWTRefreshTTL)
