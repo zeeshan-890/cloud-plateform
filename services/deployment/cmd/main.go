@@ -56,6 +56,8 @@ func main() {
 		OrganizationURL: cfg.OrganizationURL,
 		BuildURL:        cfg.BuildURL,
 		RepositoryURL:   cfg.RepositoryURL,
+		RuntimeURL:      cfg.RuntimeURL,
+		DomainURL:       cfg.DomainURL,
 		PublicBaseURL:   cfg.PublicBaseURL,
 		HTTP:            &http.Client{Timeout: 15 * time.Second},
 		Log:             log,
