@@ -18,6 +18,7 @@ Phase 2 — GitHub connect + webhooks (port **8005**).
   - `push` on default branch → production deploy
   - `push` on other branches → preview (`preview/{branch}`, `[preview]` message)
   - `pull_request` opened/synchronize/reopened → preview (`preview/pr-{N}`)
+  - `pull_request` closed → teardown preview (runtime stop + domain delete via deployment)
 - `POST /internal/github/commit-status` — used by deployment service
 
 ## Env
@@ -30,4 +31,6 @@ Phase 2 — GitHub connect + webhooks (port **8005**).
 | `GITHUB_TOKEN` | Fallback user PAT for repo list |
 | `DASHBOARD_URL` | Redirect after App setup |
 | `PUBLIC_BASE_URL` | Stub install URL + status target |
-| `DEPLOYMENT_URL` | Create deploys from webhooks |
+| `DEPLOYMENT_URL` | Create deploys / teardown from webhooks |
+
+Preview hostnames are assigned by the scheduler after start (`pr-{N}-{projectId8}.{PREVIEW_BASE_DOMAIN}`).
