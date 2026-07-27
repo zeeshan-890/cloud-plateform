@@ -421,7 +421,7 @@ paths:
   /orgs/{orgId}/github/install/start:
     post:
       tags: [Git]
-      summary: Start GitHub App install (stub URL)
+      summary: Start GitHub App install (real App URL when configured, else stub)
       security: [{ bearerAuth: [] }]
       parameters: [{ $ref: "#/components/parameters/orgId" }]
       responses:
@@ -430,12 +430,29 @@ paths:
   /orgs/{orgId}/github/install/callback:
     post:
       tags: [Git]
-      summary: Complete GitHub install stub
+      summary: Complete GitHub install (App installation_id or stub)
       security: [{ bearerAuth: [] }]
       parameters: [{ $ref: "#/components/parameters/orgId" }]
       responses:
         "201":
           description: Created
+  /github/setup:
+    get:
+      tags: [Git]
+      summary: GitHub App setup redirect (public; state in Redis)
+      parameters:
+        - name: installation_id
+          in: query
+          schema: { type: string }
+        - name: setup_action
+          in: query
+          schema: { type: string }
+        - name: state
+          in: query
+          schema: { type: string }
+      responses:
+        "302":
+          description: Redirect to dashboard
   /orgs/{orgId}/github/installations:
     get:
       tags: [Git]
@@ -503,7 +520,7 @@ paths:
   /webhooks/github:
     post:
       tags: [Git]
-      summary: GitHub webhook (HMAC X-Hub-Signature-256)
+      summary: GitHub webhook (HMAC X-Hub-Signature-256); push + pull_request previews
       responses:
         "200":
           description: OK
