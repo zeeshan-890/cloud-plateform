@@ -24,6 +24,8 @@ type Handler struct {
 	JWT             *jwtutil.Manager
 	OrganizationURL string
 	BuildURL        string
+	RepositoryURL   string
+	PublicBaseURL   string
 	HTTP            *http.Client
 	Log             *slog.Logger
 	Redis           *redis.Client
@@ -105,7 +107,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusInternalServerError, "internal", "failed to create deployment")
 		return
 	}
-	h.stubCommitStatus(d, "pending")
+	h.postCommitStatus(d, "pending")
 	h.startBuild(r.Context(), d)
 	httpx.JSON(w, http.StatusCreated, map[string]any{"deployment": d})
 }
@@ -215,7 +217,7 @@ func (h *Handler) createRollback(w http.ResponseWriter, r *http.Request, uid str
 		httpx.Error(w, http.StatusInternalServerError, "internal", "failed to create rollback deployment")
 		return
 	}
-	h.stubCommitStatus(d, "success")
+	h.postCommitStatus(d, "success")
 	h.publishDeploy(r.Context(), d)
 	httpx.JSON(w, http.StatusCreated, map[string]any{"deployment": d})
 }
@@ -257,7 +259,7 @@ func (h *Handler) FromGit(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusInternalServerError, "internal", "failed to create deployment")
 		return
 	}
-	h.stubCommitStatus(d, "pending")
+	h.postCommitStatus(d, "pending")
 	h.startBuild(r.Context(), d)
 	httpx.JSON(w, http.StatusCreated, map[string]any{"deployment": d})
 }
@@ -290,7 +292,7 @@ func (h *Handler) InternalUpdateStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if d, err := h.Store.GetByID(r.Context(), id); err == nil {
-		h.stubCommitStatus(d, req.CommitStatus)
+		h.postCommitStatus(d, req.CommitStatus)
 		if req.Status == "ready" || req.Status == "failed" {
 			h.publishDeploy(r.Context(), d)
 		}
@@ -305,7 +307,7 @@ func (h *Handler) startBuild(ctx context.Context, d *store.Deployment) {
 		d.Status = "failed"
 		d.CommitStatus = "failure"
 		d.Error = "failed to enqueue build"
-		h.stubCommitStatus(d, "failure")
+		h.postCommitStatus(d, "failure")
 		return
 	}
 	_ = h.Store.UpdateStatus(ctx, d.ID, "building", "pending", "", "", &buildID)
@@ -351,11 +353,47 @@ func (h *Handler) enqueueBuild(d *store.Deployment) string {
 	return out.Build.ID
 }
 
-// stubCommitStatus simulates GitHub commit status API.
-func (h *Handler) stubCommitStatus(d *store.Deployment, state string) {
-	if h.Log != nil {
-		h.Log.Info("commit status stub", "deployment_id", d.ID, "sha", d.GitSHA, "state", state, "repo", d.FullName)
+// postCommitStatus asks the repository service to publish a GitHub commit status
+// (no-op when the GitHub App is not configured).
+func (h *Handler) postCommitStatus(d *store.Deployment, state string) {
+	if d == nil {
+		return
 	}
+	if h.Log != nil {
+		h.Log.Info("commit status", "deployment_id", d.ID, "sha", d.GitSHA, "state", state, "repo", d.FullName)
+	}
+	if h.RepositoryURL == "" || h.HTTP == nil {
+		return
+	}
+	sha := strings.TrimSpace(d.GitSHA)
+	if sha == "" || sha == "HEAD" || d.FullName == "" {
+		return
+	}
+	target := strings.TrimRight(h.PublicBaseURL, "/")
+	if target == "" {
+		target = "http://localhost:8000"
+	}
+	desc := "jp deployment " + state
+	body, _ := json.Marshal(map[string]any{
+		"full_name":   d.FullName,
+		"sha":         sha,
+		"state":       state,
+		"description": desc,
+		"target_url":  target + "/api/v1",
+	})
+	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(h.RepositoryURL, "/")+"/internal/github/commit-status", bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := h.HTTP.Do(req)
+	if err != nil {
+		if h.Log != nil {
+			h.Log.Warn("commit status request failed", "err", err)
+		}
+		return
+	}
+	_ = resp.Body.Close()
 }
 
 func (h *Handler) publishDeploy(ctx context.Context, d *store.Deployment) {

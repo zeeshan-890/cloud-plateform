@@ -55,6 +55,8 @@ func main() {
 		JWT:             jm,
 		OrganizationURL: cfg.OrganizationURL,
 		BuildURL:        cfg.BuildURL,
+		RepositoryURL:   cfg.RepositoryURL,
+		PublicBaseURL:   cfg.PublicBaseURL,
 		HTTP:            &http.Client{Timeout: 15 * time.Second},
 		Log:             log,
 		Redis:           rdb,
