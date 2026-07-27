@@ -17,10 +17,10 @@
 
 ## Phase 2 — Git + deployments (implemented)
 
-- **repository** (8005): GitHub OAuth/install stubs, mock (or `GITHUB_TOKEN`) repo list, connect/disconnect repos, webhook receiver with HMAC signature verification, emit events
-- **deployment** (8006): create/list deployments; trigger from webhook push or API; status lifecycle `queued → building → ready|failed`; rollback creates a new deploy with `rollback_of` pointing at a previous successful deploy
-- Gateway routes under `/api/v1` for git + deployments
-- Dashboard: Connect Git, Deployments pages
+- **repository** (8005): GitHub App install (real when `GITHUB_APP_*` set, else stub), installation-token or `GITHUB_TOKEN` / mock repo list, connect/disconnect repos, webhook receiver (`push` + `pull_request` previews) with HMAC signature verification, emit events; internal commit-status API for deployment service
+- **deployment** (8006): create/list deployments; trigger from webhook push/PR or API; status lifecycle `queued → building → ready|failed`; rollback creates a new deploy with `rollback_of` pointing at a previous successful deploy; posts GitHub commit statuses via repository service
+- Gateway routes under `/api/v1` for git + deployments (+ public `GET /api/v1/github/setup`)
+- Dashboard: Connect Git (Install GitHub App), Deployments pages (preview badge)
 - CLI: `jp deploy`, `jp status`, `jp rollback`, `jp builds`
 
 ## Phase 3 — Build farm (implemented)
