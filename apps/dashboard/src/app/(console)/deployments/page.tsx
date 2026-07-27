@@ -233,6 +233,7 @@ export default function DeploymentsPage() {
               <tr className="border-b border-[var(--border)] text-[var(--ink-faint)]">
                 <th className="py-2 pr-3 font-medium">Status</th>
                 <th className="py-2 pr-3 font-medium">Kind</th>
+                <th className="py-2 pr-3 font-medium">Preview URL</th>
                 <th className="py-2 pr-3 font-medium">Strategy</th>
                 <th className="py-2 pr-3 font-medium">Source</th>
                 <th className="py-2 pr-3 font-medium">Branch</th>
@@ -255,6 +256,20 @@ export default function DeploymentsPage() {
                       </span>
                     ) : (
                       <span className="text-xs text-[var(--ink-faint)]">Prod</span>
+                    )}
+                  </td>
+                  <td className="py-3 pr-3">
+                    {isPreviewDeploy(d) && d.preview_url ? (
+                      <a
+                        href={d.preview_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="font-[family-name:var(--font-mono)] text-xs text-[var(--accent)] underline-offset-2 hover:underline"
+                      >
+                        {d.preview_url.replace(/^https?:\/\//, "")}
+                      </a>
+                    ) : (
+                      <span className="text-xs text-[var(--ink-faint)]">—</span>
                     )}
                   </td>
                   <td className="py-3 pr-3 text-[var(--ink-muted)]">
