@@ -130,6 +130,9 @@ func main() {
 
 	// Public GitHub webhook (HMAC verified upstream)
 	mux.HandleFunc("POST /api/v1/webhooks/github", stripAndProxy(repository, "/api/v1"))
+	// Public GitHub App setup redirect (state verified in repository via Redis)
+	mux.HandleFunc("GET /api/v1/github/setup", stripAndProxy(repository, "/api/v1"))
+	mux.HandleFunc("GET /github/setup", stripAndProxy(repository, ""))
 
 	auth := bearerOrPAT(jm, httpClient, cfg.IdentityURL)
 
