@@ -394,7 +394,13 @@ services:
       ORGANIZATION_URL: http://organization:8002
       DEPLOYMENT_URL: http://deployment:8006
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8000}
+      DASHBOARD_URL: ${DASHBOARD_URL:-http://localhost:3000}
       GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-dev-webhook-secret}
+      GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+      GITHUB_APP_SLUG: ${GITHUB_APP_SLUG:-}
+      GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY:-}
+      GITHUB_APP_PRIVATE_KEY_PATH: ${GITHUB_APP_PRIVATE_KEY_PATH:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       MIGRATIONS_DIR: /app/migrations
       JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
@@ -425,6 +431,8 @@ services:
       JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
       ORGANIZATION_URL: http://organization:8002
       BUILD_URL: http://build:8007
+      REPOSITORY_URL: http://repository:8005
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8000}
       MIGRATIONS_DIR: /app/migrations
       JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
     depends_on:
