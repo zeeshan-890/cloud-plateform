@@ -35,6 +35,7 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /orgs/{orgId}/projects/{projectId}/runtime/containers", auth(http.HandlerFunc(h.ListContainers)))
 
 	mux.HandleFunc("POST /internal/runtime/start", h.InternalStart)
+	mux.HandleFunc("POST /internal/runtime/stop-by-deployment", h.InternalStopByDeployment)
 	mux.HandleFunc("POST /internal/runtime/instances/{instanceId}/health", h.InternalHealth)
 	mux.HandleFunc("GET /internal/runtime/instances/{instanceId}", h.InternalGet)
 	mux.HandleFunc("GET /internal/runtime/desired", h.InternalDesired)
@@ -241,6 +242,7 @@ func (h *Handler) InternalStart(w http.ResponseWriter, r *http.Request) {
 		Port          int    `json:"port"`
 		Rolling       bool   `json:"rolling"`
 		Strategy      string `json:"strategy"`
+		Preview       bool   `json:"preview"`
 	}
 	if err := httpx.Decode(r, &req); err != nil || req.OrgID == "" || req.ProjectID == "" || req.ImageRef == "" {
 		httpx.Error(w, http.StatusBadRequest, "bad_request", "org_id, project_id, image_ref required")
@@ -257,21 +259,16 @@ func (h *Handler) InternalStart(w http.ResponseWriter, r *http.Request) {
 	}
 	strategy := strings.ToLower(strings.TrimSpace(req.Strategy))
 	if strategy == "" {
-		if req.Rolling {
-			strategy = "rolling"
-		} else {
-			strategy = "rolling"
-		}
+		strategy = "rolling"
 	}
 	if strategy == "blue-green" || strategy == "bluegreen" {
 		strategy = "blue_green"
 	}
 
-	prev, _ := h.Store.FindActiveByProject(r.Context(), req.OrgID, req.ProjectID)
-
-	// Rolling (default): stop previous desired instance, then start new.
-	// Blue/green keeps previous until flip stub drains it.
-	if strategy != "blue_green" {
+	// Preview instances never stop production; production rolling only stops non-preview.
+	var prev *store.Instance
+	if !req.Preview && strategy != "blue_green" {
+		prev, _ = h.Store.FindActiveByProject(r.Context(), req.OrgID, req.ProjectID)
 		if prev != nil {
 			prev.DesiredState = "stopped"
 			_, _ = h.Engine.Stop(r.Context(), prev.ContainerID)
@@ -279,9 +276,10 @@ func (h *Handler) InternalStart(w http.ResponseWriter, r *http.Request) {
 			prev.HealthStatus = "stopped"
 			_ = h.Store.Update(r.Context(), prev)
 		}
+	} else if !req.Preview && strategy == "blue_green" {
+		prev, _ = h.Store.FindActiveByProject(r.Context(), req.OrgID, req.ProjectID)
 	}
 
-	// Blue/green stub: start new color alongside previous; then flip Traefik weight (logged stub).
 	color := "blue"
 	if strategy == "blue_green" && prev != nil {
 		if strings.Contains(strings.ToLower(prev.ContainerName), "green") {
@@ -294,7 +292,7 @@ func (h *Handler) InternalStart(w http.ResponseWriter, r *http.Request) {
 	in := &store.Instance{
 		OrgID: req.OrgID, ProjectID: req.ProjectID, Kind: req.Kind, ImageRef: req.ImageRef,
 		Status: "desired", DesiredState: "running", Slot: req.Slot, RestartPolicy: req.RestartPolicy,
-		Port: req.Port, Mode: h.Engine.EffectiveMode(r.Context()),
+		Port: req.Port, Mode: h.Engine.EffectiveMode(r.Context()), IsPreview: req.Preview,
 	}
 	if req.DeploymentID != "" {
 		in.DeploymentID = &req.DeploymentID
@@ -309,20 +307,59 @@ func (h *Handler) InternalStart(w http.ResponseWriter, r *http.Request) {
 			suffix = suffix[:8]
 		}
 		in.ContainerName = "jp-" + suffix + "-" + color
+	} else if req.Preview {
+		suffix := req.ProjectID
+		if len(suffix) > 8 {
+			suffix = suffix[:8]
+		}
+		dep := req.DeploymentID
+		if len(dep) > 8 {
+			dep = dep[:8]
+		}
+		in.ContainerName = "jp-preview-" + suffix + "-" + dep
 	}
 	if err := h.startInstance(r, in); err != nil {
 		in.Status = "failed"
 		in.Error = err.Error()
 		_ = h.Store.Update(r.Context(), in)
-		httpx.JSON(w, http.StatusCreated, map[string]any{"instance": in, "warning": err.Error(), "strategy": strategy})
+		httpx.JSON(w, http.StatusCreated, map[string]any{"instance": in, "warning": err.Error(), "strategy": strategy, "preview": req.Preview})
 		return
 	}
 
 	flip := map[string]any{}
-	if strategy == "blue_green" {
+	if strategy == "blue_green" && !req.Preview {
 		flip = h.blueGreenFlipStub(r.Context(), prev, in, color)
 	}
-	httpx.JSON(w, http.StatusCreated, map[string]any{"instance": in, "strategy": strategy, "blue_green": flip})
+	httpx.JSON(w, http.StatusCreated, map[string]any{"instance": in, "strategy": strategy, "blue_green": flip, "preview": req.Preview})
+}
+
+func (h *Handler) InternalStopByDeployment(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		DeploymentID string `json:"deployment_id"`
+	}
+	if err := httpx.Decode(r, &req); err != nil || req.DeploymentID == "" {
+		httpx.Error(w, http.StatusBadRequest, "bad_request", "deployment_id required")
+		return
+	}
+	list, err := h.Store.FindByDeploymentID(r.Context(), req.DeploymentID)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "internal", "lookup failed")
+		return
+	}
+	stopped := 0
+	for i := range list {
+		in := &list[i]
+		if in.DesiredState == "stopped" && in.Status == "stopped" {
+			continue
+		}
+		_, _ = h.Engine.Stop(r.Context(), in.ContainerID)
+		in.DesiredState = "stopped"
+		in.Status = "stopped"
+		in.HealthStatus = "stopped"
+		_ = h.Store.Update(r.Context(), in)
+		stopped++
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"stopped": stopped, "deployment_id": req.DeploymentID})
 }
 
 func (h *Handler) InternalHealth(w http.ResponseWriter, r *http.Request) {
