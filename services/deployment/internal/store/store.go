@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -31,6 +32,7 @@ type Deployment struct {
 	Message      string          `json:"message"`
 	ImageRef     string          `json:"image_ref"`
 	CommitStatus string          `json:"commit_status"`
+	PreviewURL   string          `json:"preview_url,omitempty"`
 	Error        string          `json:"error,omitempty"`
 	CreatedBy    *string         `json:"created_by,omitempty"`
 	CreatedAt    time.Time       `json:"created_at"`
@@ -42,13 +44,13 @@ type Store struct{ pool *pgxpool.Pool }
 func New(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
 
 const depCols = `id, org_id, project_id, repo_id, build_id, rollback_of, status, source, strategy, jp_config,
-	git_sha, git_branch, clone_url, full_name, message, image_ref, commit_status, error, created_by, created_at, updated_at`
+	git_sha, git_branch, clone_url, full_name, message, image_ref, commit_status, COALESCE(preview_url,''), error, created_by, created_at, updated_at`
 
 func scanDep(row pgx.Row) (*Deployment, error) {
 	d := &Deployment{}
 	var cfg []byte
 	err := row.Scan(&d.ID, &d.OrgID, &d.ProjectID, &d.RepoID, &d.BuildID, &d.RollbackOf, &d.Status, &d.Source, &d.Strategy, &cfg,
-		&d.GitSHA, &d.GitBranch, &d.CloneURL, &d.FullName, &d.Message, &d.ImageRef, &d.CommitStatus, &d.Error, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt)
+		&d.GitSHA, &d.GitBranch, &d.CloneURL, &d.FullName, &d.Message, &d.ImageRef, &d.CommitStatus, &d.PreviewURL, &d.Error, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -71,7 +73,7 @@ func scanDepRows(rows pgx.Rows) ([]Deployment, error) {
 		d := Deployment{}
 		var cfg []byte
 		if err := rows.Scan(&d.ID, &d.OrgID, &d.ProjectID, &d.RepoID, &d.BuildID, &d.RollbackOf, &d.Status, &d.Source, &d.Strategy, &cfg,
-			&d.GitSHA, &d.GitBranch, &d.CloneURL, &d.FullName, &d.Message, &d.ImageRef, &d.CommitStatus, &d.Error, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt); err != nil {
+			&d.GitSHA, &d.GitBranch, &d.CloneURL, &d.FullName, &d.Message, &d.ImageRef, &d.CommitStatus, &d.PreviewURL, &d.Error, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt); err != nil {
 			return nil, err
 		}
 		if len(cfg) > 0 {
@@ -111,10 +113,10 @@ func (s *Store) Create(ctx context.Context, d *Deployment) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO deployments (
 			id, org_id, project_id, repo_id, build_id, rollback_of, status, source, strategy, jp_config,
-			git_sha, git_branch, clone_url, full_name, message, image_ref, commit_status, error, created_by, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+			git_sha, git_branch, clone_url, full_name, message, image_ref, commit_status, preview_url, error, created_by, created_at, updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
 	`, d.ID, d.OrgID, d.ProjectID, d.RepoID, d.BuildID, d.RollbackOf, d.Status, d.Source, d.Strategy, cfg,
-		d.GitSHA, d.GitBranch, d.CloneURL, d.FullName, d.Message, d.ImageRef, d.CommitStatus, d.Error, d.CreatedBy, d.CreatedAt, d.UpdatedAt)
+		d.GitSHA, d.GitBranch, d.CloneURL, d.FullName, d.Message, d.ImageRef, d.CommitStatus, d.PreviewURL, d.Error, d.CreatedBy, d.CreatedAt, d.UpdatedAt)
 	return err
 }
 
@@ -157,9 +159,31 @@ func (s *Store) UpdateStatus(ctx context.Context, id, status, commitStatus, imag
 	return err
 }
 
-// ExpirePreviewDeploys marks old preview-like deployments as expired (failed).
-func (s *Store) ExpirePreviewDeploys(ctx context.Context, olderThan time.Time) (int, error) {
-	tag, err := s.pool.Exec(ctx, `
+func (s *Store) SetPreviewURL(ctx context.Context, id, previewURL string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE deployments SET preview_url=$2, updated_at=NOW() WHERE id=$1
+	`, id, previewURL)
+	return err
+}
+
+// FindPreviewByBranch returns active/ready preview deploys matching git_branch (and optional full_name).
+func (s *Store) FindPreviewByBranch(ctx context.Context, fullName, gitBranch string) ([]Deployment, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT `+depCols+` FROM deployments
+		WHERE git_branch=$1
+		  AND ($2='' OR full_name=$2)
+		  AND status IN ('ready','queued','building')
+		ORDER BY created_at DESC
+	`, gitBranch, fullName)
+	if err != nil {
+		return nil, err
+	}
+	return scanDepRows(rows)
+}
+
+// ExpirePreviewDeploys marks old preview-like deployments as expired (failed) and returns their IDs.
+func (s *Store) ExpirePreviewDeploys(ctx context.Context, olderThan time.Time) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `
 		UPDATE deployments SET status='failed', commit_status='failure',
 			error=COALESCE(NULLIF(error,''), 'expired preview deploy'), updated_at=NOW()
 		WHERE created_at < $1
@@ -168,10 +192,37 @@ func (s *Store) ExpirePreviewDeploys(ctx context.Context, olderThan time.Time) (
 			LOWER(git_branch) LIKE 'preview/%'
 			OR LOWER(git_branch) LIKE '%preview%'
 			OR LOWER(message) LIKE '%[preview]%'
+			OR LOWER(source) LIKE '%preview%'
 		  )
+		RETURNING id
 	`, olderThan)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	return int(tag.RowsAffected()), nil
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if ids == nil {
+		ids = []string{}
+	}
+	return ids, rows.Err()
+}
+
+func IsPreviewDeploy(d *Deployment) bool {
+	if d == nil {
+		return false
+	}
+	branch := strings.ToLower(d.GitBranch)
+	msg := strings.ToLower(d.Message)
+	src := strings.ToLower(d.Source)
+	return strings.Contains(src, "preview") ||
+		strings.HasPrefix(branch, "preview/") ||
+		strings.Contains(branch, "preview") ||
+		strings.Contains(msg, "[preview]")
 }
