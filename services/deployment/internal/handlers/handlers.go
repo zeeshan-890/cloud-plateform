@@ -25,6 +25,8 @@ type Handler struct {
 	OrganizationURL string
 	BuildURL        string
 	RepositoryURL   string
+	RuntimeURL      string
+	DomainURL       string
 	PublicBaseURL   string
 	HTTP            *http.Client
 	Log             *slog.Logger
@@ -43,6 +45,8 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 
 	mux.HandleFunc("POST /internal/deployments/from-git", h.FromGit)
 	mux.HandleFunc("POST /internal/deployments/{deploymentId}/status", h.InternalUpdateStatus)
+	mux.HandleFunc("POST /internal/deployments/{deploymentId}/preview-url", h.InternalSetPreviewURL)
+	mux.HandleFunc("POST /internal/preview/teardown", h.InternalPreviewTeardown)
 	mux.HandleFunc("POST /internal/cleanup/preview-deploys", h.CleanupPreview)
 }
 
@@ -373,13 +377,16 @@ func (h *Handler) postCommitStatus(d *store.Deployment, state string) {
 	if target == "" {
 		target = "http://localhost:8000"
 	}
+	if d.PreviewURL != "" {
+		target = d.PreviewURL
+	}
 	desc := "jp deployment " + state
 	body, _ := json.Marshal(map[string]any{
 		"full_name":   d.FullName,
 		"sha":         sha,
 		"state":       state,
 		"description": desc,
-		"target_url":  target + "/api/v1",
+		"target_url":  target,
 	})
 	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(h.RepositoryURL, "/")+"/internal/github/commit-status", bytes.NewReader(body))
 	if err != nil {
@@ -413,6 +420,10 @@ func (h *Handler) publishDeploy(ctx context.Context, d *store.Deployment) {
 		"build_id":      buildID,
 		"source":        d.Source,
 		"git_sha":       d.GitSHA,
+		"git_branch":    d.GitBranch,
+		"message":       d.Message,
+		"preview":       store.IsPreviewDeploy(d),
+		"preview_url":   d.PreviewURL,
 		"strategy":      normalizeStrategy(d.Strategy),
 	})
 	_, _ = events.PublishJSON(ctx, h.Redis, events.TopicDeploy, env)
@@ -437,10 +448,102 @@ func (h *Handler) CleanupPreview(w http.ResponseWriter, r *http.Request) {
 		hours = 72
 	}
 	cutoff := time.Now().UTC().Add(-time.Duration(hours * float64(time.Hour)))
-	n, err := h.Store.ExpirePreviewDeploys(r.Context(), cutoff)
+	ids, err := h.Store.ExpirePreviewDeploys(r.Context(), cutoff)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, "internal", "cleanup failed")
 		return
 	}
-	httpx.JSON(w, http.StatusOK, map[string]any{"expired": n, "older_than_hours": hours})
+	tornDown := 0
+	for _, id := range ids {
+		if h.teardownResources(r.Context(), id) {
+			tornDown++
+		}
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"expired": len(ids), "torn_down": tornDown, "older_than_hours": hours, "ids": ids,
+	})
+}
+
+func (h *Handler) InternalSetPreviewURL(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("deploymentId")
+	var req struct {
+		PreviewURL string `json:"preview_url"`
+	}
+	if err := httpx.Decode(r, &req); err != nil || id == "" {
+		httpx.Error(w, http.StatusBadRequest, "bad_request", "preview_url required")
+		return
+	}
+	if err := h.Store.SetPreviewURL(r.Context(), id, strings.TrimSpace(req.PreviewURL)); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "internal", "update failed")
+		return
+	}
+	if d, err := h.Store.GetByID(r.Context(), id); err == nil {
+		d.PreviewURL = strings.TrimSpace(req.PreviewURL)
+		if d.Status == "ready" {
+			h.postCommitStatus(d, "success")
+		}
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) InternalPreviewTeardown(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		OrgID     string `json:"org_id"`
+		ProjectID string `json:"project_id"`
+		FullName  string `json:"full_name"`
+		GitBranch string `json:"git_branch"`
+	}
+	if err := httpx.Decode(r, &req); err != nil || req.GitBranch == "" {
+		httpx.Error(w, http.StatusBadRequest, "bad_request", "git_branch required")
+		return
+	}
+	list, err := h.Store.FindPreviewByBranch(r.Context(), req.FullName, req.GitBranch)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "internal", "lookup failed")
+		return
+	}
+	torn := 0
+	for _, d := range list {
+		if req.OrgID != "" && d.OrgID != req.OrgID {
+			continue
+		}
+		if req.ProjectID != "" && d.ProjectID != req.ProjectID {
+			continue
+		}
+		_ = h.Store.UpdateStatus(r.Context(), d.ID, "failed", "failure", "", "preview closed", nil)
+		_ = h.Store.SetPreviewURL(r.Context(), d.ID, "")
+		if h.teardownResources(r.Context(), d.ID) {
+			torn++
+		}
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"matched": len(list), "torn_down": torn, "git_branch": req.GitBranch,
+	})
+}
+
+func (h *Handler) teardownResources(ctx context.Context, deploymentID string) bool {
+	ok := false
+	if h.RuntimeURL != "" && h.HTTP != nil {
+		body, _ := json.Marshal(map[string]any{"deployment_id": deploymentID})
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+			strings.TrimRight(h.RuntimeURL, "/")+"/internal/runtime/stop-by-deployment", bytes.NewReader(body))
+		if err == nil {
+			req.Header.Set("Content-Type", "application/json")
+			if resp, err := h.HTTP.Do(req); err == nil {
+				_ = resp.Body.Close()
+				ok = true
+			}
+		}
+	}
+	if h.DomainURL != "" && h.HTTP != nil {
+		req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
+			strings.TrimRight(h.DomainURL, "/")+"/internal/domains/by-deployment/"+deploymentID, nil)
+		if err == nil {
+			if resp, err := h.HTTP.Do(req); err == nil {
+				_ = resp.Body.Close()
+				ok = true
+			}
+		}
+	}
+	return ok
 }
