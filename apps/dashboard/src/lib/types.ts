@@ -111,6 +111,7 @@ export interface Deployment {
   message?: string;
   image_ref?: string;
   commit_status?: string;
+  preview_url?: string;
   build_id?: string;
   rollback_of?: string;
   error?: string;
