@@ -1609,6 +1609,7 @@ components:
         build_id: { type: string, format: uuid }
         rollback_of: { type: string, format: uuid }
         commit_status: { type: string }
+        preview_url: { type: string, description: "Traefik-backed preview hostname URL when Kind=Preview" }
         created_at: { type: string, format: date-time }
     Build:
       type: object
