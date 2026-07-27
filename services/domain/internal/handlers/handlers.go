@@ -43,6 +43,9 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /orgs/{orgId}/projects/{projectId}/domains/{domainId}", auth(http.HandlerFunc(h.Get)))
 	mux.Handle("POST /orgs/{orgId}/projects/{projectId}/domains/{domainId}/verify", auth(http.HandlerFunc(h.Verify)))
 	mux.Handle("DELETE /orgs/{orgId}/projects/{projectId}/domains/{domainId}", auth(http.HandlerFunc(h.Delete)))
+
+	mux.HandleFunc("POST /internal/domains/preview", h.InternalPreviewProvision)
+	mux.HandleFunc("DELETE /internal/domains/by-deployment/{deploymentId}", h.InternalDeleteByDeployment)
 }
 
 func (h *Handler) requireMember(w http.ResponseWriter, r *http.Request, orgID, userID string) bool {
@@ -276,4 +279,84 @@ func (h *Handler) cnameTarget() string {
 		return v
 	}
 	return "cname.jp.localhost"
+}
+
+// InternalPreviewProvision force-verifies a preview hostname and writes Traefik config.
+func (h *Handler) InternalPreviewProvision(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		OrgID        string `json:"org_id"`
+		ProjectID    string `json:"project_id"`
+		DeploymentID string `json:"deployment_id"`
+		Hostname     string `json:"hostname"`
+	}
+	if err := httpx.Decode(r, &req); err != nil || req.OrgID == "" || req.ProjectID == "" || req.Hostname == "" {
+		httpx.Error(w, http.StatusBadRequest, "bad_request", "org_id, project_id, hostname required")
+		return
+	}
+	host := strings.ToLower(strings.TrimSpace(req.Hostname))
+
+	// Replace any existing domains for this deployment
+	if req.DeploymentID != "" {
+		if existing, err := h.Store.FindByDeploymentID(r.Context(), req.DeploymentID); err == nil {
+			for _, d := range existing {
+				_ = h.Traefik.RemoveDomain(d.Hostname)
+				_ = h.Store.DeleteByID(r.Context(), d.ID)
+			}
+		}
+	}
+
+	now := time.Now().UTC()
+	d := &store.Domain{
+		OrgID: req.OrgID, ProjectID: req.ProjectID, Hostname: host,
+		Status: "active", VerificationType: "cname",
+		VerificationToken: "jp-preview", ForceVerified: true, VerifiedAt: &now,
+	}
+	if req.DeploymentID != "" {
+		d.DeploymentID = &req.DeploymentID
+	}
+
+	if existing, err := h.Store.FindByHostname(r.Context(), host); err == nil {
+		_ = h.Traefik.RemoveDomain(existing.Hostname)
+		_ = h.Store.DeleteByID(r.Context(), existing.ID)
+	}
+
+	if err := h.Store.Create(r.Context(), d); err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			httpx.Error(w, http.StatusConflict, "conflict", "hostname already registered")
+			return
+		}
+		httpx.Error(w, http.StatusInternalServerError, "internal", "failed to create domain")
+		return
+	}
+	if path, err := h.Traefik.WriteDomain(d.Hostname, req.ProjectID, false); err == nil {
+		d.TraefikFile = path
+		_ = h.Store.Update(r.Context(), d)
+	}
+
+	url := "http://" + host
+	h.publish(r.Context(), events.TypeDomainVerified, "", req.OrgID, map[string]any{
+		"domain_id": d.ID, "hostname": d.Hostname, "project_id": req.ProjectID, "preview": true,
+	})
+	httpx.JSON(w, http.StatusCreated, map[string]any{"domain": d, "url": url, "preview": true})
+}
+
+func (h *Handler) InternalDeleteByDeployment(w http.ResponseWriter, r *http.Request) {
+	deploymentID := r.PathValue("deploymentId")
+	if deploymentID == "" {
+		httpx.Error(w, http.StatusBadRequest, "bad_request", "deploymentId required")
+		return
+	}
+	list, err := h.Store.FindByDeploymentID(r.Context(), deploymentID)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "internal", "lookup failed")
+		return
+	}
+	removed := 0
+	for _, d := range list {
+		_ = h.Traefik.RemoveDomain(d.Hostname)
+		if err := h.Store.DeleteByID(r.Context(), d.ID); err == nil {
+			removed++
+		}
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"removed": removed, "deployment_id": deploymentID})
 }
