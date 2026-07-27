@@ -7,6 +7,18 @@ import { api, ApiError } from "@/lib/api";
 import { useOrg } from "@/lib/org-context";
 import type { Deployment, Project } from "@/lib/types";
 
+function isPreviewDeploy(d: Deployment): boolean {
+  const branch = (d.git_branch || "").toLowerCase();
+  const message = (d.message || "").toLowerCase();
+  const source = (d.source || "").toLowerCase();
+  return (
+    source.includes("preview") ||
+    branch.startsWith("preview/") ||
+    branch.includes("preview") ||
+    message.includes("[preview]")
+  );
+}
+
 export default function DeploymentsPage() {
   const { currentOrg } = useOrg();
   const [projects, setProjects] = useState<Project[]>([]);
@@ -220,8 +232,10 @@ export default function DeploymentsPage() {
             <thead>
               <tr className="border-b border-[var(--border)] text-[var(--ink-faint)]">
                 <th className="py-2 pr-3 font-medium">Status</th>
+                <th className="py-2 pr-3 font-medium">Kind</th>
                 <th className="py-2 pr-3 font-medium">Strategy</th>
                 <th className="py-2 pr-3 font-medium">Source</th>
+                <th className="py-2 pr-3 font-medium">Branch</th>
                 <th className="py-2 pr-3 font-medium">SHA</th>
                 <th className="py-2 pr-3 font-medium">Image</th>
                 <th className="py-2 pr-3 font-medium">Created</th>
@@ -234,10 +248,22 @@ export default function DeploymentsPage() {
                   <td className="py-3 pr-3 font-medium text-[var(--ink)]">
                     {d.status}
                   </td>
+                  <td className="py-3 pr-3">
+                    {isPreviewDeploy(d) ? (
+                      <span className="text-xs font-medium uppercase tracking-wide text-[var(--ink-muted)]">
+                        Preview
+                      </span>
+                    ) : (
+                      <span className="text-xs text-[var(--ink-faint)]">Prod</span>
+                    )}
+                  </td>
                   <td className="py-3 pr-3 text-[var(--ink-muted)]">
                     {d.strategy || "rolling"}
                   </td>
                   <td className="py-3 pr-3 text-[var(--ink-muted)]">{d.source}</td>
+                  <td className="py-3 pr-3 font-[family-name:var(--font-mono)] text-xs text-[var(--ink-muted)]">
+                    {d.git_branch || "—"}
+                  </td>
                   <td className="py-3 pr-3 font-[family-name:var(--font-mono)] text-xs text-[var(--ink-muted)]">
                     {(d.git_sha || "").slice(0, 12)}
                   </td>
