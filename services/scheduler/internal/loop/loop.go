@@ -18,18 +18,20 @@ import (
 )
 
 type Config struct {
-	Redis         *redis.Client
-	RuntimeURL    string
-	RegistryURL   string
-	DeploymentURL string
-	HTTP          *http.Client
-	Log           *slog.Logger
-	Slot          string
-	HealthEvery   time.Duration
-	CleanupEvery  time.Duration
-	Cron          *cron.Store
-	PreviewTTL    time.Duration
-	ImageTTL      time.Duration
+	Redis             *redis.Client
+	RuntimeURL        string
+	RegistryURL       string
+	DeploymentURL     string
+	DomainURL         string
+	PreviewBaseDomain string
+	HTTP              *http.Client
+	Log               *slog.Logger
+	Slot              string
+	HealthEvery       time.Duration
+	CleanupEvery      time.Duration
+	Cron              *cron.Store
+	PreviewTTL        time.Duration
+	ImageTTL          time.Duration
 }
 
 type Scheduler struct {
@@ -60,6 +62,12 @@ func New(cfg Config) *Scheduler {
 	}
 	if cfg.DeploymentURL == "" {
 		cfg.DeploymentURL = getenv("DEPLOYMENT_URL", "http://localhost:8006")
+	}
+	if cfg.DomainURL == "" {
+		cfg.DomainURL = getenv("DOMAIN_URL", "http://localhost:8012")
+	}
+	if cfg.PreviewBaseDomain == "" {
+		cfg.PreviewBaseDomain = getenv("PREVIEW_BASE_DOMAIN", "preview.jp.localhost")
 	}
 	return &Scheduler{cfg: cfg}
 }
@@ -132,6 +140,8 @@ func (s *Scheduler) startFromEvent(ctx context.Context, env events.Envelope) err
 	deploymentID, _ := env.Payload["deployment_id"].(string)
 	status, _ := env.Payload["status"].(string)
 	strategy, _ := env.Payload["strategy"].(string)
+	gitBranch, _ := env.Payload["git_branch"].(string)
+	preview := payloadBool(env.Payload["preview"]) || isPreviewBranch(gitBranch)
 	if strategy == "" {
 		strategy = "rolling"
 	}
@@ -143,8 +153,11 @@ func (s *Scheduler) startFromEvent(ctx context.Context, env events.Envelope) err
 		return fmt.Errorf("missing image_ref/org_id/project_id in %s", env.Type)
 	}
 
-	s.cfg.Log.Info("assigning slot", "slot", s.cfg.Slot, "project", projectID, "image", imageRef, "strategy", strategy)
+	s.cfg.Log.Info("assigning slot", "slot", s.cfg.Slot, "project", projectID, "image", imageRef, "strategy", strategy, "preview", preview)
 	rolling := strategy != "blue_green"
+	if preview {
+		rolling = false
+	}
 	body := map[string]any{
 		"org_id":         orgID,
 		"project_id":     projectID,
@@ -154,6 +167,7 @@ func (s *Scheduler) startFromEvent(ctx context.Context, env events.Envelope) err
 		"restart_policy": "on-failure",
 		"rolling":        rolling,
 		"strategy":       strategy,
+		"preview":        preview,
 		"kind":           inferKind(imageRef, env.Payload),
 	}
 	raw, _ := json.Marshal(body)
@@ -171,8 +185,124 @@ func (s *Scheduler) startFromEvent(ctx context.Context, env events.Envelope) err
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("runtime start %d: %s", resp.StatusCode, string(b))
 	}
-	s.cfg.Log.Info("runtime started", "project", projectID, "image", imageRef)
+	s.cfg.Log.Info("runtime started", "project", projectID, "image", imageRef, "preview", preview)
+	if preview && deploymentID != "" {
+		s.provisionPreviewURL(ctx, orgID, projectID, deploymentID, gitBranch)
+	}
 	return nil
+}
+
+func (s *Scheduler) provisionPreviewURL(ctx context.Context, orgID, projectID, deploymentID, gitBranch string) {
+	host := buildPreviewHostname(gitBranch, projectID, s.cfg.PreviewBaseDomain)
+	body, _ := json.Marshal(map[string]any{
+		"org_id": orgID, "project_id": projectID, "deployment_id": deploymentID, "hostname": host,
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		strings.TrimRight(s.cfg.DomainURL, "/")+"/internal/domains/preview", bytes.NewReader(body))
+	if err != nil {
+		s.cfg.Log.Warn("preview domain provision request failed", "err", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := s.cfg.HTTP.Do(req)
+	if err != nil {
+		s.cfg.Log.Warn("preview domain provision failed", "err", err)
+		return
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		s.cfg.Log.Warn("preview domain provision status", "status", resp.StatusCode, "body", string(raw))
+		return
+	}
+	var out struct {
+		URL string `json:"url"`
+	}
+	_ = json.Unmarshal(raw, &out)
+	previewURL := out.URL
+	if previewURL == "" {
+		previewURL = "http://" + host
+	}
+	setBody, _ := json.Marshal(map[string]any{"preview_url": previewURL})
+	sreq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		strings.TrimRight(s.cfg.DeploymentURL, "/")+"/internal/deployments/"+deploymentID+"/preview-url",
+		bytes.NewReader(setBody))
+	if err != nil {
+		return
+	}
+	sreq.Header.Set("Content-Type", "application/json")
+	sresp, err := s.cfg.HTTP.Do(sreq)
+	if err != nil {
+		s.cfg.Log.Warn("set preview_url failed", "err", err)
+		return
+	}
+	_ = sresp.Body.Close()
+	s.cfg.Log.Info("preview url provisioned", "deployment", deploymentID, "url", previewURL)
+}
+
+func payloadBool(v any) bool {
+	switch t := v.(type) {
+	case bool:
+		return t
+	case string:
+		return strings.EqualFold(t, "true") || t == "1"
+	default:
+		return false
+	}
+}
+
+func isPreviewBranch(branch string) bool {
+	b := strings.ToLower(strings.TrimSpace(branch))
+	return strings.HasPrefix(b, "preview/") || strings.Contains(b, "preview")
+}
+
+func buildPreviewHostname(gitBranch, projectID, baseDomain string) string {
+	base := strings.TrimSpace(baseDomain)
+	if base == "" {
+		base = "preview.jp.localhost"
+	}
+	pid := strings.ToLower(strings.ReplaceAll(projectID, "-", ""))
+	if len(pid) > 8 {
+		pid = pid[:8]
+	}
+	branch := strings.ToLower(strings.TrimSpace(gitBranch))
+	var label string
+	if strings.HasPrefix(branch, "preview/pr-") {
+		n := strings.TrimPrefix(branch, "preview/pr-")
+		label = "pr-" + sanitizeHostLabel(n)
+	} else {
+		slug := branch
+		if strings.HasPrefix(slug, "preview/") {
+			slug = strings.TrimPrefix(slug, "preview/")
+		}
+		label = "b-" + sanitizeHostLabel(slug)
+	}
+	if label == "pr-" || label == "b-" || label == "b" {
+		label = "b-preview"
+	}
+	return fmt.Sprintf("%s-%s.%s", label, pid, base)
+}
+
+func sanitizeHostLabel(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('-')
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	for strings.Contains(out, "--") {
+		out = strings.ReplaceAll(out, "--", "-")
+	}
+	if len(out) > 40 {
+		out = out[:40]
+	}
+	if out == "" {
+		return "x"
+	}
+	return out
 }
 
 func (s *Scheduler) healthLoop(ctx context.Context) {
