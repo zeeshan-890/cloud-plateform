@@ -39,6 +39,7 @@ type Config struct {
 	DatabaseURLSvc  string
 	AIURL           string
 	BillingURL      string
+	AddonURL        string
 	GitHubWebhookSecret string
 }
 
@@ -72,6 +73,7 @@ func Load(servicePortDefault string) (*Config, error) {
 		DatabaseURLSvc:      getEnv("DATABASE_SVC_URL", "http://localhost:8018"),
 		AIURL:               getEnv("AI_URL", "http://localhost:8019"),
 		BillingURL:          getEnv("BILLING_URL", "http://localhost:8020"),
+		AddonURL:            getEnv("ADDON_SVC_URL", "http://localhost:8021"),
 		GitHubWebhookSecret: getEnv("GITHUB_WEBHOOK_SECRET", "dev-webhook-secret"),
 	}
 
