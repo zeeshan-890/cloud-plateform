@@ -1,0 +1,17 @@
+# jp.yaml - Cloud Platform app manifest
+name: {{NAME}}
+runtime: go
+
+build:
+  command: go build -o app .
+
+deploy:
+  strategy: rolling
+  healthcheck: /healthz
+  port: 8080
+
+# domains:
+#   - app.example.com
+
+# env:
+#   PORT: "8080"
