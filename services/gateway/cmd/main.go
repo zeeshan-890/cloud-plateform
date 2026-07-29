@@ -101,6 +101,11 @@ func main() {
 		log.Error("database url", "err", err)
 		os.Exit(1)
 	}
+	addonSvc, err := proxy.New(cfg.AddonURL)
+	if err != nil {
+		log.Error("addon url", "err", err)
+		os.Exit(1)
+	}
 	schedulerSvc, err := proxy.New(cfg.SchedulerURL)
 	if err != nil {
 		log.Error("scheduler url", "err", err)
@@ -246,6 +251,12 @@ func main() {
 	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/databases", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(databaseSvc, "/api/v1")))))
 	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/databases/{dbId}", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(databaseSvc, "/api/v1")))))
 	mux.Handle("DELETE /api/v1/orgs/{orgId}/projects/{projectId}/databases/{dbId}", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(databaseSvc, "/api/v1")))))
+
+	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/addons/catalog", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(addonSvc, "/api/v1")))))
+	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/addons", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(addonSvc, "/api/v1")))))
+	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/addons", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(addonSvc, "/api/v1")))))
+	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/addons/{addonId}", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(addonSvc, "/api/v1")))))
+	mux.Handle("DELETE /api/v1/orgs/{orgId}/projects/{projectId}/addons/{addonId}", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(addonSvc, "/api/v1")))))
 
 	// Phase 6 — Cron / queues (scheduler)
 	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/cron", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(schedulerSvc, "/api/v1")))))
