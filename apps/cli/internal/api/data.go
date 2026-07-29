@@ -144,3 +144,87 @@ func (c *Client) DeleteDatabase(orgID, projectID, dbID string) error {
 	_, err := c.doRaw(http.MethodDelete, path, nil, true)
 	return err
 }
+
+type ManagedAddon struct {
+	ID             string `json:"id"`
+	Engine         string `json:"engine"`
+	Name           string `json:"name"`
+	Mode           string `json:"mode"`
+	Status         string `json:"status"`
+	Endpoint       string `json:"endpoint"`
+	SecretRef      string `json:"secret_ref"`
+	ConnectionHint string `json:"connection_hint"`
+}
+
+type AddonCatalogItem struct {
+	ID             string   `json:"id"`
+	Name           string   `json:"name"`
+	Category       string   `json:"category"`
+	Description    string   `json:"description"`
+	SecretKeys     []string `json:"secret_keys"`
+	ModesSupported []string `json:"modes_supported"`
+}
+
+func (c *Client) AddonCatalog(orgID, projectID string) ([]AddonCatalogItem, string, error) {
+	path := fmt.Sprintf("/orgs/%s/projects/%s/addons/catalog", orgID, projectID)
+	raw, err := c.doRaw(http.MethodGet, path, nil, true)
+	if err != nil {
+		return nil, "", err
+	}
+	var wrapped struct {
+		Catalog []AddonCatalogItem `json:"catalog"`
+		Mode    string             `json:"mode"`
+	}
+	if err := json.Unmarshal(raw, &wrapped); err != nil {
+		return nil, "", err
+	}
+	if wrapped.Catalog == nil {
+		wrapped.Catalog = []AddonCatalogItem{}
+	}
+	return wrapped.Catalog, wrapped.Mode, nil
+}
+
+func (c *Client) ListAddons(orgID, projectID, engine string) ([]ManagedAddon, string, error) {
+	path := fmt.Sprintf("/orgs/%s/projects/%s/addons", orgID, projectID)
+	if engine != "" {
+		path += "?engine=" + url.QueryEscape(engine)
+	}
+	raw, err := c.doRaw(http.MethodGet, path, nil, true)
+	if err != nil {
+		return nil, "", err
+	}
+	var wrapped struct {
+		Addons []ManagedAddon `json:"addons"`
+		Mode   string         `json:"mode"`
+	}
+	if err := json.Unmarshal(raw, &wrapped); err != nil {
+		return nil, "", err
+	}
+	if wrapped.Addons == nil {
+		wrapped.Addons = []ManagedAddon{}
+	}
+	return wrapped.Addons, wrapped.Mode, nil
+}
+
+func (c *Client) CreateAddon(orgID, projectID, engine, name, env string) (*ManagedAddon, error) {
+	path := fmt.Sprintf("/orgs/%s/projects/%s/addons", orgID, projectID)
+	raw, err := c.doRaw(http.MethodPost, path, map[string]any{
+		"engine": engine, "name": name, "env": env,
+	}, true)
+	if err != nil {
+		return nil, err
+	}
+	var wrapped struct {
+		Addon ManagedAddon `json:"addon"`
+	}
+	if err := json.Unmarshal(raw, &wrapped); err != nil {
+		return nil, err
+	}
+	return &wrapped.Addon, nil
+}
+
+func (c *Client) DeleteAddon(orgID, projectID, addonID string) error {
+	path := fmt.Sprintf("/orgs/%s/projects/%s/addons/%s", orgID, projectID, addonID)
+	_, err := c.doRaw(http.MethodDelete, path, nil, true)
+	return err
+}
