@@ -21,6 +21,7 @@ tags:
   - name: Metrics
   - name: Storage
   - name: Databases
+  - name: Addons
   - name: Cron
   - name: Queues
   - name: Config
@@ -1254,6 +1255,107 @@ paths:
       responses:
         "204":
           description: Deleted
+  /orgs/{orgId}/projects/{projectId}/addons/catalog:
+    get:
+      tags: [Addons]
+      summary: List add-on marketplace catalog
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  catalog:
+                    type: array
+                    items: { $ref: "#/components/schemas/AddonCatalogItem" }
+                  mode: { type: string }
+  /orgs/{orgId}/projects/{projectId}/addons:
+    get:
+      tags: [Addons]
+      summary: List managed add-ons
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+        - name: engine
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  addons:
+                    type: array
+                    items: { $ref: "#/components/schemas/ManagedAddon" }
+                  mode: { type: string }
+    post:
+      tags: [Addons]
+      summary: Provision an add-on
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [engine, name]
+              properties:
+                engine:
+                  type: string
+                  enum: [postgres, mysql, mongodb, redis, rabbitmq, kafka, sqlite]
+                name: { type: string }
+                env: { type: string, default: development }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  addon: { $ref: "#/components/schemas/ManagedAddon" }
+  /orgs/{orgId}/projects/{projectId}/addons/{addonId}:
+    get:
+      tags: [Addons]
+      summary: Get add-on
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+        - name: addonId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: OK
+    delete:
+      tags: [Addons]
+      summary: Delete add-on
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+        - name: addonId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204":
+          description: Deleted
   /orgs/{orgId}/projects/{projectId}/cron:
     get:
       tags: [Cron]
@@ -1652,3 +1754,30 @@ components:
         provider: { type: string }
         expires_at: { type: string, format: date-time }
         renewed_at: { type: string, format: date-time }
+    AddonCatalogItem:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        category: { type: string, enum: [database, cache, queue] }
+        description: { type: string }
+        secret_keys:
+          type: array
+          items: { type: string }
+        modes_supported:
+          type: array
+          items: { type: string }
+    ManagedAddon:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        org_id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        engine: { type: string }
+        name: { type: string }
+        mode: { type: string }
+        status: { type: string }
+        endpoint: { type: string }
+        secret_ref: { type: string }
+        connection_hint: { type: string }
+        created_at: { type: string, format: date-time }
