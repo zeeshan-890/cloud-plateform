@@ -5,6 +5,7 @@ use (
 	./packages/events
 	./packages/go-common
 	./services/ai
+	./services/addon
 	./services/billing
 	./services/build
 	./services/certificate
