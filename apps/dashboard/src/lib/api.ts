@@ -25,6 +25,8 @@ import type {
   StorageBucket,
   StorageObject,
   ManagedDatabase,
+  AddonCatalogItem,
+  ManagedAddon,
   BillingPlan,
   BillingUsageRow,
   ProjectConfigResponse,
@@ -599,6 +601,48 @@ export const api = {
   },
   deleteDatabase(orgId: string, projectId: string, dbId: string) {
     return request<void>(`/orgs/${orgId}/projects/${projectId}/databases/${dbId}`, {
+      method: "DELETE",
+    });
+  },
+
+  // Phase 6 — Add-ons marketplace
+  async addonCatalog(orgId: string, projectId: string) {
+    const data = await request<{ catalog: AddonCatalogItem[]; mode?: string }>(
+      `/orgs/${orgId}/projects/${projectId}/addons/catalog`,
+    );
+    return {
+      catalog: (unwrap(data, "catalog") as AddonCatalogItem[]) || [],
+      mode: data.mode,
+    };
+  },
+  async listAddons(orgId: string, projectId: string, engine?: string) {
+    const q = engine ? `?engine=${encodeURIComponent(engine)}` : "";
+    const data = await request<{ addons: ManagedAddon[]; mode?: string }>(
+      `/orgs/${orgId}/projects/${projectId}/addons${q}`,
+    );
+    return {
+      addons: (unwrap(data, "addons") as ManagedAddon[]) || [],
+      mode: data.mode,
+    };
+  },
+  async createAddon(
+    orgId: string,
+    projectId: string,
+    engine: string,
+    name: string,
+    env?: string,
+  ) {
+    const data = await request<{ addon: ManagedAddon }>(
+      `/orgs/${orgId}/projects/${projectId}/addons`,
+      {
+        method: "POST",
+        body: { engine, name, env: env || "development" },
+      },
+    );
+    return unwrap(data, "addon") as ManagedAddon;
+  },
+  deleteAddon(orgId: string, projectId: string, addonId: string) {
+    return request<void>(`/orgs/${orgId}/projects/${projectId}/addons/${addonId}`, {
       method: "DELETE",
     });
   },
