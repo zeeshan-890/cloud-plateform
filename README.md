@@ -122,7 +122,8 @@ docker run --rm -v "${PWD}/../..:/src" -w /src/apps/cli golang:1.22-alpine go bu
 | `ui` | dashboard (http://localhost:3000) |
 | `dev` | MailHog |
 | `monitoring` | Prometheus, Grafana, Loki, Tempo, Promtail (optional; ~1GB extra) |
-| `data` | **MinIO**, **storage** (8017), **database** (8018) |
+| `data` | **MinIO**, **storage** (8017), **database** (8018), **addon** (8021) |
+| `addons` | Shared brokers for `ADDON_MODE=shared`: MySQL, Mongo, Redis `:6380`, RabbitMQ, Redpanda |
 
 ```powershell
 docker compose -f infra/compose/docker-compose.yml --env-file .env --profile platform --profile data --profile ui up -d --build
