@@ -125,6 +125,7 @@ services:
       METRICS_URL: http://metrics:8016
       STORAGE_URL: http://storage:8017
       DATABASE_SVC_URL: http://database:8018
+      ADDON_SVC_URL: http://addon:8021
       AI_URL: http://ai:8019
       BILLING_URL: http://billing:8020
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
@@ -855,6 +856,155 @@ services:
           memory: 96M
           cpus: "0.15"
 
+  addon:
+    <<: *service-defaults
+    profiles: ["data"]
+    build:
+      <<: *go-build
+      args:
+        SERVICE: addon
+    environment:
+      PORT: "8021"
+      DATABASE_URL: ${DATABASE_URL:-postgres://jp:jp_dev_password@postgres:5432/jp?sslmode=disable}
+      DATABASE_PROVISION_URL: ${DATABASE_URL:-postgres://jp:jp_dev_password@postgres:5432/jp?sslmode=disable}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      ORGANIZATION_URL: http://organization:8002
+      SECRET_URL: http://secret:8014
+      ADDON_MODE: ${ADDON_MODE:-simulate}
+      MYSQL_PROVISION_URL: ${MYSQL_PROVISION_URL:-}
+      MONGO_PROVISION_URL: ${MONGO_PROVISION_URL:-}
+      REDIS_ADDON_URL: ${REDIS_ADDON_URL:-}
+      RABBITMQ_MANAGEMENT_URL: ${RABBITMQ_MANAGEMENT_URL:-}
+      RABBITMQ_AMQP_HOST: ${RABBITMQ_AMQP_HOST:-rabbitmq:5672}
+      RABBITMQ_ADMIN_USER: ${RABBITMQ_ADMIN_USER:-jp}
+      RABBITMQ_ADMIN_PASSWORD: ${RABBITMQ_ADMIN_PASSWORD:-jp_dev_password}
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-}
+      ADDON_SQLITE_DIR: ${ADDON_SQLITE_DIR:-/var/jp/addons/sqlite}
+      MIGRATIONS_DIR: /app/migrations
+      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
+    volumes:
+      - addon_sqlite:/var/jp/addons/sqlite
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 96M
+          cpus: "0.15"
+
+  # Shared tenant brokers for ADDON_MODE=shared (optional profile)
+  mysql:
+    image: mysql:8.4
+    profiles: ["addons"]
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-jp_dev_password}
+      MYSQL_DATABASE: jp
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-jp_dev_password}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.50"
+
+  mongo:
+    image: mongo:7
+    profiles: ["addons"]
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-jp}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-jp_dev_password}
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.50"
+
+  redis-addon:
+    image: redis:7-alpine
+    profiles: ["addons"]
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_addon_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.15"
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    profiles: ["addons"]
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_ADMIN_USER:-jp}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_ADMIN_PASSWORD:-jp_dev_password}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+          cpus: "0.35"
+
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.2.4
+    profiles: ["addons"]
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp
+      - "1"
+      - --memory
+      - 512M
+      - --reserve-memory
+      - 0M
+      - --node-id
+      - "0"
+      - --check=false
+      - --kafka-addr
+      - internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr
+      - internal://redpanda:9092,external://localhost:19092
+    ports:
+      - "19092:19092"
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+          cpus: "0.50"
+
   ai:
     <<: *service-defaults
     profiles: ["platform"]
@@ -923,3 +1073,9 @@ volumes:
   loki_data:
   tempo_data:
   minio_data:
+  addon_sqlite:
+  mysql_data:
+  mongo_data:
+  redis_addon_data:
+  rabbitmq_data:
+  redpanda_data:
