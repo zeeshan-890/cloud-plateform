@@ -24,6 +24,8 @@ const primaryNav: NavItem[] = [
   { label: "Metrics", href: "/metrics" },
   { label: "Storage", href: "/storage" },
   { label: "Databases", href: "/databases" },
+  { label: "Add-ons", href: "/addons" },
+  { label: "Apps", href: "/apps" },
   { label: "Billing", href: "/billing" },
   { label: "AI", href: "/ai" },
   { label: "Team", href: "/team" },
