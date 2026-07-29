@@ -22,6 +22,7 @@ const (
 	TopicMetrics      = "jp.metrics"
 	TopicStorage      = "jp.storage"
 	TopicDatabase     = "jp.database"
+	TopicAddon        = "jp.addon"
 	TopicCleanup      = "jp.cleanup"
 	TopicJobs         = "jp.jobs"
 )
@@ -86,6 +87,8 @@ const (
 	TypeStorageDeleted   = "storage.deleted"
 	TypeDatabaseCreated  = "database.created"
 	TypeDatabaseDeleted  = "database.deleted"
+	TypeAddonCreated     = "addon.created"
+	TypeAddonDeleted     = "addon.deleted"
 	TypeCleanupOrphanImages = "cleanup.orphaned_images"
 	TypeCleanupPreview      = "cleanup.preview_deploys"
 	TypeCronTriggered       = "cron.triggered"
