@@ -61,13 +61,15 @@
 - **storage** (8017): buckets per org/project; upload (base64); signed URLs; list/delete; `STORAGE_MODE=simulate|minio` (falls back to simulate if MinIO down)
 - **MinIO** on Compose `--profile data` only (`:9000` API, `:9001` console)
 - **database** (8018): one-click Postgres — `DB_MODE=schema` creates schema+role on shared Postgres, or `simulate`; connection string stored via secret service (`secret_ref`)
+- **addon** (8021): one-click marketplace — Redis, Postgres, MySQL, MongoDB, SQLite, RabbitMQ, Kafka; `ADDON_MODE=simulate|shared`; secrets via secret service; catalog + CRUD under `/addons`
+- Compose `--profile addons`: shared MySQL, Mongo, tenant Redis (`:6380`), RabbitMQ, Redpanda (Kafka API)
 - Platform queues via Redis Streams: `jp.build`, `jp.cleanup`, `jp.jobs` (+ user-facing `/queues` stub)
 - **scheduler** cron API: create/list/delete schedules (`@hourly`, `@every 5m`, …) → publishes `jp.jobs` → triggers runtime jobs
 - Cleanup jobs on `jp.cleanup`: orphaned image metadata + expired preview deploys (marks failed, stops runtime, removes Traefik/domain)
-- Gateway routes for storage, databases, cron, queues
-- Dashboard: Storage + Databases pages
-- CLI: `jp storage`, `jp db`
-- Memory: MinIO / storage / database scale with sizing overlays; use `--profile data` when the host can afford it (medium+)
+- Gateway routes for storage, databases, add-ons, cron, queues
+- Dashboard: Storage + Databases + Add-ons + Apps (Go starter) pages
+- CLI: `jp storage`, `jp db`, `jp addon`, `jp init --runtime go|nodejs`
+- Memory: MinIO / storage / database / addon scale with sizing overlays; use `--profile data` when the host can afford it (medium+); `--profile addons` for shared brokers
 
 ## Phase 7 — AI ops, IaC (jp.yaml), advanced deploys, billing (implemented)
 
