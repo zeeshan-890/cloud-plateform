@@ -256,6 +256,29 @@ export interface ManagedDatabase {
   created_at?: string;
 }
 
+export interface AddonCatalogItem {
+  id: string;
+  name: string;
+  category: string;
+  description: string;
+  secret_keys?: string[];
+  modes_supported?: string[];
+}
+
+export interface ManagedAddon {
+  id: string;
+  org_id: string;
+  project_id: string;
+  engine: string;
+  name: string;
+  mode: string;
+  status: string;
+  endpoint?: string;
+  secret_ref?: string;
+  connection_hint?: string;
+  created_at?: string;
+}
+
 export interface BillingPlan {
   id: string;
   name: string;
