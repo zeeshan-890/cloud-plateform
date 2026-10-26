@@ -165,6 +165,19 @@ export const api = {
   baseUrl: API_URL,
 
   // Auth
+  bootstrapStatus() {
+    return request<{ initialized: boolean }>("/auth/bootstrap/status", {
+      method: "GET",
+      auth: false,
+    });
+  },
+  bootstrap(payload: { email: string; password: string; name: string }) {
+    return request<AuthResponse>("/auth/bootstrap", {
+      method: "POST",
+      body: payload,
+      auth: false,
+    });
+  },
   register(payload: { email: string; password: string; name: string }) {
     return request<AuthResponse>("/auth/register", {
       method: "POST",

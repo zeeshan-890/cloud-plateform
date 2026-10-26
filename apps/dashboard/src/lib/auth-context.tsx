@@ -21,10 +21,17 @@ import type { User } from "@/lib/types";
 interface AuthContextValue {
   user: User | null;
   loading: boolean;
-  login: (email: string, password: string) => Promise<void>;
-  register: (name: string, email: string, password: string) => Promise<void>;
+  login: (identifier: string, password: string) => Promise<void>;
+  register: (name: string, identifier: string, password: string) => Promise<void>;
+  bootstrap: (identifier: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
+}
+
+function toEmail(identifier: string): string {
+  const clean = identifier.trim().toLowerCase();
+  if (clean.includes("@")) return clean;
+  return `${clean}@local`;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -62,15 +69,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, [refreshUser]);
 
-  const login = useCallback(async (email: string, password: string) => {
+  const login = useCallback(async (identifier: string, password: string) => {
+    const email = toEmail(identifier);
     const res = await api.login({ email, password });
     setTokens(res.access_token, res.refresh_token);
     setUser(res.user);
   }, []);
 
   const register = useCallback(
-    async (name: string, email: string, password: string) => {
-      const res = await api.register({ name, email, password });
+    async (name: string, identifier: string, password: string) => {
+      const email = toEmail(identifier);
+      const res = await api.register({ name: name || identifier, email, password });
+      setTokens(res.access_token, res.refresh_token);
+      setUser(res.user);
+    },
+    [],
+  );
+
+  const bootstrap = useCallback(
+    async (identifier: string, password: string) => {
+      const email = toEmail(identifier);
+      const name = identifier.split("@")[0] || "Administrator";
+      const res = await api.bootstrap({ name, email, password });
       setTokens(res.access_token, res.refresh_token);
       setUser(res.user);
     },
@@ -90,8 +110,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ user, loading, login, register, logout, refreshUser }),
-    [user, loading, login, register, logout, refreshUser],
+    () => ({ user, loading, login, register, bootstrap, logout, refreshUser }),
+    [user, loading, login, register, bootstrap, logout, refreshUser],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

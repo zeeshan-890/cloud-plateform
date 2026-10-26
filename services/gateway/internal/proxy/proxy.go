@@ -80,10 +80,12 @@ func singleJoin(base, path string) string {
 
 func copyHeaders(dst, src http.Header) {
 	for k, vv := range src {
-		// Hop-by-hop headers
+		// Hop-by-hop headers and CORS headers (gateway middleware already handles CORS)
 		switch strings.ToLower(k) {
 		case "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
-			"te", "trailers", "transfer-encoding", "upgrade", "content-length":
+			"te", "trailers", "transfer-encoding", "upgrade", "content-length",
+			"access-control-allow-origin", "access-control-allow-credentials",
+			"access-control-allow-headers", "access-control-allow-methods", "vary":
 			continue
 		}
 		for _, v := range vv {

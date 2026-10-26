@@ -58,6 +58,7 @@ if [[ ! -f .env ]]; then
 
   sed -i.bak "s|^JWT_SECRET=.*|JWT_SECRET=${JWT_SEC}|" .env
   sed -i.bak "s|^SECRETS_MASTER_KEY=.*|SECRETS_MASTER_KEY=${MASTER_SEC}|" .env
+  sed -i.bak "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=${DB_PASS}|" .env
   sed -i.bak "s|^DATABASE_URL=.*|DATABASE_URL=postgres://jp:${DB_PASS}@postgres:5432/jp?sslmode=disable|" .env
   rm -f .env.bak
   echo "    Generated JWT_SECRET, SECRETS_MASTER_KEY, and database credentials."

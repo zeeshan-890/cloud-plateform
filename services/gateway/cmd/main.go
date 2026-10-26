@@ -130,6 +130,8 @@ func main() {
 	mux.HandleFunc("GET /healthz", httpx.Healthz)
 
 	// Public auth routes (no JWT) — strip /api/v1 prefix when forwarding
+	mux.HandleFunc("GET /api/v1/auth/bootstrap/status", stripAndProxy(identity, "/api/v1"))
+	mux.HandleFunc("POST /api/v1/auth/bootstrap", stripAndProxy(identity, "/api/v1"))
 	mux.HandleFunc("POST /api/v1/auth/register", stripAndProxy(identity, "/api/v1"))
 	mux.HandleFunc("POST /api/v1/auth/login", stripAndProxy(identity, "/api/v1"))
 	mux.HandleFunc("POST /api/v1/auth/refresh", stripAndProxy(identity, "/api/v1"))
