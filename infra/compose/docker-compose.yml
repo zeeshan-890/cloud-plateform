@@ -263,6 +263,12 @@ services:
     depends_on:
       gateway:
         condition: service_started
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.dashboard.rule=PathPrefix(`/`)
+      - traefik.http.routers.dashboard.priority=1
+      - traefik.http.routers.dashboard.entrypoints=web
+      - traefik.http.services.dashboard.loadbalancer.server.port=3000
     deploy:
       resources:
         limits:
