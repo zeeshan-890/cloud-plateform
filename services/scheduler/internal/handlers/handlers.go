@@ -7,13 +7,15 @@ import (
 	"github.com/jp-cloud/go-common/httpx"
 	jwtutil "github.com/jp-cloud/go-common/jwt"
 	"github.com/jp-cloud/go-common/middleware"
+	"github.com/jp-cloud/scheduler/internal/cluster"
 	"github.com/jp-cloud/scheduler/internal/cron"
 )
 
 type Handler struct {
-	Cron *cron.Store
-	JWT  *jwtutil.Manager
-	Slot string
+	Cron    *cron.Store
+	Cluster *cluster.Registry
+	JWT     *jwtutil.Manager
+	Slot    string
 }
 
 func (h *Handler) Routes(mux *http.ServeMux) {
@@ -25,6 +27,12 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 
 	// Optional user-facing queue stub
 	mux.Handle("GET /orgs/{orgId}/projects/{projectId}/queues", auth(http.HandlerFunc(h.ListQueues)))
+
+	// Cluster node management
+	mux.Handle("GET /cluster/nodes", auth(http.HandlerFunc(h.ListNodes)))
+	mux.Handle("POST /cluster/nodes", auth(http.HandlerFunc(h.RegisterNode)))
+	mux.Handle("POST /cluster/nodes/{nodeId}/drain", auth(http.HandlerFunc(h.DrainNode)))
+	mux.Handle("POST /cluster/nodes/{nodeId}/heartbeat", auth(http.HandlerFunc(h.HeartbeatNode)))
 }
 
 func (h *Handler) ListCron(w http.ResponseWriter, r *http.Request) {
@@ -87,3 +95,64 @@ func (h *Handler) ListQueues(w http.ResponseWriter, r *http.Request) {
 		"note": "User-facing custom queues are a stub; platform uses Redis Streams.",
 	})
 }
+
+func (h *Handler) ListNodes(w http.ResponseWriter, r *http.Request) {
+	if h.Cluster == nil {
+		httpx.JSON(w, http.StatusOK, map[string]any{"nodes": []*cluster.Node{}})
+		return
+	}
+	nodes := h.Cluster.ListNodes()
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"nodes": nodes,
+		"count": len(nodes),
+	})
+}
+
+func (h *Handler) RegisterNode(w http.ResponseWriter, r *http.Request) {
+	if h.Cluster == nil {
+		httpx.Error(w, http.StatusInternalServerError, "internal", "cluster registry not configured")
+		return
+	}
+	var node cluster.Node
+	if err := httpx.Decode(r, &node); err != nil || node.ID == "" {
+		httpx.Error(w, http.StatusBadRequest, "validation_error", "node id and hostname required")
+		return
+	}
+	if err := h.Cluster.RegisterNode(&node); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	httpx.JSON(w, http.StatusCreated, map[string]any{"node": node})
+}
+
+func (h *Handler) DrainNode(w http.ResponseWriter, r *http.Request) {
+	if h.Cluster == nil {
+		httpx.Error(w, http.StatusInternalServerError, "internal", "cluster registry not configured")
+		return
+	}
+	nodeID := r.PathValue("nodeId")
+	workloads, err := h.Cluster.DrainNode(nodeID)
+	if err != nil {
+		httpx.Error(w, http.StatusNotFound, "not_found", err.Error())
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"node_id":             nodeID,
+		"status":              "draining",
+		"evacuated_workloads": workloads,
+	})
+}
+
+func (h *Handler) HeartbeatNode(w http.ResponseWriter, r *http.Request) {
+	if h.Cluster == nil {
+		httpx.Error(w, http.StatusInternalServerError, "internal", "cluster registry not configured")
+		return
+	}
+	nodeID := r.PathValue("nodeId")
+	if err := h.Cluster.Heartbeat(nodeID); err != nil {
+		httpx.Error(w, http.StatusNotFound, "not_found", err.Error())
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"status": "ok", "node_id": nodeID})
+}
+

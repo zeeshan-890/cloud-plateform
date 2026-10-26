@@ -14,6 +14,7 @@ import (
 	"github.com/jp-cloud/go-common/logging"
 	"github.com/jp-cloud/go-common/middleware"
 	redisx "github.com/jp-cloud/go-common/redis"
+	"github.com/jp-cloud/scheduler/internal/cluster"
 	"github.com/jp-cloud/scheduler/internal/cron"
 	"github.com/jp-cloud/scheduler/internal/handlers"
 	"github.com/jp-cloud/scheduler/internal/loop"
@@ -41,6 +42,21 @@ func main() {
 	}
 
 	cronStore := cron.NewStore(rdb)
+	clusterRegistry := cluster.NewRegistry()
+	_ = clusterRegistry.RegisterNode(&cluster.Node{
+		ID:       getenv("SCHEDULER_SLOT", "node-1"),
+		Hostname: "control-plane-primary",
+		IP:       "127.0.0.1",
+		Labels:   map[string]string{"role": "control-plane", "region": "primary"},
+		Capacity: cluster.NodeCapacity{
+			TotalCPUCores:  4.0,
+			AllocatedCPU:   0.5,
+			TotalMemoryMB:  8192,
+			AllocatedMemMB: 1024,
+		},
+		Status: cluster.NodeStatusReady,
+	})
+
 	sched := loop.New(loop.Config{
 		Redis:             rdb,
 		RuntimeURL:        runtimeURL,
@@ -58,7 +74,7 @@ func main() {
 	})
 
 	jm := jwtutil.NewManager(cfg.JWTSecret, cfg.JWTAccessTTL, cfg.JWTRefreshTTL)
-	h := &handlers.Handler{Cron: cronStore, JWT: jm, Slot: getenv("SCHEDULER_SLOT", "node-1")}
+	h := &handlers.Handler{Cron: cronStore, Cluster: clusterRegistry, JWT: jm, Slot: getenv("SCHEDULER_SLOT", "node-1")}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", httpx.Healthz)
