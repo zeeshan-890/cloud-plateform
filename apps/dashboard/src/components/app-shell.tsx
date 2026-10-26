@@ -27,10 +27,13 @@ const primaryNav: NavItem[] = [
   { label: "Add-ons", href: "/addons" },
   { label: "Apps", href: "/apps" },
   { label: "Billing", href: "/billing" },
+  { label: "Security", href: "/security" },
+  { label: "Cluster", href: "/cluster" },
   { label: "AI", href: "/ai" },
   { label: "Team", href: "/team" },
   { label: "API keys", href: "/keys" },
   { label: "Sessions", href: "/sessions" },
+  { label: "Settings", href: "/settings" },
 ];
 
 function NavLink({ item }: { item: NavItem }) {
