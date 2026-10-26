@@ -1,0 +1,70 @@
+# Resource overlay: lite (~1GB RAM / 0.5-1 vCPU)
+# Ultra-lightweight profile:
+# - No persistent Node.js / Next.js server container (static UI served directly by Go gateway)
+# - Reduced PostgreSQL and Redis memory buffers (shared_buffers=32MB, maxmemory=32MB)
+# - Heavy monitoring (Prometheus, Grafana, Loki, Tempo) disabled
+# - Build farm offloaded or simulated; remote registries supported
+# - Core services bounded to ~450MB total RAM, leaving ~550MB for OS and workloads
+
+services:
+  traefik:
+    deploy:
+      resources:
+        limits:
+          memory: 48M
+          cpus: "0.10"
+
+  postgres:
+    command:
+      - postgres
+      - -c
+      - shared_buffers=32MB
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=16MB
+      - -c
+      - max_connections=25
+    deploy:
+      resources:
+        limits:
+          memory: 160M
+          cpus: "0.25"
+
+  redis:
+    command: ["redis-server", "--save", "120", "1", "--maxmemory", "32mb", "--maxmemory-policy", "allkeys-lru"]
+    deploy:
+      resources:
+        limits:
+          memory: 48M
+          cpus: "0.10"
+
+  gateway:
+    environment:
+      STATIC_DIR: "/app/ui"
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: "0.15"
+
+  identity:
+    deploy:
+      resources:
+        limits:
+          memory: 48M
+          cpus: "0.10"
+
+  organization:
+    deploy:
+      resources:
+        limits:
+          memory: 48M
+          cpus: "0.10"
+
+  project:
+    deploy:
+      resources:
+        limits:
+          memory: 48M
+          cpus: "0.10"

@@ -59,5 +59,6 @@ redis-data/
 # Misc
 *.bak
 *.tmp
+.tmp/
 .claude/
 .cursor/

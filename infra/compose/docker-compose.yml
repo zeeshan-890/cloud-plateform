@@ -489,8 +489,6 @@ services:
       BUILD_URL: http://build:8007
       DEPLOYMENT_URL: http://deployment:8006
       REGISTRY_URL: http://registry-api:8009
-      REGISTRY_PUSH_URL: registry:5000
-      REGISTRY_HOST: registry:5000
       BUILD_MODE: ${BUILD_MODE:-docker}
       SIMULATE_BUILD: ${SIMULATE_BUILD:-false}
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-1}

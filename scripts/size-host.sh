@@ -30,7 +30,8 @@ CPUS="$(cpus)"
 tier_from_ram() {
   local r="$1"
   awk -v r="$r" 'BEGIN {
-    if (r < 6) print "small";
+    if (r < 2.0) print "lite";
+    else if (r < 6) print "small";
     else if (r < 16) print "medium";
     else if (r < 32) print "large";
     else print "xlarge";
@@ -44,6 +45,7 @@ else
 fi
 
 case "$TIER" in
+  lite)   REPLICAS=1; CONC=1; BUILD=simulate; RUNTIME=docker; METRICS=live; SUGGESTED=core ;;
   small)  REPLICAS=1; CONC=1; BUILD=simulate; RUNTIME=simulate; METRICS=simulate; SUGGESTED=platform ;;
   medium) REPLICAS=2; CONC=2; BUILD=docker; RUNTIME=docker; METRICS=live; SUGGESTED=platform,ui,data ;;
   large)  REPLICAS=4; CONC=2; BUILD=docker; RUNTIME=docker; METRICS=live; SUGGESTED=platform,ui,data,monitoring ;;

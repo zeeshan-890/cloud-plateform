@@ -2,7 +2,7 @@
 # Usage: .\scripts\size-host.ps1 [-Size small|medium|large|xlarge|auto]
 
 param(
-    [ValidateSet("auto", "small", "medium", "large", "xlarge")]
+    [ValidateSet("auto", "lite", "small", "medium", "large", "xlarge")]
     [string]$Size = "auto"
 )
 
@@ -29,6 +29,7 @@ function Get-HostCpus {
 
 function Resolve-Tier([double]$RamGB, [string]$Forced) {
     if ($Forced -ne "auto") { return $Forced }
+    if ($RamGB -lt 2.0) { return "lite" }
     if ($RamGB -lt 6) { return "small" }
     if ($RamGB -lt 16) { return "medium" }
     if ($RamGB -lt 32) { return "large" }
@@ -40,12 +41,14 @@ $cpus = Get-HostCpus
 $tier = Resolve-Tier $ram $Size
 
 $replicas = switch ($tier) {
+    "lite"   { 1 }
     "small"  { 1 }
     "medium" { 2 }
     "large"  { 4 }
     "xlarge" { 8 }
 }
 $concurrency = switch ($tier) {
+    "lite"   { 1 }
     "small"  { 1 }
     "medium" { 2 }
     "large"  { 2 }
@@ -54,11 +57,12 @@ $concurrency = switch ($tier) {
 
 # Prefer real docker builds on medium+ when not explicitly set later
 # small still defaults to simulate for tiny VPS demos; use scripts/go-real.* to force docker everywhere
-$buildMode = if ($tier -eq "small") { "simulate" } else { "docker" }
+$buildMode = if ($tier -in @("lite", "small")) { "simulate" } else { "docker" }
 $runtimeMode = if ($tier -eq "small") { "simulate" } else { "docker" }
 $metricsMode = if ($tier -eq "small") { "simulate" } else { "live" }
 
 $suggested = switch ($tier) {
+    "lite"   { "core" }
     "small"  { "platform" }
     "medium" { "platform,ui,data" }
     "large"  { "platform,ui,data,monitoring" }
