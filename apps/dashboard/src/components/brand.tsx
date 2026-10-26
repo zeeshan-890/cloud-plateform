@@ -2,7 +2,7 @@ import Link from "next/link";
 
 export function BrandMark({
   size = "md",
-  href = "/",
+  href = "/projects",
   showBadge = true,
 }: {
   size?: "sm" | "md" | "lg" | "hero";

@@ -856,7 +856,6 @@ services:
 
   addon:
     <<: *service-defaults
-    profiles: ["data"]
     build:
       <<: *go-build
       args:

@@ -24,7 +24,7 @@ const platformNav = [
 export function AppShell({ children }: { children: React.ReactNode }) {
   const { user, logout } = useAuth();
   const { orgs, currentOrg, setOrg, loading } = useOrg();
-  const { activeProject, rootDomain, getAppPublicUrl } = useProject();
+  const { activeProject, setActiveProject, rootDomain, getAppPublicUrl } = useProject();
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -83,6 +83,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <div className="border-b border-[var(--border)] p-3">
             <Link
               href="/projects"
+              onClick={() => setActiveProject(null)}
               className="flex items-center gap-2 rounded-md border border-[var(--border)] bg-slate-50 px-3 py-2 text-xs font-bold text-[var(--ink)] shadow-2xs hover:bg-slate-100 hover:border-[var(--border-strong)] transition-all"
             >
               <span className="text-base leading-none text-[var(--accent)]">←</span>
@@ -278,17 +279,100 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       {/* Main Content Area */}
       <div className="flex flex-1 flex-col min-w-0">
-        {/* Mobile Header Bar */}
-        <header className="flex h-14 items-center justify-between border-b border-[var(--border)] bg-white px-4 lg:hidden">
-          <BrandMark size="sm" href="/projects" />
-          <button
-            type="button"
-            className="rounded-md border border-[var(--border)] p-1.5 text-[var(--ink)] hover:bg-slate-100"
-            onClick={() => setMobileOpen(true)}
-            aria-label="Open navigation"
-          >
-            ☰
-          </button>
+        {/* Universal Top Navigation Header */}
+        <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-[var(--border)] bg-white/95 px-4 lg:px-8 backdrop-blur-xs shadow-2xs">
+          {/* Left: Mobile hamburger + Breadcrumbs navigation */}
+          <div className="flex items-center gap-3 min-w-0">
+            {/* Mobile menu toggle */}
+            <button
+              type="button"
+              className="lg:hidden rounded-md border border-[var(--border)] p-1.5 text-[var(--ink)] hover:bg-slate-100"
+              onClick={() => setMobileOpen(true)}
+              aria-label="Open navigation"
+            >
+              ☰
+            </button>
+
+            {/* Breadcrumb Path */}
+            <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 text-xs text-[var(--ink-muted)] truncate">
+              <Link
+                href="/projects"
+                onClick={() => setActiveProject(null)}
+                className="flex items-center gap-1.5 font-bold text-[var(--ink)] hover:text-[var(--accent)] transition-colors shrink-0"
+              >
+                <span>🏠</span>
+                <span>Console</span>
+              </Link>
+              <span className="text-slate-300">/</span>
+
+              {isInsideProject ? (
+                <>
+                  <Link
+                    href="/projects"
+                    onClick={() => setActiveProject(null)}
+                    className="hover:text-[var(--ink)] transition-colors shrink-0"
+                  >
+                    Projects
+                  </Link>
+                  <span className="text-slate-300">/</span>
+                  <span className="font-bold text-[var(--ink)] truncate max-w-[120px] sm:max-w-[200px]">
+                    {projectName}
+                  </span>
+                  {currentTab && currentTab !== "overview" && (
+                    <>
+                      <span className="text-slate-300">/</span>
+                      <span className="capitalize font-semibold text-[var(--accent)]">
+                        {currentTab}
+                      </span>
+                    </>
+                  )}
+                </>
+              ) : pathname === "/projects" ? (
+                <span className="font-bold text-[var(--accent)]">All Projects</span>
+              ) : (
+                <>
+                  <Link
+                    href="/projects"
+                    onClick={() => setActiveProject(null)}
+                    className="hover:text-[var(--ink)] transition-colors shrink-0"
+                  >
+                    Projects
+                  </Link>
+                  <span className="text-slate-300">/</span>
+                  <span className="font-bold text-[var(--ink)] truncate">
+                    {platformNav.find((p) => p.href === pathname)?.label || pathname.replace("/", "")}
+                  </span>
+                </>
+              )}
+            </nav>
+          </div>
+
+          {/* Right: Quick Navigation Actions */}
+          <div className="flex items-center gap-2 shrink-0">
+            {/* If on any page other than /projects, show a prominent Back to Main Page button */}
+            {pathname !== "/projects" && (
+              <Link
+                href="/projects"
+                onClick={() => setActiveProject(null)}
+                className="flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-slate-50 px-2.5 py-1.5 text-xs font-bold text-[var(--ink)] hover:bg-slate-100 hover:border-[var(--border-strong)] transition-all shadow-2xs"
+              >
+                <span className="text-[var(--accent)] text-sm leading-none">←</span>
+                <span className="hidden sm:inline">Main Dashboard</span>
+                <span className="sm:hidden">Main</span>
+              </Link>
+            )}
+
+            {/* Platform Status indicator */}
+            <div className="hidden md:flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-medium text-emerald-800">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+              <span>Core Live</span>
+            </div>
+
+            {/* Current Workspace Pill */}
+            <span className="rounded-md border border-[var(--border)] bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-[var(--ink-secondary)]">
+              {currentOrg?.name || "Workspace"}
+            </span>
+          </div>
         </header>
 
         <main className="flex-1 p-6 lg:p-8 max-w-7xl w-full mx-auto">

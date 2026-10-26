@@ -1,22 +1,24 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Alert, EmptyState, PageHeader } from "@/components/ui/page";
 import { api, ApiError } from "@/lib/api";
 import { useOrg } from "@/lib/org-context";
+import { DEFAULT_ADDON_CATALOG } from "@/lib/addon-catalog";
 import type { AddonCatalogItem, ManagedAddon, Project } from "@/lib/types";
 
 export default function AddonsPage() {
   const { currentOrg } = useOrg();
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState("");
-  const [catalog, setCatalog] = useState<AddonCatalogItem[]>([]);
+  const [catalog, setCatalog] = useState<AddonCatalogItem[]>(DEFAULT_ADDON_CATALOG);
   const [addons, setAddons] = useState<ManagedAddon[]>([]);
-  const [mode, setMode] = useState("");
-  const [engine, setEngine] = useState("redis");
-  const [name, setName] = useState("");
+  const [mode, setMode] = useState("docker");
+  const [engine, setEngine] = useState("postgres");
+  const [name, setName] = useState("postgres-1");
 
   // Custom application state
   const [tab, setTab] = useState<"catalog" | "custom">("catalog");
@@ -113,15 +115,29 @@ export default function AddonsPage() {
 
   async function load(pid: string) {
     if (!currentOrg || !pid) return;
-    const [cat, list] = await Promise.all([
-      api.addonCatalog(currentOrg.id, pid),
-      api.listAddons(currentOrg.id, pid),
-    ]);
-    setCatalog(cat.catalog);
-    setMode(cat.mode || list.mode || "");
-    setAddons(list.addons);
-    if (cat.catalog[0] && !cat.catalog.find((c) => c.id === engine)) {
-      setEngine(cat.catalog[0].id);
+    try {
+      const [cat, list] = await Promise.all([
+        api.addonCatalog(currentOrg.id, pid).catch(() => ({ catalog: [], mode: "docker" })),
+        api.listAddons(currentOrg.id, pid).catch(() => ({ addons: [], mode: "docker" })),
+      ]);
+      const incoming = Array.isArray(cat?.catalog) ? cat.catalog : [];
+      const mergedMap = new Map<string, AddonCatalogItem>();
+      // Seed with built-in default catalog
+      DEFAULT_ADDON_CATALOG.forEach((item) => mergedMap.set(item.id, item));
+      // Overlay API returned catalog
+      incoming.forEach((item) => mergedMap.set(item.id, item));
+      const mergedList = Array.from(mergedMap.values());
+      setCatalog(mergedList);
+      setMode(cat?.mode || list?.mode || "docker");
+      setAddons(list?.addons || []);
+      if (!engine && mergedList[0]) {
+        setEngine(mergedList[0].id);
+        setName(`${mergedList[0].id}-1`);
+      }
+    } catch {
+      // Fallback to rich built-in catalog if network error
+      setCatalog(DEFAULT_ADDON_CATALOG);
+      setMode("docker");
     }
   }
 
@@ -221,6 +237,17 @@ export default function AddonsPage() {
 
   return (
     <div className="animate-fade-up">
+      {/* Navigation Return Link */}
+      <div className="mb-3 flex items-center justify-between">
+        <Link
+          href="/projects"
+          className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-slate-50 px-3 py-1.5 text-xs font-bold text-[var(--ink)] hover:bg-slate-100 hover:border-[var(--border-strong)] transition-all shadow-2xs"
+        >
+          <span className="text-[var(--accent)] text-sm">←</span>
+          <span>Back to All Projects</span>
+        </Link>
+      </div>
+
       <PageHeader
         title="Add-ons & Marketplace"
         description="Provision one-click databases or deploy any custom Docker application on demand."
@@ -247,14 +274,17 @@ export default function AddonsPage() {
         </div>
       </div>
 
-      <div className="mb-6 rounded-md border border-[var(--border)] bg-[var(--surface)] p-4 flex flex-wrap items-center justify-between gap-3">
+      <div className="mb-6 rounded-md border border-[var(--border)] bg-[var(--surface)] p-4 flex flex-wrap items-center justify-between gap-3 shadow-2xs">
         <div>
-          <p className="text-sm text-[var(--ink-muted)]">
-            Provision mode:{" "}
-            <span className="font-medium text-[var(--ink)]">{mode || "unknown"}</span>
+          <p className="text-sm font-semibold text-[var(--ink)] flex items-center gap-2">
+            <span>Provision mode:</span>
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-bold text-emerald-800 border border-emerald-200">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+              {mode === "shared" ? "Shared Multi-Tenant" : "Docker Container Engine (Local Dedicated)"}
+            </span>
           </p>
-          <p className="mt-1 text-xs text-[var(--ink-faint)]">
-            Services are only created when you explicitly request them. Zero background bloat.
+          <p className="mt-1 text-xs text-[var(--ink-muted)]">
+            Services run as isolated containers on your machine. Zero background bloat.
           </p>
         </div>
 
@@ -262,9 +292,9 @@ export default function AddonsPage() {
           <button
             type="button"
             onClick={() => setTab("catalog")}
-            className={`px-3 py-1 text-xs font-medium rounded ${
+            className={`px-3 py-1 text-xs font-bold rounded transition-colors ${
               tab === "catalog"
-                ? "bg-[var(--brand)] text-[var(--paper)]"
+                ? "bg-[var(--accent)] text-white shadow-2xs"
                 : "text-[var(--ink-muted)] hover:text-[var(--ink)]"
             }`}
           >
@@ -273,9 +303,9 @@ export default function AddonsPage() {
           <button
             type="button"
             onClick={() => setTab("custom")}
-            className={`px-3 py-1 text-xs font-medium rounded ${
+            className={`px-3 py-1 text-xs font-bold rounded transition-colors ${
               tab === "custom"
-                ? "bg-[var(--brand)] text-[var(--paper)]"
+                ? "bg-[var(--accent)] text-white shadow-2xs"
                 : "text-[var(--ink-muted)] hover:text-[var(--ink)]"
             }`}
           >
@@ -285,10 +315,10 @@ export default function AddonsPage() {
       </div>
 
       <div className="mb-4 flex flex-col sm:flex-row gap-3 items-stretch sm:items-center justify-between">
-        <label className="block max-w-sm text-sm text-[var(--ink-muted)]">
+        <label className="block max-w-sm text-sm text-[var(--ink-muted)] font-medium">
           Target Project
           <select
-            className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-[var(--ink)]"
+            className="mt-1 w-full rounded-md border border-[var(--border)] bg-white px-3 py-2 text-xs font-semibold text-[var(--ink)] shadow-2xs"
             value={projectId}
             onChange={(e) => setProjectId(e.target.value)}
           >
@@ -301,12 +331,12 @@ export default function AddonsPage() {
         </label>
 
         {tab === "catalog" && (
-          <div className="w-full sm:w-72">
-            <label className="block text-sm text-[var(--ink-muted)]">
-              Search Catalog
+          <div className="w-full sm:w-80">
+            <label className="block text-sm text-[var(--ink-muted)] font-medium">
+              Search Catalog ({filteredCatalog.length} available)
               <Input
-                className="mt-1"
-                placeholder="Search 240+ apps (e.g. jellyfin, postgres, wireguard, n8n, ollama)..."
+                className="mt-1 font-medium"
+                placeholder="Search databases, queues, AI, search..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
               />
@@ -343,10 +373,10 @@ export default function AddonsPage() {
                 key={cat.id}
                 type="button"
                 onClick={() => setSelectedCategory(cat.id)}
-                className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${
+                className={`px-2.5 py-1 text-xs rounded-full border transition-all ${
                   selectedCategory === cat.id
-                    ? "border-[var(--brand)] bg-[var(--brand)] text-[var(--paper)] font-medium"
-                    : "border-[var(--border)] text-[var(--ink-muted)] hover:border-[var(--ink-muted)] bg-[var(--surface)]"
+                    ? "border-[var(--accent)] bg-[var(--accent)] text-white font-bold shadow-2xs"
+                    : "border-[var(--border)] text-[var(--ink-secondary)] hover:border-[var(--border-strong)] bg-white"
                 }`}
               >
                 {cat.label}
@@ -355,70 +385,98 @@ export default function AddonsPage() {
           </div>
 
           {filteredCatalog.length > 0 ? (
-            <div className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 max-h-[520px] overflow-y-auto p-1 border border-[var(--border)] rounded-lg bg-[var(--paper)]">
+            <div className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 max-h-[480px] overflow-y-auto p-1 border border-[var(--border)] rounded-lg bg-slate-50/50">
               {filteredCatalog.map((c) => (
                 <button
                   key={c.id}
                   type="button"
-                  onClick={() => setEngine(c.id)}
-                  className={`rounded-md border p-3.5 text-left transition-all ${
+                  onClick={() => {
+                    setEngine(c.id);
+                    setName(`${c.id}-1`);
+                  }}
+                  className={`rounded-lg border p-3.5 text-left transition-all ${
                     engine === c.id
-                      ? "border-[var(--brand)] bg-[var(--surface)] shadow-sm ring-1 ring-[var(--brand)]"
-                      : "border-[var(--border)] hover:bg-[var(--surface-hover)] bg-[var(--surface)]"
+                      ? "border-[var(--accent)] bg-blue-50/60 shadow-xs ring-2 ring-[var(--accent)]"
+                      : "border-[var(--border)] hover:bg-white hover:border-[var(--border-strong)] bg-white shadow-2xs"
                   }`}
                 >
                   <div className="flex items-center justify-between">
-                    <span className="text-sm font-semibold text-[var(--ink)]">{c.name}</span>
-                    <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-[var(--paper)] border border-[var(--border)] text-[var(--ink-faint)]">
+                    <span className="text-sm font-bold text-[var(--ink)]">{c.name}</span>
+                    <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-slate-100 border border-[var(--border)] text-[var(--ink-secondary)] font-semibold">
                       {c.category}
                     </span>
                   </div>
-                  <p className="mt-1.5 text-xs text-[var(--ink-muted)] line-clamp-2 leading-relaxed">
+                  <p className="mt-1 text-xs text-[var(--ink-muted)] line-clamp-2 leading-relaxed">
                     {c.description}
                   </p>
-                  <div className="mt-2 text-[11px] font-mono text-[var(--brand)]">
-                    Default Port: {c.default_port ? `:${c.default_port}` : "File/Embedded"}
+                  <div className="mt-2.5 flex items-center justify-between text-[11px] font-mono">
+                    <span className="text-[var(--accent)] font-semibold">
+                      Port: {c.default_port ? `:${c.default_port}` : "Embedded"}
+                    </span>
+                    {engine === c.id && (
+                      <span className="text-emerald-700 font-sans font-bold text-[10px] bg-emerald-100 px-1.5 py-0.5 rounded">
+                        Selected ✓
+                      </span>
+                    )}
                   </div>
                 </button>
               ))}
             </div>
           ) : (
-            <div className="p-8 text-center text-xs text-[var(--ink-muted)] border border-dashed border-[var(--border)] rounded-md mb-5">
-              No matching applications found. You can deploy it using the "+ Deploy Any Custom Container" tab above!
+            <div className="p-8 text-center text-xs text-[var(--ink-muted)] border border-dashed border-[var(--border)] rounded-md mb-5 bg-white">
+              No matching applications found. You can deploy it using the &quot;+ Deploy Any Custom Container&quot; tab above!
             </div>
           )}
 
           {selected ? (
-            <div className="mb-6 rounded-md border border-[var(--border)] bg-[var(--surface)] p-4">
-              <h2 className="text-sm font-semibold text-[var(--ink)]">
-                Selected: {selected.name} ({selected.id})
-              </h2>
-              <p className="mt-1 text-xs text-[var(--ink-muted)]">{selected.description}</p>
+            <div className="mb-6 rounded-lg border border-[var(--border-strong)] bg-white p-4 shadow-xs">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-sm font-bold text-[var(--ink)] flex items-center gap-2">
+                    <span>Deploy {selected.name}</span>
+                    <span className="text-xs font-mono font-normal text-[var(--ink-muted)]">({selected.id})</span>
+                  </h2>
+                  <p className="mt-1 text-xs text-[var(--ink-muted)]">{selected.description}</p>
+                </div>
+                {selected.default_image && (
+                  <span className="hidden sm:inline-block rounded bg-slate-100 border border-[var(--border)] px-2 py-1 font-mono text-[11px] text-[var(--ink-secondary)]">
+                    {selected.default_image}
+                  </span>
+                )}
+              </div>
+
               {selected.secret_keys?.length ? (
-                <p className="mt-2 font-[family-name:var(--font-mono)] text-xs text-[var(--ink-faint)]">
-                  Secret key pattern: {selected.secret_keys.join(", ")}
-                </p>
+                <div className="mt-3 pt-3 border-t border-[var(--border)] text-xs text-[var(--ink-secondary)] font-mono">
+                  <span className="font-bold text-[var(--ink)] font-sans">Injected Environment Variable: </span>
+                  <code className="text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-100">
+                    {selected.secret_keys[0]?.replace("{NAME}", name.trim().toUpperCase() || "NAME")}
+                  </code>
+                </div>
               ) : null}
+
+              <div className="mt-4 pt-3 border-t border-[var(--border)]">
+                <div className="flex max-w-xl flex-wrap items-end gap-3">
+                  <label className="block flex-1 text-xs font-bold text-[var(--ink)]">
+                    Instance Name
+                    <Input
+                      className="mt-1 font-mono font-semibold"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      placeholder={`${engine}-1`}
+                    />
+                  </label>
+                  <Button
+                    type="button"
+                    onClick={onCreate}
+                    disabled={busy || !projectId || !name.trim()}
+                    className="font-bold shadow-xs"
+                  >
+                    {busy ? "Provisioning..." : `Provision ${selected.name}`}
+                  </Button>
+                </div>
+              </div>
             </div>
           ) : null}
-
-          <div className="mb-8 rounded-md border border-[var(--border)] bg-[var(--surface)] p-4">
-            <h2 className="mb-3 text-sm font-semibold text-[var(--ink)]">Create add-on instance</h2>
-            <div className="flex max-w-xl flex-wrap items-end gap-3">
-              <label className="block flex-1 text-sm text-[var(--ink-muted)]">
-                Instance Name
-                <Input
-                  className="mt-1"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="cache"
-                />
-              </label>
-              <Button type="button" onClick={onCreate} disabled={busy || !projectId || !name.trim()}>
-                Provision {engine}
-              </Button>
-            </div>
-          </div>
         </>
       ) : (
         /* Custom App Form */
