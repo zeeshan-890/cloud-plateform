@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -16,11 +17,14 @@ var (
 )
 
 type User struct {
-	ID           string    `json:"id"`
-	Email        string    `json:"email"`
-	Name         string    `json:"name"`
-	PasswordHash string    `json:"-"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID              string    `json:"id"`
+	Email           string    `json:"email"`
+	Name            string    `json:"name"`
+	PasswordHash    string    `json:"-"`
+	TOTPSecret      *string   `json:"-"`
+	TOTPEnabled     bool      `json:"totp_enabled"`
+	TOTPBackupCodes []string  `json:"-"`
+	CreatedAt       time.Time `json:"created_at"`
 }
 
 type Session struct {
@@ -76,24 +80,40 @@ func (s *Store) CreateUser(ctx context.Context, email, name, passwordHash string
 
 func (s *Store) GetUserByEmail(ctx context.Context, email string) (*User, error) {
 	u := &User{}
+	var backupRaw []byte
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, email, name, password_hash, created_at FROM users WHERE email=$1
-	`, email).Scan(&u.ID, &u.Email, &u.Name, &u.PasswordHash, &u.CreatedAt)
+		SELECT id, email, name, password_hash, totp_secret, COALESCE(totp_enabled, FALSE), COALESCE(totp_backup_codes, '[]'::jsonb), created_at 
+		FROM users WHERE email=$1
+	`, email).Scan(&u.ID, &u.Email, &u.Name, &u.PasswordHash, &u.TOTPSecret, &u.TOTPEnabled, &backupRaw, &u.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
-	return u, err
+	if err != nil {
+		return nil, err
+	}
+	if len(backupRaw) > 0 {
+		_ = json.Unmarshal(backupRaw, &u.TOTPBackupCodes)
+	}
+	return u, nil
 }
 
 func (s *Store) GetUserByID(ctx context.Context, id string) (*User, error) {
 	u := &User{}
+	var backupRaw []byte
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, email, name, password_hash, created_at FROM users WHERE id=$1
-	`, id).Scan(&u.ID, &u.Email, &u.Name, &u.PasswordHash, &u.CreatedAt)
+		SELECT id, email, name, password_hash, totp_secret, COALESCE(totp_enabled, FALSE), COALESCE(totp_backup_codes, '[]'::jsonb), created_at 
+		FROM users WHERE id=$1
+	`, id).Scan(&u.ID, &u.Email, &u.Name, &u.PasswordHash, &u.TOTPSecret, &u.TOTPEnabled, &backupRaw, &u.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
-	return u, err
+	if err != nil {
+		return nil, err
+	}
+	if len(backupRaw) > 0 {
+		_ = json.Unmarshal(backupRaw, &u.TOTPBackupCodes)
+	}
+	return u, nil
 }
 
 func (s *Store) CreateSession(ctx context.Context, userID, refreshJTI, ua, ip string, expiresAt time.Time) (*Session, error) {
@@ -272,3 +292,63 @@ func indexOf(s, sub string) int {
 	}
 	return -1
 }
+
+func (s *Store) SetTOTPSecret(ctx context.Context, userID, secret string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE users SET totp_secret=$1 WHERE id=$2`, secret, userID)
+	return err
+}
+
+func (s *Store) EnableTOTP(ctx context.Context, userID string, backupCodes []string) error {
+	raw, err := json.Marshal(backupCodes)
+	if err != nil {
+		raw = []byte("[]")
+	}
+	_, err = s.pool.Exec(ctx, `UPDATE users SET totp_enabled=TRUE, totp_backup_codes=$1 WHERE id=$2`, raw, userID)
+	return err
+}
+
+func (s *Store) DisableTOTP(ctx context.Context, userID string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE users SET totp_enabled=FALSE, totp_secret=NULL, totp_backup_codes='[]'::jsonb WHERE id=$1`, userID)
+	return err
+}
+
+func (s *Store) ConsumeBackupCode(ctx context.Context, userID, code string) (bool, error) {
+	u, err := s.GetUserByID(ctx, userID)
+	if err != nil {
+		return false, err
+	}
+	remaining := make([]string, 0, len(u.TOTPBackupCodes))
+	matched := false
+	for _, c := range u.TOTPBackupCodes {
+		if !matched && c == code {
+			matched = true
+			continue
+		}
+		remaining = append(remaining, c)
+	}
+	if !matched {
+		return false, nil
+	}
+	raw, _ := json.Marshal(remaining)
+	_, err = s.pool.Exec(ctx, `UPDATE users SET totp_backup_codes=$1 WHERE id=$2`, raw, userID)
+	return true, err
+}
+
+func (s *Store) IsBootstrapInitialized(ctx context.Context) (bool, error) {
+	var init bool
+	err := s.pool.QueryRow(ctx, `SELECT initialized FROM platform_bootstrap WHERE id='global'`).Scan(&init)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return init, err
+}
+
+func (s *Store) MarkBootstrapComplete(ctx context.Context, userID string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE platform_bootstrap 
+		SET initialized=TRUE, initialized_at=NOW(), initialized_by=$1 
+		WHERE id='global'
+	`, userID)
+	return err
+}
+

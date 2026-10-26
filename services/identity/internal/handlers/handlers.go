@@ -14,6 +14,7 @@ import (
 	jwtutil "github.com/jp-cloud/go-common/jwt"
 	"github.com/jp-cloud/go-common/middleware"
 	"github.com/jp-cloud/identity/internal/store"
+	"github.com/jp-cloud/identity/internal/totp"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -28,6 +29,9 @@ type Handler struct {
 func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /healthz", httpx.Healthz)
 
+	mux.HandleFunc("GET /auth/bootstrap/status", h.BootstrapStatus)
+	mux.HandleFunc("POST /auth/bootstrap", h.Bootstrap)
+
 	mux.HandleFunc("POST /auth/register", h.Register)
 	mux.HandleFunc("POST /auth/login", h.Login)
 	mux.HandleFunc("POST /auth/refresh", h.Refresh)
@@ -40,6 +44,11 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.Handle("POST /auth/pats", auth(http.HandlerFunc(h.CreatePAT)))
 	mux.Handle("GET /auth/pats", auth(http.HandlerFunc(h.ListPATs)))
 	mux.Handle("DELETE /auth/pats/{id}", auth(http.HandlerFunc(h.RevokePAT)))
+
+	// Multi-Factor Authentication (MFA / TOTP)
+	mux.Handle("POST /auth/mfa/setup", auth(http.HandlerFunc(h.SetupMFA)))
+	mux.Handle("POST /auth/mfa/enable", auth(http.HandlerFunc(h.EnableMFA)))
+	mux.Handle("POST /auth/mfa/disable", auth(http.HandlerFunc(h.DisableMFA)))
 
 	// Internal: validate user exists (for org service member enrichment later)
 	mux.HandleFunc("GET /internal/users/{id}", h.GetUserInternal)
@@ -56,6 +65,8 @@ type registerReq struct {
 type loginReq struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
+	TOTPCode string `json:"totp_code,omitempty"`
+	MFAToken string `json:"mfa_token,omitempty"`
 }
 
 type refreshReq struct {
@@ -65,6 +76,51 @@ type refreshReq struct {
 type patReq struct {
 	Name   string   `json:"name"`
 	Scopes []string `json:"scopes"`
+}
+
+func (h *Handler) isRateLimited(r *http.Request, email string) bool {
+	if h.Redis == nil {
+		return false
+	}
+	ctx := r.Context()
+	ipKey := "rate:login:ip:" + clientIP(r)
+	if count, _ := h.Redis.Get(ctx, ipKey).Int(); count >= 5 {
+		return true
+	}
+	if email != "" {
+		emailKey := "rate:login:email:" + email
+		if count, _ := h.Redis.Get(ctx, emailKey).Int(); count >= 5 {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *Handler) recordFailedLogin(r *http.Request, email string) {
+	if h.Redis == nil {
+		return
+	}
+	ctx := r.Context()
+	ipKey := "rate:login:ip:" + clientIP(r)
+	h.Redis.Incr(ctx, ipKey)
+	h.Redis.Expire(ctx, ipKey, 15*time.Minute)
+
+	if email != "" {
+		emailKey := "rate:login:email:" + email
+		h.Redis.Incr(ctx, emailKey)
+		h.Redis.Expire(ctx, emailKey, 15*time.Minute)
+	}
+}
+
+func (h *Handler) clearRateLimit(r *http.Request, email string) {
+	if h.Redis == nil {
+		return
+	}
+	ctx := r.Context()
+	_ = h.Redis.Del(ctx, "rate:login:ip:"+clientIP(r))
+	if email != "" {
+		_ = h.Redis.Del(ctx, "rate:login:email:"+email)
+	}
 }
 
 func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
@@ -116,8 +172,16 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Email = strings.TrimSpace(strings.ToLower(req.Email))
+
+	// Rate limiting check
+	if h.isRateLimited(r, req.Email) {
+		httpx.Error(w, http.StatusTooManyRequests, "too_many_requests", "too many failed login attempts; please try again later")
+		return
+	}
+
 	user, err := h.Store.GetUserByEmail(r.Context(), req.Email)
 	if errors.Is(err, store.ErrNotFound) {
+		h.recordFailedLogin(r, req.Email)
 		httpx.Error(w, http.StatusUnauthorized, "unauthorized", "invalid email or password")
 		return
 	}
@@ -126,9 +190,40 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)) != nil {
+		h.recordFailedLogin(r, req.Email)
 		httpx.Error(w, http.StatusUnauthorized, "unauthorized", "invalid email or password")
 		return
 	}
+
+	// Two-Factor Authentication (TOTP / MFA) enforcement
+	if user.TOTPEnabled {
+		if req.TOTPCode == "" {
+			mfaTok, _ := randomToken(24)
+			if h.Redis != nil {
+				_ = h.Redis.Set(r.Context(), "jp:mfa:"+mfaTok, user.ID, 5*time.Minute).Err()
+			}
+			httpx.JSON(w, http.StatusOK, map[string]any{
+				"mfa_required": true,
+				"mfa_token":    mfaTok,
+			})
+			return
+		}
+
+		valid := false
+		if user.TOTPSecret != nil && totp.Validate(req.TOTPCode, *user.TOTPSecret, time.Now().UTC()) {
+			valid = true
+		} else if ok, _ := h.Store.ConsumeBackupCode(r.Context(), user.ID, req.TOTPCode); ok {
+			valid = true
+		}
+		if !valid {
+			h.recordFailedLogin(r, req.Email)
+			httpx.Error(w, http.StatusUnauthorized, "unauthorized", "invalid two-factor authentication code")
+			return
+		}
+	}
+
+	h.clearRateLimit(r, req.Email)
+
 	tokens, err := h.issueTokens(w, r, user)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, "internal", "failed to issue tokens")
@@ -398,10 +493,11 @@ func (h *Handler) issueTokens(w http.ResponseWriter, r *http.Request, user *stor
 
 func publicUser(u *store.User) map[string]any {
 	return map[string]any{
-		"id":         u.ID,
-		"email":      u.Email,
-		"name":       u.Name,
-		"created_at": u.CreatedAt,
+		"id":           u.ID,
+		"email":        u.Email,
+		"name":         u.Name,
+		"totp_enabled": u.TOTPEnabled,
+		"created_at":   u.CreatedAt,
 	}
 }
 
@@ -431,4 +527,161 @@ func randomToken(n int) (string, error) {
 func hashToken(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
+}
+
+// Multi-Factor Authentication (MFA / TOTP) handlers
+
+func (h *Handler) SetupMFA(w http.ResponseWriter, r *http.Request) {
+	uid := middleware.UserIDFrom(r.Context())
+	user, err := h.Store.GetUserByID(r.Context(), uid)
+	if err != nil {
+		httpx.Error(w, http.StatusNotFound, "not_found", "user not found")
+		return
+	}
+	secret, err := totp.GenerateSecret()
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "internal", "failed to generate TOTP secret")
+		return
+	}
+	if err := h.Store.SetTOTPSecret(r.Context(), uid, secret); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "internal", "failed to save TOTP secret")
+		return
+	}
+	uri := totp.KeyURI(user.Email, "JP Cloud", secret)
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"secret":      secret,
+		"otpauth_uri": uri,
+	})
+}
+
+func (h *Handler) EnableMFA(w http.ResponseWriter, r *http.Request) {
+	uid := middleware.UserIDFrom(r.Context())
+	user, err := h.Store.GetUserByID(r.Context(), uid)
+	if err != nil || user.TOTPSecret == nil {
+		httpx.Error(w, http.StatusBadRequest, "bad_request", "MFA setup not initialized")
+		return
+	}
+	var req struct {
+		Code string `json:"code"`
+	}
+	if err := httpx.Decode(r, &req); err != nil || strings.TrimSpace(req.Code) == "" {
+		httpx.Error(w, http.StatusBadRequest, "validation_error", "verification code required")
+		return
+	}
+	if !totp.Validate(req.Code, *user.TOTPSecret, time.Now().UTC()) {
+		httpx.Error(w, http.StatusBadRequest, "invalid_code", "verification code is incorrect")
+		return
+	}
+	backupCodes, err := totp.GenerateBackupCodes(8)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "internal", "failed to generate backup codes")
+		return
+	}
+	if err := h.Store.EnableTOTP(r.Context(), uid, backupCodes); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "internal", "failed to enable MFA")
+		return
+	}
+	_ = h.Audit.Write(r.Context(), audit.Event{
+		ActorID: uid, Action: "mfa.enabled", Resource: "user", ResourceID: uid,
+		IP: clientIP(r), UserAgent: r.UserAgent(),
+	})
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"enabled":      true,
+		"backup_codes": backupCodes,
+	})
+}
+
+func (h *Handler) DisableMFA(w http.ResponseWriter, r *http.Request) {
+	uid := middleware.UserIDFrom(r.Context())
+	user, err := h.Store.GetUserByID(r.Context(), uid)
+	if err != nil || !user.TOTPEnabled {
+		httpx.Error(w, http.StatusBadRequest, "bad_request", "MFA is not enabled")
+		return
+	}
+	var req struct {
+		Code string `json:"code"`
+	}
+	if err := httpx.Decode(r, &req); err != nil || strings.TrimSpace(req.Code) == "" {
+		httpx.Error(w, http.StatusBadRequest, "validation_error", "verification or backup code required")
+		return
+	}
+	valid := false
+	if user.TOTPSecret != nil && totp.Validate(req.Code, *user.TOTPSecret, time.Now().UTC()) {
+		valid = true
+	} else if ok, _ := h.Store.ConsumeBackupCode(r.Context(), uid, req.Code); ok {
+		valid = true
+	}
+	if !valid {
+		httpx.Error(w, http.StatusBadRequest, "invalid_code", "code is incorrect")
+		return
+	}
+	if err := h.Store.DisableTOTP(r.Context(), uid); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "internal", "failed to disable MFA")
+		return
+	}
+	_ = h.Audit.Write(r.Context(), audit.Event{
+		ActorID: uid, Action: "mfa.disabled", Resource: "user", ResourceID: uid,
+		IP: clientIP(r), UserAgent: r.UserAgent(),
+	})
+	httpx.JSON(w, http.StatusOK, map[string]any{"enabled": false})
+}
+
+// Platform Initial Bootstrap Handlers
+
+func (h *Handler) BootstrapStatus(w http.ResponseWriter, r *http.Request) {
+	init, err := h.Store.IsBootstrapInitialized(r.Context())
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "internal", "failed to check bootstrap status")
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"initialized": init})
+}
+
+func (h *Handler) Bootstrap(w http.ResponseWriter, r *http.Request) {
+	init, err := h.Store.IsBootstrapInitialized(r.Context())
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "internal", "bootstrap check failed")
+		return
+	}
+	if init {
+		httpx.Error(w, http.StatusForbidden, "already_initialized", "platform bootstrap is already complete")
+		return
+	}
+	var req registerReq
+	if err := httpx.Decode(r, &req); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
+		return
+	}
+	req.Email = strings.TrimSpace(strings.ToLower(req.Email))
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Email == "" || req.Name == "" || len(req.Password) < 8 {
+		httpx.Error(w, http.StatusBadRequest, "validation_error", "email, name, and password (min 8) required")
+		return
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "internal", "failed to hash password")
+		return
+	}
+	user, err := h.Store.CreateUser(r.Context(), req.Email, req.Name, string(hash))
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "internal", "failed to create administrator")
+		return
+	}
+	_ = h.Store.MarkBootstrapComplete(r.Context(), user.ID)
+
+	tokens, err := h.issueTokens(w, r, user)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "internal", "failed to issue tokens")
+		return
+	}
+	_ = h.Audit.Write(r.Context(), audit.Event{
+		ActorID: user.ID, Action: "platform.bootstrap", Resource: "system", ResourceID: user.ID,
+		IP: clientIP(r), UserAgent: r.UserAgent(),
+	})
+	httpx.JSON(w, http.StatusCreated, map[string]any{
+		"user":          publicUser(user),
+		"access_token":  tokens.access,
+		"refresh_token": tokens.refresh,
+	})
 }
