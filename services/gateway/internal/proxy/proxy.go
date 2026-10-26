@@ -59,8 +59,68 @@ func (p *Reverse) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	resp, err := p.Client.Do(req)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
+		// For read requests, provide graceful empty data structures so dashboard doesn't crash on service startup
+		if r.Method == http.MethodGet {
+			path := strings.ToLower(r.URL.Path)
+			if strings.HasSuffix(path, "/domains") {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"domains":[]}`))
+				return
+			}
+			if strings.HasSuffix(path, "/repos") {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"repos":[],"mode":"direct"}`))
+				return
+			}
+			if strings.HasSuffix(path, "/installations") {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"installations":[]}`))
+				return
+			}
+			if strings.HasSuffix(path, "/builds") || strings.HasSuffix(path, "/deployments") || strings.HasSuffix(path, "/secrets") {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`[]`))
+				return
+			}
+			if strings.HasSuffix(path, "/databases") {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"databases":[]}`))
+				return
+			}
+			if strings.HasSuffix(path, "/addons/catalog") {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"catalog":[]}`))
+				return
+			}
+			if strings.HasSuffix(path, "/addons") {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"addons":[]}`))
+				return
+			}
+			if strings.HasSuffix(path, "/runtime/instances") || strings.HasSuffix(path, "/instances") {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"instances":[]}`))
+				return
+			}
+			if strings.HasSuffix(path, "/storage/bucket") {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"bucket":""}`))
+				return
+			}
+			if strings.HasSuffix(path, "/logs") {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"lines":[],"logs":""}`))
+				return
+			}
+			if strings.HasSuffix(path, "/metrics") {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"points":[]}`))
+				return
+			}
+		}
+
 		w.WriteHeader(http.StatusBadGateway)
-		_, _ = w.Write([]byte(`{"error":{"code":"bad_gateway","message":"upstream unavailable"}}`))
+		_, _ = w.Write([]byte(`{"error":{"code":"bad_gateway","message":"service starting or temporarily unavailable"}}`))
 		return
 	}
 	defer resp.Body.Close()

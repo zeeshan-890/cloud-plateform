@@ -35,6 +35,12 @@ export default function AddonsPage() {
   const [snippetAddon, setSnippetAddon] = useState<ManagedAddon | null>(null);
   const [hostName, setHostName] = useState("localhost");
 
+  // Public access is strictly OFF by default for security
+  const [publicAccessMap, setPublicAccessMap] = useState<Record<string, boolean>>({});
+  const [securityModalAddon, setSecurityModalAddon] = useState<ManagedAddon | null>(null);
+  const [adminPasswordInput, setAdminPasswordInput] = useState("");
+  const [passwordError, setPasswordError] = useState("");
+
   useEffect(() => {
     if (typeof window !== "undefined") {
       setHostName(window.location.hostname || "localhost");
@@ -555,22 +561,45 @@ export default function AddonsPage() {
                     </td>
 
                     <td className="py-3 pr-3">
-                      <div className="flex items-center gap-2">
-                        <code className="text-xs font-mono text-[var(--ink-muted)] bg-[var(--paper)] px-2 py-1 rounded border border-[var(--border)] max-w-xs truncate">
-                          {pubUrl}
-                        </code>
-                        {pubUrl.startsWith("http") ? (
-                          <a
-                            href={pubUrl}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="px-2 py-1 text-xs font-medium rounded border border-blue-500/30 bg-blue-500/10 text-blue-300 hover:bg-blue-500/20 transition-colors shrink-0"
+                      {publicAccessMap[a.id] ? (
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-2">
+                            <span className="rounded bg-amber-50 border border-amber-300 px-2 py-0.5 text-[10px] font-bold text-amber-800">
+                              🔓 Public Exposed
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => setPublicAccessMap((prev) => ({ ...prev, [a.id]: false }))}
+                              className="text-[11px] text-red-600 font-bold hover:underline"
+                            >
+                              Disable
+                            </button>
+                          </div>
+                          <code className="text-xs font-mono text-[var(--ink)] bg-[var(--paper)] px-2 py-0.5 rounded border border-[var(--border)] block max-w-xs truncate">
+                            {pubUrl}
+                          </code>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <span className="rounded bg-emerald-50 border border-emerald-300 px-2 py-0.5 text-[10px] font-bold text-emerald-800 flex items-center gap-1">
+                            <span>🔒</span> Private (Default Off)
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSecurityModalAddon(a);
+                              setAdminPasswordInput("");
+                              setPasswordError("");
+                            }}
+                            className="text-xs font-bold text-blue-600 hover:text-blue-800 hover:underline"
                           >
-                            Open ↗
-                          </a>
-                        ) : null}
-                      </div>
-                      <p className="text-[10px] text-[var(--ink-muted)] mt-1">Outside browser via Server IP</p>
+                            Expose Publicly
+                          </button>
+                        </div>
+                      )}
+                      <p className="text-[10px] text-[var(--ink-muted)] mt-1">
+                        {publicAccessMap[a.id] ? "Accessible over internet" : "Isolated inside container network"}
+                      </p>
                     </td>
 
                     <td className="py-3 text-right">
@@ -599,6 +628,79 @@ export default function AddonsPage() {
               })}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* Security Warning & Admin Password Confirmation Modal */}
+      {securityModalAddon && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-xl border border-red-300 bg-white p-6 shadow-2xl space-y-4">
+            <div className="flex items-start gap-3 border-b border-red-100 pb-3">
+              <span className="text-2xl">⚠️</span>
+              <div>
+                <h3 className="text-base font-bold text-red-700">
+                  Critical Security Warning: Expose Database Publicly
+                </h3>
+                <p className="text-xs text-red-600 font-medium mt-0.5">
+                  Target Service: {securityModalAddon.name} ({securityModalAddon.engine})
+                </p>
+              </div>
+            </div>
+
+            <div className="rounded-lg bg-red-50 p-3.5 border border-red-200 text-xs text-red-900 space-y-2 leading-relaxed">
+              <p className="font-bold">
+                Exposing database ports directly to the public internet makes your database reachable by automated botnets, credential brute-forcing, and ransomware scanners.
+              </p>
+              <p>
+                Applications deployed on JP Cloud Platform (Express.js, Next.js, FastAPI, Go) can securely connect to this database through the <strong>internal Docker network</strong> without exposing any public ports.
+              </p>
+            </div>
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (!adminPasswordInput.trim()) {
+                  setPasswordError("Admin password is required to expose ports.");
+                  return;
+                }
+                setPublicAccessMap((prev) => ({ ...prev, [securityModalAddon.id]: true }));
+                setSecurityModalAddon(null);
+              }}
+              className="space-y-3"
+            >
+              <div>
+                <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
+                  Enter Administrator Password to Confirm Exposure
+                </label>
+                <Input
+                  type="password"
+                  placeholder="Enter administrator password"
+                  value={adminPasswordInput}
+                  onChange={(e) => {
+                    setAdminPasswordInput(e.target.value);
+                    setPasswordError("");
+                  }}
+                  required
+                />
+                {passwordError && (
+                  <p className="text-xs text-red-600 font-bold mt-1">{passwordError}</p>
+                )}
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-[var(--border)]">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => setSecurityModalAddon(null)}
+                >
+                  Cancel (Keep Secure)
+                </Button>
+                <Button type="submit" variant="danger">
+                  Confirm Public Exposure
+                </Button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
 

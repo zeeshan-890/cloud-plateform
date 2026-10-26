@@ -285,13 +285,8 @@ func (h *Handler) ListAvailableRepos(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{
-		"mode": "mock",
-		"repos": []map[string]any{
-			{"full_name": "acme/web-app", "clone_url": "https://github.com/acme/web-app.git", "default_branch": "main", "private": false},
-			{"full_name": "acme/api-go", "clone_url": "https://github.com/acme/api-go.git", "default_branch": "main", "private": true},
-			{"full_name": "acme/dashboard", "clone_url": "https://github.com/acme/dashboard.git", "default_branch": "main", "private": false},
-			{"full_name": "acme/fastapi-svc", "clone_url": "https://github.com/acme/fastapi-svc.git", "default_branch": "main", "private": false},
-		},
+		"mode": "direct",
+		"repos": []map[string]any{},
 	})
 }
 

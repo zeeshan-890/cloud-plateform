@@ -1,5 +1,6 @@
 import { AppShell } from "@/components/app-shell";
 import { RequireAuth } from "@/components/require-auth";
+import { ProjectProvider } from "@/lib/project-context";
 
 export default function ConsoleLayout({
   children,
@@ -8,7 +9,9 @@ export default function ConsoleLayout({
 }) {
   return (
     <RequireAuth>
-      <AppShell>{children}</AppShell>
+      <ProjectProvider>
+        <AppShell>{children}</AppShell>
+      </ProjectProvider>
     </RequireAuth>
   );
 }

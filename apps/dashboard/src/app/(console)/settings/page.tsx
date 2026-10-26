@@ -4,13 +4,14 @@ import { useEffect, useState } from "react";
 import { PageHeader, Alert } from "@/components/ui/page";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useProject } from "@/lib/project-context";
 
 export default function SettingsPage() {
+  const { rootDomain, setRootDomain } = useProject();
+  const [domainInput, setDomainInput] = useState(rootDomain);
   const [platformUrl, setPlatformUrl] = useState("http://localhost:3000");
   const [autoSsl, setAutoSsl] = useState(true);
-  const [openAiKey, setOpenAiKey] = useState("");
-  const [showAdvanced, setShowAdvanced] = useState(false);
-  const [githubToken, setGithubToken] = useState("");
+  const [copiedRecord, setCopiedRecord] = useState("");
 
   const [saving, setSaving] = useState(false);
   const [cleaning, setCleaning] = useState(false);
@@ -20,29 +21,31 @@ export default function SettingsPage() {
   useEffect(() => {
     if (typeof window !== "undefined") {
       setPlatformUrl(window.location.origin);
+      setDomainInput(rootDomain);
     }
-  }, []);
+  }, [rootDomain]);
 
-  const handleAutoDetect = () => {
-    if (typeof window !== "undefined") {
-      setPlatformUrl(window.location.origin);
-      setMessage({
-        type: "success",
-        text: `Auto-detected current host: ${window.location.origin}. Routing updated.`,
-      });
+  function copyToClipboard(text: string, label: string) {
+    if (typeof navigator !== "undefined" && navigator.clipboard) {
+      navigator.clipboard.writeText(text);
+      setCopiedRecord(label);
+      setTimeout(() => setCopiedRecord(""), 2000);
     }
-  };
+  }
 
-  const handleSave = async (e: React.FormEvent) => {
+  const handleSaveDomain = (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
     setMessage(null);
+
+    const clean = domainInput.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+    setRootDomain(clean);
 
     setTimeout(() => {
       setSaving(false);
       setMessage({
         type: "success",
-        text: "Platform settings saved and applied automatically.",
+        text: `Platform Root Domain updated to "${clean}". All deployed applications now default to <app-name>.${clean}.`,
       });
     }, 400);
   };
@@ -54,7 +57,7 @@ export default function SettingsPage() {
       setCleaning(false);
       setMessage({
         type: "info",
-        text: "Cleaned unused build caches and orphan containers. Reclaimed host disk space.",
+        text: "Cleaned unused Docker image caches and temporary build artifacts.",
       });
     }, 600);
   };
@@ -66,7 +69,7 @@ export default function SettingsPage() {
       setOptimizing(false);
       setMessage({
         type: "success",
-        text: "Memory limits and CPU shares auto-balanced for current workloads.",
+        text: "Memory limits and CPU quotas auto-tuned for current server workload.",
       });
     }, 500);
   };
@@ -74,8 +77,8 @@ export default function SettingsPage() {
   return (
     <div className="space-y-6 max-w-4xl">
       <PageHeader
-        title="Settings & System Health"
-        description="Manage your self-hosted console, automated maintenance, and platform performance with zero complexity."
+        title="Platform Settings & Root Domain"
+        description="Configure your platform's root domain, automated app subdomains, and self-hosted system maintenance."
       />
 
       {message && (
@@ -84,73 +87,96 @@ export default function SettingsPage() {
         </Alert>
       )}
 
-      {/* 1. Quick Access & Host URL */}
-      <form onSubmit={handleSave} className="jp-card p-5 space-y-4">
-        <div className="border-b border-[var(--border)] pb-3">
-          <h2 className="text-base font-bold text-[var(--ink)]">Console Access & URL</h2>
-          <p className="text-xs text-[var(--ink-muted)]">
-            The base URL your team uses to access this dashboard.
-          </p>
+      {/* 1. Main Root Domain & Automated App Subdomains */}
+      <form onSubmit={handleSaveDomain} className="jp-card p-5 space-y-4">
+        <div className="border-b border-[var(--border)] pb-3 flex items-center justify-between">
+          <div>
+            <h2 className="text-base font-bold text-[var(--ink)]">
+              Main Platform Domain & Default App Routing
+            </h2>
+            <p className="text-xs text-[var(--ink-muted)]">
+              Every app deployed automatically gets a live public subdomain: <code className="font-bold text-[var(--accent)] font-mono">appname.{rootDomain}</code>
+            </p>
+          </div>
+          <span className="rounded-full bg-blue-50 border border-blue-200 px-2.5 py-0.5 text-xs font-bold text-blue-800">
+            Wildcard Ingress: Traefik v3
+          </span>
         </div>
 
-        <div className="space-y-3">
+        <div className="space-y-4">
           <div>
             <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
-              Platform Base URL
+              Root Platform Domain
             </label>
             <div className="flex items-center gap-2">
               <Input
                 type="text"
-                value={platformUrl}
-                onChange={(e) => setPlatformUrl(e.target.value)}
-                placeholder="http://localhost:3000"
+                value={domainInput}
+                onChange={(e) => setDomainInput(e.target.value)}
+                placeholder="e.g. mycloud.com or jp.localhost"
+                required
               />
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={handleAutoDetect}
-                title="Automatically use current browser URL"
-              >
-                Auto-Detect
+              <Button type="submit" disabled={saving || !domainInput.trim()}>
+                {saving ? "Saving..." : "Save Root Domain"}
               </Button>
             </div>
-            <p className="mt-1 text-[11px] text-[var(--ink-faint)]">
-              Used for generated preview URLs, webhooks, and deployment links.
-            </p>
           </div>
 
-          <div className="flex items-center justify-between rounded-md border border-[var(--border)] bg-slate-50 p-3">
-            <div>
-              <p className="text-xs font-bold text-[var(--ink)]">Automatic SSL / HTTPS (Traefik)</p>
-              <p className="text-[11px] text-[var(--ink-muted)]">
-                Automatically issues and renews Let&apos;s Encrypt certificates for verified domains.
+          {/* Live Preview Card */}
+          <div className="rounded-lg border border-blue-200 bg-blue-50/60 p-4 space-y-3">
+            <h4 className="text-xs font-bold uppercase tracking-wider text-blue-950">
+              Live Routing Resolution Map:
+            </h4>
+            <div className="grid gap-2 sm:grid-cols-2 text-xs font-mono">
+              <div className="rounded bg-white p-2.5 border border-blue-200 shadow-2xs">
+                <p className="text-[10px] uppercase font-bold text-slate-500">Dashboard Web Console</p>
+                <p className="font-bold text-blue-700 mt-0.5 truncate">{platformUrl}</p>
+              </div>
+              <div className="rounded bg-white p-2.5 border border-blue-200 shadow-2xs">
+                <p className="text-[10px] uppercase font-bold text-slate-500">Default App Subdomain Pattern</p>
+                <p className="font-bold text-blue-700 mt-0.5 truncate">https://[app-name].{rootDomain}</p>
+              </div>
+            </div>
+
+            {/* DNS Instructions */}
+            <div className="border-t border-blue-200/60 pt-3 text-xs text-slate-700 space-y-2">
+              <p className="font-bold text-slate-900">DNS Records Setup (Point to your server IP):</p>
+              <div className="grid gap-2 sm:grid-cols-2 font-mono text-[11px]">
+                <div className="flex items-center justify-between rounded bg-white px-2.5 py-1.5 border border-blue-200">
+                  <span>Wildcard &bull; <strong className="text-blue-700">*.{rootDomain}</strong> &rarr; <code className="text-slate-900">Server IP</code></span>
+                  <button
+                    type="button"
+                    onClick={() => copyToClipboard(`*.${rootDomain}`, "wildcard")}
+                    className="text-xs text-blue-600 font-bold hover:underline"
+                  >
+                    {copiedRecord === "wildcard" ? "Copied!" : "Copy"}
+                  </button>
+                </div>
+                <div className="flex items-center justify-between rounded bg-white px-2.5 py-1.5 border border-blue-200">
+                  <span>Root &bull; <strong className="text-blue-700">@{rootDomain}</strong> &rarr; <code className="text-slate-900">Server IP</code></span>
+                  <button
+                    type="button"
+                    onClick={() => copyToClipboard(rootDomain, "root")}
+                    className="text-xs text-blue-600 font-bold hover:underline"
+                  >
+                    {copiedRecord === "root" ? "Copied!" : "Copy"}
+                  </button>
+                </div>
+              </div>
+              <p className="text-[11px] text-slate-500">
+                Once pointed, Traefik automatically routes every deployed app to its named subdomain and issues SSL certificates without manual configuration.
               </p>
             </div>
-            <label className="relative inline-flex items-center cursor-pointer">
-              <input
-                type="checkbox"
-                checked={autoSsl}
-                onChange={(e) => setAutoSsl(e.target.checked)}
-                className="sr-only peer"
-              />
-              <div className="w-11 h-6 bg-slate-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[var(--accent)]"></div>
-            </label>
           </div>
-        </div>
-
-        <div className="pt-2">
-          <Button type="submit" disabled={saving}>
-            {saving ? "Saving Changes..." : "Save Settings"}
-          </Button>
         </div>
       </form>
 
       {/* 2. One-Click Automated Maintenance */}
       <div className="jp-card p-5 space-y-4">
         <div className="border-b border-[var(--border)] pb-3">
-          <h2 className="text-base font-bold text-[var(--ink)]">Automated Maintenance & Health</h2>
+          <h2 className="text-base font-bold text-[var(--ink)]">Automated Maintenance & Self-Healing</h2>
           <p className="text-xs text-[var(--ink-muted)]">
-            One-click self-healing operations to keep your server fast and lean.
+            Keep platform storage and memory optimized with zero manual shell commands.
           </p>
         </div>
 
@@ -162,7 +188,7 @@ export default function SettingsPage() {
                 <h3 className="text-xs font-bold text-[var(--ink)]">Reclaim Disk Space</h3>
               </div>
               <p className="mt-1 text-[11px] text-[var(--ink-muted)] leading-relaxed">
-                Prunes dangling Docker build caches, stopped preview containers, and temporary log buffers.
+                Prunes unused Docker build layers, stopped preview containers, and temporary cache files.
               </p>
             </div>
             <Button
@@ -172,7 +198,7 @@ export default function SettingsPage() {
               onClick={handlePrune}
               disabled={cleaning}
             >
-              {cleaning ? "Cleaning Disk..." : "Clean Docker Caches"}
+              {cleaning ? "Cleaning..." : "Clean Docker Caches"}
             </Button>
           </div>
 
@@ -183,7 +209,7 @@ export default function SettingsPage() {
                 <h3 className="text-xs font-bold text-[var(--ink)]">Auto-Balance CPU & RAM</h3>
               </div>
               <p className="mt-1 text-[11px] text-[var(--ink-muted)] leading-relaxed">
-                Re-evaluates host hardware capacity and tunes container resource quotas to prevent OOM.
+                Re-evaluates host hardware capacity and balances container resource quotas dynamically.
               </p>
             </div>
             <Button
@@ -193,21 +219,21 @@ export default function SettingsPage() {
               onClick={handleOptimize}
               disabled={optimizing}
             >
-              {optimizing ? "Optimizing..." : "Auto-Optimize Allocations"}
+              {optimizing ? "Optimizing..." : "Auto-Balance Allocations"}
             </Button>
           </div>
         </div>
       </div>
 
-      {/* 3. Server Profile & Sizing */}
+      {/* 3. Server Specs & Profile */}
       <div className="jp-card p-5 space-y-4">
         <div className="flex items-center justify-between border-b border-[var(--border)] pb-3">
           <div>
             <h2 className="text-base font-bold text-[var(--ink)]">Server Profile</h2>
-            <p className="text-xs text-[var(--ink-muted)]">Hardware tier and container runtime status.</p>
+            <p className="text-xs text-[var(--ink-muted)]">System architecture and runtime topology.</p>
           </div>
           <span className="rounded-full border border-emerald-300 bg-emerald-50 px-2.5 py-0.5 text-xs font-bold text-emerald-800">
-            Self-Hosted &bull; Healthy
+            Healthy &bull; Self-Hosted
           </span>
         </div>
 
@@ -217,75 +243,18 @@ export default function SettingsPage() {
             <p className="mt-0.5 text-sm font-bold text-[var(--ink)]">JP v1.2</p>
           </div>
           <div className="rounded-md border border-[var(--border)] bg-slate-50 p-2.5">
-            <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--ink-muted)]">Ingress</p>
+            <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--ink-muted)]">Reverse Proxy</p>
             <p className="mt-0.5 text-sm font-bold text-[var(--ink)]">Traefik v3</p>
           </div>
           <div className="rounded-md border border-[var(--border)] bg-slate-50 p-2.5">
-            <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--ink-muted)]">Container Runtime</p>
+            <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--ink-muted)]">Engine</p>
             <p className="mt-0.5 text-sm font-bold text-[var(--ink)]">Docker Engine</p>
           </div>
           <div className="rounded-md border border-[var(--border)] bg-slate-50 p-2.5">
-            <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--ink-muted)]">State Storage</p>
-            <p className="mt-0.5 text-sm font-bold text-[var(--ink)]">Postgres + Redis</p>
+            <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--ink-muted)]">Database</p>
+            <p className="mt-0.5 text-sm font-bold text-[var(--ink)]">Postgres 16</p>
           </div>
         </div>
-      </div>
-
-      {/* 4. Optional Integrations (Kept clean & collapsible) */}
-      <div className="jp-card p-5 space-y-4">
-        <button
-          type="button"
-          onClick={() => setShowAdvanced((v) => !v)}
-          className="flex w-full items-center justify-between text-left"
-        >
-          <div>
-            <h2 className="text-sm font-bold text-[var(--ink)]">Optional Integrations</h2>
-            <p className="text-xs text-[var(--ink-muted)]">
-              GitHub push-to-deploy and AI log diagnosis (only if needed).
-            </p>
-          </div>
-          <span className="text-xs font-bold text-[var(--accent)]">
-            {showAdvanced ? "Hide Optional Settings ▲" : "Show Optional Settings ▼"}
-          </span>
-        </button>
-
-        {showAdvanced && (
-          <div className="space-y-4 pt-3 border-t border-[var(--border)]">
-            <div>
-              <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
-                GitHub Personal Access Token (Optional)
-              </label>
-              <Input
-                type="password"
-                value={githubToken}
-                onChange={(e) => setGithubToken(e.target.value)}
-                placeholder="ghp_..."
-              />
-              <p className="mt-1 text-[11px] text-[var(--ink-faint)]">
-                For private repositories. Public repos deploy automatically without any token.
-              </p>
-            </div>
-
-            <div>
-              <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
-                OpenAI API Key (Optional)
-              </label>
-              <Input
-                type="password"
-                value={openAiKey}
-                onChange={(e) => setOpenAiKey(e.target.value)}
-                placeholder="sk-proj-..."
-              />
-              <p className="mt-1 text-[11px] text-[var(--ink-faint)]">
-                Powers AI incident diagnosis in logs. If empty, platform uses built-in rule analyzer.
-              </p>
-            </div>
-
-            <Button type="button" onClick={handleSave} disabled={saving}>
-              Save Integrations
-            </Button>
-          </div>
-        )}
       </div>
     </div>
   );
