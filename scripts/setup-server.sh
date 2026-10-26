@@ -37,15 +37,14 @@ sudo systemctl enable --now docker
 sudo usermod -aG docker "$USER" 2>/dev/null || true
 
 # 2. Firewall Port Configuration
-echo "==> [2/6] Configuring firewall rules (ports 80, 443, 3000, 8000)..."
+echo "==> [2/6] Configuring firewall rules (ports 80, 443, 3000)..."
 if command -v firewall-cmd >/dev/null 2>&1 && sudo systemctl is-active --quiet firewalld; then
-    sudo firewall-cmd --permanent --add-port={80,443,3000,8000}/tcp >/dev/null 2>&1 || true
+    sudo firewall-cmd --permanent --add-port={80,443,3000}/tcp >/dev/null 2>&1 || true
     sudo firewall-cmd --reload >/dev/null 2>&1 || true
 elif command -v ufw >/dev/null 2>&1 && sudo ufw status | grep -q "active"; then
     sudo ufw allow 80/tcp >/dev/null 2>&1 || true
     sudo ufw allow 443/tcp >/dev/null 2>&1 || true
     sudo ufw allow 3000/tcp >/dev/null 2>&1 || true
-    sudo ufw allow 8000/tcp >/dev/null 2>&1 || true
 fi
 
 # 3. Clone or Update Repository
@@ -68,8 +67,13 @@ if [ ! -f .env ]; then
     cp .env.example .env
 fi
 
-sed -i "s|PUBLIC_BASE_URL=.*|PUBLIC_BASE_URL=http://${PUBLIC_IP}:8000|" .env
+sed -i "s|PUBLIC_BASE_URL=.*|PUBLIC_BASE_URL=http://localhost:8000|" .env
 sed -i "s|DASHBOARD_URL=.*|DASHBOARD_URL=http://${PUBLIC_IP}:3000|" .env
+if ! grep -q "NEXT_PUBLIC_API_URL" .env; then
+    echo "NEXT_PUBLIC_API_URL=/api/v1" >> .env
+else
+    sed -i "s|NEXT_PUBLIC_API_URL=.*|NEXT_PUBLIC_API_URL=/api/v1|" .env
+fi
 
 # Cryptographic secrets generation
 JWT_SEC=$(head -c 32 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 32)
@@ -102,7 +106,7 @@ echo "    JP Cloud Platform is ONLINE & HEALTHY!"
 echo "=========================================================="
 echo ""
 echo "  Web Console:   http://${PUBLIC_IP}:3000"
-echo "  API Gateway:   http://${PUBLIC_IP}:8000"
+echo "  API Gateway:   Internal (Secured via /api/ reverse proxy)"
 echo ""
 echo "  Open http://${PUBLIC_IP}:3000 in your browser to start!"
 echo "=========================================================="

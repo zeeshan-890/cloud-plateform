@@ -34,7 +34,7 @@ import type {
 
 const API_URL =
   process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ||
-  "http://localhost:8000/api/v1";
+  (typeof window !== "undefined" ? "/api/v1" : "http://localhost:8000/api/v1");
 
 export class ApiError extends Error {
   status: number;

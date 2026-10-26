@@ -132,7 +132,7 @@ services:
       OTEL_SERVICE_NAME: gateway
       JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
     ports:
-      - "${GATEWAY_PORT:-8000}:8000"
+      - "127.0.0.1:${GATEWAY_PORT:-8000}:8000"
     depends_on:
       identity:
         condition: service_started
@@ -254,7 +254,7 @@ services:
       context: ../../apps/dashboard
       dockerfile: Dockerfile
       args:
-        NEXT_PUBLIC_API_URL: ${PUBLIC_BASE_URL:-http://localhost:8000}/api/v1
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-/api/v1}
     environment:
       PORT: "3000"
       HOSTNAME: "0.0.0.0"
