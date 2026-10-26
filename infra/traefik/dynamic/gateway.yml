@@ -8,7 +8,9 @@ http:
       priority: 100
       entryPoints:
         - web
+        - websecure
       service: gateway
+      tls: {}
 
     # 2. Main Platform Panel: matches panel.<domain>, panel.localhost, panel.jp.localhost
     panel:
@@ -16,7 +18,10 @@ http:
       priority: 50
       entryPoints:
         - web
+        - websecure
       service: dashboard
+      tls:
+        certResolver: letsencrypt
 
     # 3. Universal Fallback: matches any direct IP or host root traffic to Web Dashboard
     dashboard-fallback:
@@ -24,7 +29,9 @@ http:
       priority: 1
       entryPoints:
         - web
+        - websecure
       service: dashboard
+      tls: {}
 
   services:
     gateway:
