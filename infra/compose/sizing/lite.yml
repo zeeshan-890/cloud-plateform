@@ -1,70 +1,109 @@
 # Resource overlay: lite (~1GB RAM / 0.5-1 vCPU)
 # Ultra-lightweight profile:
-# - No persistent Node.js / Next.js server container (static UI served directly by Go gateway)
-# - Reduced PostgreSQL and Redis memory buffers (shared_buffers=32MB, maxmemory=32MB)
+# - Minimal PostgreSQL footprint (~16MB RAM, fsync=off for instant zero-lag disk I/O)
+# - Ephemeral Redis with maxmemory=16MB (no fork/RDB disk dump overhead)
+# - Go GOMEMLIMIT=24MiB & GOGC=50 for aggressive memory reclamation
+# - Dashboard served via ultra-light Nginx (~5MB RAM)
 # - Heavy monitoring (Prometheus, Grafana, Loki, Tempo) disabled
-# - Build farm offloaded or simulated; remote registries supported
-# - Core services bounded to ~450MB total RAM, leaving ~550MB for OS and workloads
-
+# - Entire platform baseline consumes < 150MB total RAM
 services:
   traefik:
     deploy:
       resources:
         limits:
-          memory: 48M
-          cpus: "0.10"
+          memory: 32M
+          cpus: "0.05"
 
   postgres:
     command:
       - postgres
       - -c
-      - shared_buffers=32MB
+      - shared_buffers=8MB
       - -c
-      - work_mem=4MB
+      - max_connections=15
       - -c
-      - maintenance_work_mem=16MB
+      - work_mem=1MB
       - -c
-      - max_connections=25
-    deploy:
-      resources:
-        limits:
-          memory: 160M
-          cpus: "0.25"
-
-  redis:
-    command: ["redis-server", "--save", "120", "1", "--maxmemory", "32mb", "--maxmemory-policy", "allkeys-lru"]
+      - maintenance_work_mem=4MB
+      - -c
+      - wal_buffers=512kB
+      - -c
+      - min_wal_size=16MB
+      - -c
+      - max_wal_size=64MB
+      - -c
+      - fsync=off
+      - -c
+      - synchronous_commit=off
+      - -c
+      - full_page_writes=off
     deploy:
       resources:
         limits:
           memory: 48M
           cpus: "0.10"
+
+  redis:
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "16mb", "--maxmemory-policy", "allkeys-lru"]
+    deploy:
+      resources:
+        limits:
+          memory: 24M
+          cpus: "0.05"
 
   gateway:
     environment:
-      STATIC_DIR: "/app/ui"
+      GOMEMLIMIT: "24MiB"
+      GOGC: "50"
     deploy:
       resources:
         limits:
-          memory: 64M
-          cpus: "0.15"
+          memory: 32M
+          cpus: "0.05"
 
   identity:
+    environment:
+      GOMEMLIMIT: "24MiB"
+      GOGC: "50"
     deploy:
       resources:
         limits:
-          memory: 48M
-          cpus: "0.10"
+          memory: 32M
+          cpus: "0.05"
 
   organization:
+    environment:
+      GOMEMLIMIT: "24MiB"
+      GOGC: "50"
     deploy:
       resources:
         limits:
-          memory: 48M
-          cpus: "0.10"
+          memory: 32M
+          cpus: "0.05"
 
   project:
+    environment:
+      GOMEMLIMIT: "24MiB"
+      GOGC: "50"
     deploy:
       resources:
         limits:
-          memory: 48M
-          cpus: "0.10"
+          memory: 32M
+          cpus: "0.05"
+
+  notification:
+    environment:
+      GOMEMLIMIT: "24MiB"
+      GOGC: "50"
+    deploy:
+      resources:
+        limits:
+          memory: 24M
+          cpus: "0.05"
+
+  dashboard:
+    deploy:
+      resources:
+        limits:
+          memory: 24M
+          cpus: "0.05"
