@@ -701,4 +701,19 @@ export const api = {
       stub_note?: string;
     }>(`/orgs/${orgId}/billing/usage`);
   },
+  async clusterNodes() {
+    return request<{ nodes: any[]; count: number }>("/cluster/nodes");
+  },
+  async drainNode(nodeId: string) {
+    return request<{ node_id: string; status: string }>(
+      `/cluster/nodes/${encodeURIComponent(nodeId)}/drain`,
+      { method: "POST" }
+    );
+  },
+  async heartbeatNode(nodeId: string) {
+    return request<{ status: string; node_id: string }>(
+      `/cluster/nodes/${encodeURIComponent(nodeId)}/heartbeat`,
+      { method: "POST" }
+    );
+  },
 };

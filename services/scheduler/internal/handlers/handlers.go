@@ -101,6 +101,9 @@ func (h *Handler) ListNodes(w http.ResponseWriter, r *http.Request) {
 		httpx.JSON(w, http.StatusOK, map[string]any{"nodes": []*cluster.Node{}})
 		return
 	}
+	if h.Slot != "" {
+		_ = h.Cluster.UpdateNodeCapacity(h.Slot, cluster.DetectSystemCapacity())
+	}
 	nodes := h.Cluster.ListNodes()
 	httpx.JSON(w, http.StatusOK, map[string]any{
 		"nodes": nodes,
@@ -131,15 +134,14 @@ func (h *Handler) DrainNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	nodeID := r.PathValue("nodeId")
-	workloads, err := h.Cluster.DrainNode(nodeID)
+	status, err := h.Cluster.ToggleDrain(nodeID)
 	if err != nil {
 		httpx.Error(w, http.StatusNotFound, "not_found", err.Error())
 		return
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{
-		"node_id":             nodeID,
-		"status":              "draining",
-		"evacuated_workloads": workloads,
+		"node_id": nodeID,
+		"status":  string(status),
 	})
 }
 

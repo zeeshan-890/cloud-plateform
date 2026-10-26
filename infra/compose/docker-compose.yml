@@ -618,6 +618,8 @@ services:
       DOMAIN_URL: http://domain:8012
       JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
       SCHEDULER_SLOT: ${SCHEDULER_SLOT:-node-1}
+      NODE_IP: ${PUBLIC_IP:-161.118.168.6}
+      NODE_HOSTNAME: ${NODE_HOSTNAME:-oracle-2nd}
       CLEANUP_INTERVAL: ${CLEANUP_INTERVAL:-1h}
       PREVIEW_TTL: ${PREVIEW_TTL:-72h}
       PREVIEW_BASE_DOMAIN: ${PREVIEW_BASE_DOMAIN:-preview.jp.localhost}

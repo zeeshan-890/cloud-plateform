@@ -43,19 +43,7 @@ func main() {
 
 	cronStore := cron.NewStore(rdb)
 	clusterRegistry := cluster.NewRegistry()
-	_ = clusterRegistry.RegisterNode(&cluster.Node{
-		ID:       getenv("SCHEDULER_SLOT", "node-1"),
-		Hostname: "control-plane-primary",
-		IP:       "127.0.0.1",
-		Labels:   map[string]string{"role": "control-plane", "region": "primary"},
-		Capacity: cluster.NodeCapacity{
-			TotalCPUCores:  4.0,
-			AllocatedCPU:   0.5,
-			TotalMemoryMB:  8192,
-			AllocatedMemMB: 1024,
-		},
-		Status: cluster.NodeStatusReady,
-	})
+	_ = clusterRegistry.RegisterNode(cluster.DetectHostNode(getenv("SCHEDULER_SLOT", "node-1")))
 
 	sched := loop.New(loop.Config{
 		Redis:             rdb,
