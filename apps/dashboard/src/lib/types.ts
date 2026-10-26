@@ -280,6 +280,7 @@ export interface ManagedAddon {
   endpoint?: string;
   secret_ref?: string;
   connection_hint?: string;
+  metadata?: Record<string, any>;
   created_at?: string;
 }
 

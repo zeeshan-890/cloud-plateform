@@ -149,6 +149,12 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	secretName := catalog.SecretName(engine, req.Name)
 	secretRef := h.storeSecret(r, orgID, projectID, env, secretName, res.ConnectionURL)
+	if intURL, ok := res.Metadata["internal_url"].(string); ok && intURL != "" && intURL != res.ConnectionURL {
+		h.storeSecret(r, orgID, projectID, env, secretName+"_INTERNAL", intURL)
+	}
+	if pubURL, ok := res.Metadata["public_url"].(string); ok && pubURL != "" {
+		h.storeSecret(r, orgID, projectID, env, secretName+"_PUBLIC", pubURL)
+	}
 	a := &store.Addon{
 		OrgID: orgID, ProjectID: projectID, Engine: engine, Name: strings.TrimSpace(req.Name),
 		Mode: res.Mode, Status: "ready", Endpoint: res.Endpoint,

@@ -31,6 +31,46 @@ export default function AddonsPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("all");
 
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [snippetAddon, setSnippetAddon] = useState<ManagedAddon | null>(null);
+  const [hostName, setHostName] = useState("localhost");
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      setHostName(window.location.hostname || "localhost");
+    }
+  }, []);
+
+  function copyToClipboard(text: string, key: string) {
+    if (typeof navigator !== "undefined" && navigator.clipboard) {
+      navigator.clipboard.writeText(text);
+      setCopiedKey(key);
+      setTimeout(() => setCopiedKey(null), 2000);
+    }
+  }
+
+  function getInternalUrl(addon: ManagedAddon): string {
+    if (addon.metadata?.internal_url) return String(addon.metadata.internal_url);
+    const port = addon.metadata?.port || 8080;
+    if (addon.engine === "redis" || addon.engine === "valkey") return `redis://redis:6379/0`;
+    if (addon.engine === "postgres") return `postgres://jp:jp_dev_password@postgres:5432/jp`;
+    if (addon.engine === "mysql" || addon.engine === "mariadb") return `mysql://jp:jp_dev_password@mysql:3306/jp`;
+    if (addon.engine === "mongodb") return `mongodb://jp:jp_dev_password@mongodb:27017/jp`;
+    return `http://addon-${addon.name}:${port}`;
+  }
+
+  function getPublicUrl(addon: ManagedAddon): string {
+    if (addon.metadata?.public_url) {
+      const raw = String(addon.metadata.public_url);
+      if (!raw.includes("localhost") || hostName === "localhost") return raw;
+      return raw.replace("localhost", hostName);
+    }
+    const port = addon.metadata?.port || 8080;
+    if (addon.engine === "postgres") return `postgres://jp:jp_dev_password@${hostName}:5432/jp`;
+    if (addon.engine === "redis" || addon.engine === "valkey") return `redis://:${hostName}:6379/0`;
+    return `http://${hostName}:${port}`;
+  }
+
   const selected = catalog.find((c) => c.id === engine);
 
   const filteredCatalog = catalog.filter((c) => {
@@ -190,6 +230,16 @@ export default function AddonsPage() {
           <Alert tone="success">{success}</Alert>
         </div>
       ) : null}
+
+      <div className="mb-5 rounded-lg border border-blue-500/20 bg-blue-500/10 p-3.5 text-xs text-blue-200 flex items-start gap-3">
+        <span className="text-base font-bold text-blue-400 mt-0.5">💡</span>
+        <div className="flex-1">
+          <p className="font-semibold text-blue-100 text-sm">Zero-Domain Architecture & Internal Express Linking</p>
+          <p className="mt-1 text-blue-300 leading-relaxed">
+            All services communicate over the internal Docker network (<code className="bg-blue-900/40 text-blue-200 px-1.5 py-0.5 rounded font-mono">jp</code>). Connect your Express, Node.js, Python, or Go servers using the <strong>Docker Internal URLs</strong> below. For public outside browser access without any domain name, open apps directly via your <strong>Server IP and Port</strong> (<code className="bg-blue-900/40 text-blue-200 px-1.5 py-0.5 rounded font-mono">http://{hostName}:PORT</code>).
+          </p>
+        </div>
+      </div>
 
       <div className="mb-6 rounded-md border border-[var(--border)] bg-[var(--surface)] p-4 flex flex-wrap items-center justify-between gap-3">
         <div>
@@ -452,53 +502,162 @@ export default function AddonsPage() {
         />
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[720px] text-left text-sm">
+          <table className="w-full min-w-[850px] text-left text-sm">
             <thead>
               <tr className="border-b border-[var(--border)] text-[var(--ink-faint)]">
                 <th className="py-2 pr-3 font-medium">Engine / App</th>
-                <th className="py-2 pr-3 font-medium">Name</th>
                 <th className="py-2 pr-3 font-medium">Status</th>
-                <th className="py-2 pr-3 font-medium">Mode</th>
-                <th className="py-2 pr-3 font-medium">Secret Ref</th>
-                <th className="py-2 pr-3 font-medium">Endpoint / Hint</th>
-                <th className="py-2 font-medium" />
+                <th className="py-2 pr-3 font-medium">Docker Internal URL (For Express)</th>
+                <th className="py-2 pr-3 font-medium">Public Access (Server IP)</th>
+                <th className="py-2 font-medium text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {addons.map((a) => (
-                <tr key={a.id} className="border-b border-[var(--border)]">
-                  <td className="py-3 pr-3 font-medium text-[var(--ink)]">
-                    <span className="font-mono text-xs uppercase px-1.5 py-0.5 rounded bg-[var(--paper)] border border-[var(--border)] mr-2">
-                      {a.engine}
-                    </span>
-                  </td>
-                  <td className="py-3 pr-3 text-[var(--ink)]">{a.name}</td>
-                  <td className="py-3 pr-3">
-                    <span className="inline-block px-2 py-0.5 text-xs rounded bg-emerald-500/20 text-emerald-400 font-medium">
-                      {a.status}
-                    </span>
-                  </td>
-                  <td className="py-3 pr-3 text-[var(--ink-muted)]">{a.mode}</td>
-                  <td className="py-3 pr-3 font-[family-name:var(--font-mono)] text-xs text-[var(--ink-muted)]">
-                    {a.secret_ref || "—"}
-                  </td>
-                  <td className="py-3 pr-3 font-[family-name:var(--font-mono)] text-xs text-[var(--ink-muted)]">
-                    {a.connection_hint || a.endpoint || "—"}
-                  </td>
-                  <td className="py-3 text-right">
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      disabled={busy}
-                      onClick={() => onDelete(a.id)}
-                    >
-                      Delete
-                    </Button>
-                  </td>
-                </tr>
-              ))}
+              {addons.map((a) => {
+                const intUrl = getInternalUrl(a);
+                const pubUrl = getPublicUrl(a);
+                return (
+                  <tr key={a.id} className="border-b border-[var(--border)] hover:bg-[var(--surface)] transition-colors">
+                    <td className="py-3 pr-3 font-medium text-[var(--ink)]">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-xs uppercase px-1.5 py-0.5 rounded bg-[var(--paper)] border border-[var(--border)]">
+                          {a.engine}
+                        </span>
+                        <span className="font-semibold">{a.name}</span>
+                      </div>
+                      <p className="mt-0.5 text-xs text-[var(--ink-muted)] font-mono">
+                        Key: {a.secret_ref || `${a.engine.toUpperCase()}_URL`}
+                      </p>
+                    </td>
+
+                    <td className="py-3 pr-3">
+                      <span className="inline-block px-2 py-0.5 text-xs rounded bg-emerald-500/20 text-emerald-400 font-medium">
+                        {a.status}
+                      </span>
+                      <p className="text-[10px] text-[var(--ink-faint)] mt-0.5 capitalize">{a.mode}</p>
+                    </td>
+
+                    <td className="py-3 pr-3">
+                      <div className="flex items-center gap-2">
+                        <code className="text-xs font-mono text-[var(--ink)] bg-[var(--paper)] px-2 py-1 rounded border border-[var(--border)] max-w-xs truncate">
+                          {intUrl}
+                        </code>
+                        <button
+                          type="button"
+                          onClick={() => copyToClipboard(intUrl, `int-${a.id}`)}
+                          className="px-2 py-1 text-xs font-medium rounded border border-[var(--border)] bg-[var(--surface)] hover:bg-[var(--paper)] text-[var(--ink-muted)] hover:text-[var(--ink)] transition-colors shrink-0"
+                          title="Copy for Express.js / Node.js"
+                        >
+                          {copiedKey === `int-${a.id}` ? "✓ Copied!" : "Copy"}
+                        </button>
+                      </div>
+                      <p className="text-[10px] text-[var(--ink-muted)] mt-1">Inter-container Docker network</p>
+                    </td>
+
+                    <td className="py-3 pr-3">
+                      <div className="flex items-center gap-2">
+                        <code className="text-xs font-mono text-[var(--ink-muted)] bg-[var(--paper)] px-2 py-1 rounded border border-[var(--border)] max-w-xs truncate">
+                          {pubUrl}
+                        </code>
+                        {pubUrl.startsWith("http") ? (
+                          <a
+                            href={pubUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="px-2 py-1 text-xs font-medium rounded border border-blue-500/30 bg-blue-500/10 text-blue-300 hover:bg-blue-500/20 transition-colors shrink-0"
+                          >
+                            Open ↗
+                          </a>
+                        ) : null}
+                      </div>
+                      <p className="text-[10px] text-[var(--ink-muted)] mt-1">Outside browser via Server IP</p>
+                    </td>
+
+                    <td className="py-3 text-right">
+                      <div className="flex items-center justify-end gap-2">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          onClick={() => setSnippetAddon(a)}
+                          className="text-xs"
+                        >
+                          Express .env
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          disabled={busy}
+                          onClick={() => onDelete(a.id)}
+                          className="text-xs text-rose-400 hover:text-rose-300 hover:bg-rose-500/10"
+                        >
+                          Delete
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {snippetAddon && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-xl rounded-lg border border-[var(--border)] bg-[var(--paper)] p-6 shadow-xl">
+            <div className="flex items-center justify-between pb-3 border-b border-[var(--border)]">
+              <h3 className="text-base font-semibold text-[var(--ink)]">
+                Express / Node.js Environment Integration
+              </h3>
+              <button
+                type="button"
+                onClick={() => setSnippetAddon(null)}
+                className="text-sm text-[var(--ink-muted)] hover:text-[var(--ink)]"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="mt-3 text-xs text-[var(--ink-muted)] leading-relaxed">
+              When your Express server or backend runs in JP or Docker, connect to <strong>{snippetAddon.name}</strong> over the internal network without needing a domain name:
+            </p>
+
+            <div className="mt-3 relative">
+              <pre className="rounded bg-black/70 p-3 text-xs text-emerald-400 font-mono overflow-x-auto border border-zinc-800">
+{`# Add to your Express server .env file:
+${snippetAddon.secret_ref || `${snippetAddon.engine.toUpperCase()}_URL`}=${getInternalUrl(snippetAddon)}
+
+# Optional: Public access via Server IP from outside
+${snippetAddon.secret_ref || `${snippetAddon.engine.toUpperCase()}_URL`}_PUBLIC=${getPublicUrl(snippetAddon)}`}
+              </pre>
+              <button
+                type="button"
+                onClick={() => copyToClipboard(
+`${snippetAddon.secret_ref || `${snippetAddon.engine.toUpperCase()}_URL`}=${getInternalUrl(snippetAddon)}
+${snippetAddon.secret_ref || `${snippetAddon.engine.toUpperCase()}_URL`}_PUBLIC=${getPublicUrl(snippetAddon)}`,
+                  "snippet"
+                )}
+                className="absolute top-2 right-2 px-2.5 py-1 text-xs font-medium rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 transition-colors"
+              >
+                {copiedKey === "snippet" ? "✓ Copied!" : "Copy Snippet"}
+              </button>
+            </div>
+
+            <p className="mt-4 text-xs text-[var(--ink-muted)]">
+              In your Express code (<code className="text-zinc-300 font-mono">server.js</code>):
+            </p>
+            <pre className="mt-1 rounded bg-black/70 p-3 text-xs text-zinc-300 font-mono overflow-x-auto border border-zinc-800">
+{`// Connect using the internal Docker URL:
+const url = process.env.${snippetAddon.secret_ref || `${snippetAddon.engine.toUpperCase()}_URL`};
+console.log('Connected to ${snippetAddon.engine} at:', url);`}
+            </pre>
+
+            <div className="mt-5 flex justify-end">
+              <Button type="button" onClick={() => setSnippetAddon(null)}>
+                Close
+              </Button>
+            </div>
+          </div>
         </div>
       )}
     </div>

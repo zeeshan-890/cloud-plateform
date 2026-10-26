@@ -162,8 +162,58 @@ func (m *Manager) Delete(ctx context.Context, engine string, metadata map[string
 	return nil
 }
 
+// InternalServiceHost returns the internal Docker network hostname for inter-container communication.
+func InternalServiceHost(engine, safe string) string {
+	switch engine {
+	case "postgres":
+		return "postgres"
+	case "mysql":
+		return "mysql"
+	case "mariadb":
+		return "mariadb"
+	case "mongodb":
+		return "mongodb"
+	case "redis", "valkey":
+		return "redis"
+	case "rabbitmq":
+		return "rabbitmq"
+	case "kafka":
+		return "redpanda"
+	case "minio":
+		return "minio"
+	case "clickhouse":
+		return "clickhouse"
+	case "meilisearch":
+		return "meilisearch"
+	case "elasticsearch":
+		return "elasticsearch"
+	default:
+		return "addon-" + safe
+	}
+}
+
+// PublicServiceHost returns the public Server IP or hostname for outside access.
+func PublicServiceHost() string {
+	h := strings.TrimSpace(os.Getenv("SERVER_IP"))
+	if h == "" {
+		h = strings.TrimSpace(os.Getenv("PUBLIC_IP"))
+	}
+	if h == "" {
+		h = strings.TrimSpace(os.Getenv("HOST_IP"))
+	}
+	if h == "" {
+		h = "localhost"
+	}
+	return h
+}
+
 func (m *Manager) createSimulate(engine, resource, pass, safe, short string) (*Result, error) {
 	meta := map[string]any{"resource": resource, "simulate": true}
+	intHost := InternalServiceHost(engine, safe)
+	pubHost := PublicServiceHost()
+	meta["internal_host"] = intHost
+	meta["server_ip"] = pubHost
+
 	switch engine {
 	case "postgres":
 		schema, role := resource, "jp_u_"+short+"_"+safe
@@ -171,85 +221,127 @@ func (m *Manager) createSimulate(engine, resource, pass, safe, short string) (*R
 			role = role[:63]
 		}
 		conn := fmt.Sprintf("postgres://%s:%s@localhost:5432/jp?sslmode=disable&search_path=%s", role, pass, schema)
+		intConn := fmt.Sprintf("postgres://%s:%s@%s:5432/jp?sslmode=disable&search_path=%s", role, pass, intHost, schema)
+		pubConn := fmt.Sprintf("postgres://%s:%s@%s:5432/jp?sslmode=disable&search_path=%s", role, pass, pubHost, schema)
 		hint := fmt.Sprintf("postgres://%s:***@localhost:5432/jp?search_path=%s (simulate)", role, schema)
 		meta["schema"] = schema
 		meta["role"] = role
+		meta["internal_url"] = intConn
+		meta["public_url"] = pubConn
+		meta["port"] = 5432
 		return &Result{Mode: "simulate", Endpoint: "localhost:5432", ConnectionURL: conn, ConnectionHint: hint, Metadata: meta}, nil
-	case "mysql":
+	case "mysql", "mariadb":
 		user := "jp_" + short + "_" + safe
 		if len(user) > 32 {
 			user = user[:32]
 		}
 		conn := fmt.Sprintf("mysql://%s:%s@localhost:3306/%s", user, pass, resource)
+		intConn := fmt.Sprintf("mysql://%s:%s@%s:3306/%s", user, pass, intHost, resource)
+		pubConn := fmt.Sprintf("mysql://%s:%s@%s:3306/%s", user, pass, pubHost, resource)
 		hint := fmt.Sprintf("mysql://%s:***@localhost:3306/%s (simulate)", user, resource)
 		meta["database"] = resource
 		meta["user"] = user
-		return &Result{Mode: "simulate", Endpoint: "localhost:3306", ConnectionURL: conn, ConnectionHint: hint, Metadata: meta}, nil
-	case "mariadb":
-		user := "jp_" + short + "_" + safe
-		if len(user) > 32 {
-			user = user[:32]
-		}
-		conn := fmt.Sprintf("mysql://%s:%s@localhost:3306/%s", user, pass, resource)
-		hint := fmt.Sprintf("mysql://%s:***@localhost:3306/%s (simulate)", user, resource)
-		meta["database"] = resource
-		meta["user"] = user
+		meta["internal_url"] = intConn
+		meta["public_url"] = pubConn
+		meta["port"] = 3306
 		return &Result{Mode: "simulate", Endpoint: "localhost:3306", ConnectionURL: conn, ConnectionHint: hint, Metadata: meta}, nil
 	case "mongodb":
 		user := "jp_" + short + "_" + safe
 		conn := fmt.Sprintf("mongodb://%s:%s@localhost:27017/%s?authSource=%s", user, pass, resource, resource)
+		intConn := fmt.Sprintf("mongodb://%s:%s@%s:27017/%s?authSource=%s", user, pass, intHost, resource, resource)
+		pubConn := fmt.Sprintf("mongodb://%s:%s@%s:27017/%s?authSource=%s", user, pass, pubHost, resource, resource)
 		hint := fmt.Sprintf("mongodb://%s:***@localhost:27017/%s (simulate)", user, resource)
 		meta["database"] = resource
 		meta["user"] = user
+		meta["internal_url"] = intConn
+		meta["public_url"] = pubConn
+		meta["port"] = 27017
 		return &Result{Mode: "simulate", Endpoint: "localhost:27017", ConnectionURL: conn, ConnectionHint: hint, Metadata: meta}, nil
 	case "redis":
 		dbIdx := hashDB(short + safe)
 		conn := fmt.Sprintf("redis://:%s@localhost:6380/%d", pass, dbIdx)
+		intConn := fmt.Sprintf("redis://:%s@%s:6379/%d", pass, intHost, dbIdx)
+		pubConn := fmt.Sprintf("redis://:%s@%s:6379/%d", pass, pubHost, dbIdx)
 		hint := fmt.Sprintf("redis://:***@localhost:6380/%d (simulate)", dbIdx)
 		meta["db"] = dbIdx
 		meta["key_prefix"] = resource + ":"
+		meta["internal_url"] = intConn
+		meta["public_url"] = pubConn
+		meta["port"] = 6379
 		return &Result{Mode: "simulate", Endpoint: "localhost:6380", ConnectionURL: conn, ConnectionHint: hint, Metadata: meta}, nil
 	case "valkey":
 		dbIdx := hashDB(short + safe)
 		conn := fmt.Sprintf("redis://:%s@localhost:6379/%d", pass, dbIdx)
+		intConn := fmt.Sprintf("redis://:%s@%s:6379/%d", pass, intHost, dbIdx)
+		pubConn := fmt.Sprintf("redis://:%s@%s:6379/%d", pass, pubHost, dbIdx)
 		hint := fmt.Sprintf("redis://:***@localhost:6379/%d (simulate)", dbIdx)
 		meta["db"] = dbIdx
 		meta["key_prefix"] = resource + ":"
+		meta["internal_url"] = intConn
+		meta["public_url"] = pubConn
+		meta["port"] = 6379
 		return &Result{Mode: "simulate", Endpoint: "localhost:6379", ConnectionURL: conn, ConnectionHint: hint, Metadata: meta}, nil
 	case "rabbitmq":
 		user := "jp_" + short + "_" + safe
 		vhost := resource
 		conn := fmt.Sprintf("amqp://%s:%s@localhost:5672/%s", user, pass, url.PathEscape(vhost))
+		intConn := fmt.Sprintf("amqp://%s:%s@%s:5672/%s", user, pass, intHost, url.PathEscape(vhost))
+		pubConn := fmt.Sprintf("amqp://%s:%s@%s:5672/%s", user, pass, pubHost, url.PathEscape(vhost))
 		hint := fmt.Sprintf("amqp://%s:***@localhost:5672/%s (simulate)", user, vhost)
 		meta["vhost"] = vhost
 		meta["user"] = user
+		meta["internal_url"] = intConn
+		meta["public_url"] = pubConn
+		meta["port"] = 5672
 		return &Result{Mode: "simulate", Endpoint: "localhost:5672", ConnectionURL: conn, ConnectionHint: hint, Metadata: meta}, nil
 	case "kafka":
 		prefix := resource + "."
 		brokers := "localhost:9092"
 		conn := brokers
+		intConn := fmt.Sprintf("%s:9092", intHost)
+		pubConn := fmt.Sprintf("%s:9092", pubHost)
 		hint := brokers + " topic_prefix=" + prefix + " (simulate)"
 		meta["topic_prefix"] = prefix
 		meta["brokers"] = brokers
+		meta["internal_url"] = intConn
+		meta["public_url"] = pubConn
+		meta["port"] = 9092
 		return &Result{Mode: "simulate", Endpoint: brokers, ConnectionURL: conn, ConnectionHint: hint, Metadata: meta}, nil
 	case "sqlite":
 		path := filepath.ToSlash(filepath.Join("/tmp/jp-addons", resource+".db"))
 		meta["path"] = path
+		meta["internal_url"] = path
+		meta["public_url"] = path
 		return &Result{Mode: "simulate", Endpoint: path, ConnectionURL: path, ConnectionHint: path + " (simulate)", Metadata: meta}, nil
 	case "meilisearch":
 		conn := fmt.Sprintf("http://:%s@localhost:7700", pass)
+		intConn := fmt.Sprintf("http://:%s@%s:7700", pass, intHost)
+		pubConn := fmt.Sprintf("http://:%s@%s:7700", pass, pubHost)
 		hint := "http://:***@localhost:7700 (simulate)"
 		meta["api_key"] = pass
+		meta["internal_url"] = intConn
+		meta["public_url"] = pubConn
+		meta["port"] = 7700
 		return &Result{Mode: "simulate", Endpoint: "localhost:7700", ConnectionURL: conn, ConnectionHint: hint, Metadata: meta}, nil
 	case "elasticsearch":
 		conn := fmt.Sprintf("http://elastic:%s@localhost:9200", pass)
+		intConn := fmt.Sprintf("http://elastic:%s@%s:9200", pass, intHost)
+		pubConn := fmt.Sprintf("http://elastic:%s@%s:9200", pass, pubHost)
 		hint := "http://elastic:***@localhost:9200 (simulate)"
 		meta["user"] = "elastic"
+		meta["internal_url"] = intConn
+		meta["public_url"] = pubConn
+		meta["port"] = 9200
 		return &Result{Mode: "simulate", Endpoint: "localhost:9200", ConnectionURL: conn, ConnectionHint: hint, Metadata: meta}, nil
 	case "clickhouse":
 		conn := fmt.Sprintf("http://default:%s@localhost:8123/%s", pass, resource)
+		intConn := fmt.Sprintf("http://default:%s@%s:8123/%s", pass, intHost, resource)
+		pubConn := fmt.Sprintf("http://default:%s@%s:8123/%s", pass, pubHost, resource)
 		hint := fmt.Sprintf("http://default:***@localhost:8123/%s (simulate)", resource)
 		meta["database"] = resource
+		meta["internal_url"] = intConn
+		meta["public_url"] = pubConn
+		meta["port"] = 8123
 		return &Result{Mode: "simulate", Endpoint: "localhost:8123", ConnectionURL: conn, ConnectionHint: hint, Metadata: meta}, nil
 	case "minio":
 		accessKey := "jp_" + short + "_" + safe
@@ -257,23 +349,48 @@ func (m *Manager) createSimulate(engine, resource, pass, safe, short string) (*R
 			accessKey = accessKey[:20]
 		}
 		conn := "http://localhost:9000"
+		intConn := fmt.Sprintf("http://%s:9000", intHost)
+		pubConn := fmt.Sprintf("http://%s:9000", pubHost)
 		hint := fmt.Sprintf("s3://%s:***@localhost:9000 (simulate)", accessKey)
 		meta["access_key"] = accessKey
 		meta["secret_key"] = pass
 		meta["endpoint"] = conn
+		meta["internal_url"] = intConn
+		meta["public_url"] = pubConn
+		meta["port"] = 9000
 		return &Result{Mode: "simulate", Endpoint: "localhost:9000", ConnectionURL: conn, ConnectionHint: hint, Metadata: meta}, nil
 	case "adminer":
 		conn := "http://localhost:8080"
+		intConn := fmt.Sprintf("http://%s:8080", intHost)
+		pubConn := fmt.Sprintf("http://%s:8080", pubHost)
+		meta["internal_url"] = intConn
+		meta["public_url"] = pubConn
+		meta["port"] = 8080
 		return &Result{Mode: "simulate", Endpoint: "localhost:8080", ConnectionURL: conn, ConnectionHint: "http://localhost:8080 (simulate)", Metadata: meta}, nil
 	case "n8n":
 		conn := "http://localhost:5678"
+		intConn := fmt.Sprintf("http://%s:5678", intHost)
+		pubConn := fmt.Sprintf("http://%s:5678", pubHost)
 		meta["encryption_key"] = pass
+		meta["internal_url"] = intConn
+		meta["public_url"] = pubConn
+		meta["port"] = 5678
 		return &Result{Mode: "simulate", Endpoint: "localhost:5678", ConnectionURL: conn, ConnectionHint: "http://localhost:5678 (simulate)", Metadata: meta}, nil
 	case "vaultwarden":
 		conn := "http://localhost:80"
+		intConn := fmt.Sprintf("http://%s:80", intHost)
+		pubConn := fmt.Sprintf("http://%s:80", pubHost)
+		meta["internal_url"] = intConn
+		meta["public_url"] = pubConn
+		meta["port"] = 80
 		return &Result{Mode: "simulate", Endpoint: "localhost:80", ConnectionURL: conn, ConnectionHint: "http://localhost:80 (simulate)", Metadata: meta}, nil
 	case "pocketbase":
 		conn := "http://localhost:8090"
+		intConn := fmt.Sprintf("http://%s:8090", intHost)
+		pubConn := fmt.Sprintf("http://%s:8090", pubHost)
+		meta["internal_url"] = intConn
+		meta["public_url"] = pubConn
+		meta["port"] = 8090
 		return &Result{Mode: "simulate", Endpoint: "localhost:8090", ConnectionURL: conn, ConnectionHint: "http://localhost:8090 (simulate)", Metadata: meta}, nil
 	default:
 		// Dynamic fallback for any registered custom marketplace app
@@ -288,7 +405,12 @@ func (m *Manager) createSimulate(engine, resource, pass, safe, short string) (*R
 			}
 			endpoint := fmt.Sprintf("localhost:%d", port)
 			conn := fmt.Sprintf("%s://%s:%s@%s/%s", scheme, safe, pass, endpoint, resource)
+			intConn := fmt.Sprintf("%s://%s:%d", scheme, intHost, port)
+			pubConn := fmt.Sprintf("%s://%s:%d", scheme, pubHost, port)
 			hint := fmt.Sprintf("%s://%s:***@%s/%s (simulate)", scheme, safe, endpoint, resource)
+			meta["internal_url"] = intConn
+			meta["public_url"] = pubConn
+			meta["port"] = port
 			return &Result{Mode: "simulate", Endpoint: endpoint, ConnectionURL: conn, ConnectionHint: hint, Metadata: meta}, nil
 		}
 		return nil, fmt.Errorf("unsupported engine %s", engine)
