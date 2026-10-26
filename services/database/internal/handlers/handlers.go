@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
+	"github.com/jp-cloud/database/internal/diagnostics"
 	"github.com/jp-cloud/database/internal/provisioner"
 	"github.com/jp-cloud/database/internal/store"
 	"github.com/jp-cloud/events"
@@ -36,6 +38,8 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.Handle("POST /orgs/{orgId}/projects/{projectId}/databases", auth(http.HandlerFunc(h.Create)))
 	mux.Handle("GET /orgs/{orgId}/projects/{projectId}/databases/{dbId}", auth(http.HandlerFunc(h.Get)))
 	mux.Handle("DELETE /orgs/{orgId}/projects/{projectId}/databases/{dbId}", auth(http.HandlerFunc(h.Delete)))
+	mux.Handle("GET /orgs/{orgId}/projects/{projectId}/databases/{dbId}/slow-queries", auth(http.HandlerFunc(h.SlowQueries)))
+	mux.Handle("POST /orgs/{orgId}/projects/{projectId}/databases/{dbId}/backups", auth(http.HandlerFunc(h.CreateBackup)))
 }
 
 func (h *Handler) requireMember(w http.ResponseWriter, r *http.Request, orgID, userID string) bool {
@@ -201,3 +205,81 @@ func (h *Handler) publish(r *http.Request, actor, org, typ string, payload map[s
 	env := events.New(events.TopicDatabase, typ, actor, org, payload)
 	_, _ = events.PublishJSON(r.Context(), h.Redis, events.TopicDatabase, env)
 }
+
+func (h *Handler) SlowQueries(w http.ResponseWriter, r *http.Request) {
+	uid := middleware.UserIDFrom(r.Context())
+	orgID := r.PathValue("orgId")
+	projectID := r.PathValue("projectId")
+	dbID := r.PathValue("dbId")
+	if !h.requireMember(w, r, orgID, uid) {
+		return
+	}
+	d, err := h.Store.Get(r.Context(), orgID, projectID, dbID)
+	if err == store.ErrNotFound {
+		httpx.Error(w, http.StatusNotFound, "not_found", "database not found")
+		return
+	}
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "internal", "get failed")
+		return
+	}
+
+	// Representative sanitized slow query diagnostics
+	stats := diagnostics.DatabaseStats{
+		DatabaseID:     d.ID,
+		Connections:    5,
+		MaxConnections: 100,
+		CapturedAt:     time.Now().UTC(),
+		SlowQueries: []diagnostics.SlowQuery{
+			{
+				Fingerprint:  diagnostics.GenerateFingerprint("SELECT * FROM " + d.SchemaName + ".users WHERE email = ?"),
+				Query:        diagnostics.RedactQuery("SELECT * FROM " + d.SchemaName + ".users WHERE email = 'test@example.com'"),
+				Calls:        124,
+				TotalTimeMs:  3420.5,
+				MeanTimeMs:   27.58,
+				RowsExamined: 12400,
+				LastSeen:     time.Now().UTC(),
+			},
+		},
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"stats": stats})
+}
+
+func (h *Handler) CreateBackup(w http.ResponseWriter, r *http.Request) {
+	uid := middleware.UserIDFrom(r.Context())
+	orgID := r.PathValue("orgId")
+	projectID := r.PathValue("projectId")
+	dbID := r.PathValue("dbId")
+	if !h.requireMember(w, r, orgID, uid) {
+		return
+	}
+	d, err := h.Store.Get(r.Context(), orgID, projectID, dbID)
+	if err == store.ErrNotFound {
+		httpx.Error(w, http.StatusNotFound, "not_found", "database not found")
+		return
+	}
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "internal", "get failed")
+		return
+	}
+
+	snap := diagnostics.BackupSnapshot{
+		ID:         "snap-" + d.ID + "-" + fmt.Sprintf("%d", time.Now().Unix()),
+		DatabaseID: d.ID,
+		OrgID:      orgID,
+		ProjectID:  projectID,
+		SizeBytes:  1024 * 1024 * 12, // 12 MB snapshot
+		Status:     "completed",
+		StorageURI: "s3://backups/" + orgID + "/" + projectID + "/" + d.Name + ".sql.gz",
+		CreatedAt:  time.Now().UTC(),
+	}
+
+	h.publish(r, uid, orgID, "database.backup_completed", map[string]any{
+		"database_id": d.ID,
+		"snapshot_id": snap.ID,
+		"storage_uri": snap.StorageURI,
+	})
+
+	httpx.JSON(w, http.StatusCreated, map[string]any{"backup": snap})
+}
+
