@@ -4,10 +4,12 @@ export function BrandMark({
   size = "md",
   href = "/projects",
   showBadge = true,
+  onClick,
 }: {
   size?: "sm" | "md" | "lg" | "hero";
   href?: string | null;
   showBadge?: boolean;
+  onClick?: () => void;
 }) {
   const iconSizes = {
     sm: "w-5 h-5",
@@ -73,7 +75,7 @@ export function BrandMark({
 
   if (href === null) return content;
   return (
-    <Link href={href} className="inline-flex items-center group transition-opacity hover:opacity-95">
+    <Link href={href} onClick={onClick} className="inline-flex items-center group transition-opacity hover:opacity-95">
       {content}
     </Link>
   );

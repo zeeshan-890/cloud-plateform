@@ -257,8 +257,8 @@ export default function ProjectDetailClient() {
         <Alert tone="error">
           {error || "Project not found or you do not have permission to view it."}
         </Alert>
-        <Link href="/projects">
-          <Button variant="secondary">Back to all projects</Button>
+        <Link href="/projects" onClick={() => setActiveProject(null)}>
+          <Button variant="secondary">← Back to all projects</Button>
         </Link>
       </div>
     );
@@ -268,6 +268,18 @@ export default function ProjectDetailClient() {
 
   return (
     <div className="space-y-6">
+      {/* Return to All Projects Header Navigation */}
+      <div className="flex items-center justify-between">
+        <Link
+          href="/projects"
+          onClick={() => setActiveProject(null)}
+          className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-white px-3 py-1.5 text-xs font-bold text-[var(--ink)] shadow-2xs hover:bg-slate-50 hover:border-[var(--border-strong)] transition-all group"
+        >
+          <span className="text-[var(--accent)] text-sm font-black transition-transform group-hover:-translate-x-0.5">←</span>
+          <span>Back to All Projects</span>
+        </Link>
+      </div>
+
       {/* Top Breadcrumb & Quick Actions Header */}
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-[var(--border)] pb-4">
         <div>

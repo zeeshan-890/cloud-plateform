@@ -8,6 +8,7 @@ interface ProjectContextValue {
   setActiveProject: (p: Project | null) => void;
   rootDomain: string;
   setRootDomain: (d: string) => void;
+  panelDomain: string;
   getAppPublicUrl: (projectName: string) => string;
 }
 
@@ -16,6 +17,7 @@ const ProjectContext = createContext<ProjectContextValue>({
   setActiveProject: () => {},
   rootDomain: "jp.localhost",
   setRootDomain: () => {},
+  panelDomain: "panel.jp.localhost",
   getAppPublicUrl: () => "",
 });
 
@@ -30,22 +32,37 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
         setRootDomainState(savedDomain);
       } else {
         const host = window.location.hostname || "localhost";
-        setRootDomainState(host === "localhost" ? "jp.localhost" : host);
+        // If accessed via panel.domain.com, the base domain for customer apps is domain.com
+        const detectedBase = host.startsWith("panel.") ? host.replace(/^panel\./, "") : host;
+        setRootDomainState(
+          detectedBase === "localhost" || /^[0-9.]+$/.test(detectedBase)
+            ? "jp.localhost"
+            : detectedBase
+        );
       }
     }
   }, []);
 
   const setRootDomain = (domain: string) => {
-    const clean = domain.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+    let clean = domain.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+    if (clean.startsWith("panel.")) {
+      clean = clean.replace(/^panel\./, "");
+    }
     setRootDomainState(clean);
     if (typeof window !== "undefined") {
       localStorage.setItem("jp_platform_domain", clean);
     }
   };
 
+  const cleanBase = rootDomain.startsWith("panel.") ? rootDomain.replace(/^panel\./, "") : rootDomain;
+  const panelDomain =
+    cleanBase === "jp.localhost" || cleanBase === "localhost"
+      ? "panel.jp.localhost"
+      : `panel.${cleanBase}`;
+
   const getAppPublicUrl = (projectName: string) => {
     const slug = projectName.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-");
-    return `http://${slug}.${rootDomain}`;
+    return `http://${slug}.${cleanBase}`;
   };
 
   return (
@@ -55,6 +72,7 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
         setActiveProject,
         rootDomain,
         setRootDomain,
+        panelDomain,
         getAppPublicUrl,
       }}
     >

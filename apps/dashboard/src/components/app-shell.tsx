@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { BrandMark } from "@/components/brand";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth-context";
@@ -36,13 +36,25 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     router.replace("/login");
   }
 
-  // Check if user is inside a project
+  // Normalize pathname to prevent trailing slash mismatches (e.g., /projects/ -> /projects)
+  const normalizedPath =
+    pathname.length > 1 && pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
+  const segments = normalizedPath.split("/").filter(Boolean);
+
+  // User is inside a specific project if and only if route matches /projects/:id and :id is not "new"
   const isInsideProject =
-    pathname.startsWith("/projects/") && pathname !== "/projects/new";
-  const urlProjectId = isInsideProject
-    ? pathname.split("/projects/")[1]?.split("/")[0]?.split("?")[0]
-    : null;
+    segments[0] === "projects" &&
+    segments.length >= 2 &&
+    segments[1] !== "new";
+  const urlProjectId = isInsideProject ? segments[1] : null;
   const currentTab = searchParams.get("tab") || "overview";
+
+  // Automatically reset activeProject context when leaving project-scoped routes
+  useEffect(() => {
+    if (!isInsideProject && activeProject !== null) {
+      setActiveProject(null);
+    }
+  }, [isInsideProject, activeProject, setActiveProject]);
 
   // Project-Scoped Navigation items
   const projectNav = [
@@ -63,7 +75,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <aside className="flex h-full w-64 flex-col border-r border-[var(--border)] bg-white shadow-xs">
       {/* Brand Header */}
       <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3.5">
-        <BrandMark size="md" href="/projects" />
+        <BrandMark size="md" href="/projects" onClick={() => setActiveProject(null)} />
         <button
           type="button"
           className="lg:hidden rounded-md p-1.5 text-[var(--ink-muted)] hover:bg-slate-100"
@@ -211,8 +223,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </p>
             {platformNav.map((item) => {
               const active =
-                pathname === item.href ||
-                (item.href !== "/" && pathname.startsWith(item.href + "/"));
+                normalizedPath === item.href ||
+                (item.href !== "/" && normalizedPath.startsWith(item.href + "/"));
 
               return (
                 <Link
@@ -327,7 +339,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     </>
                   )}
                 </>
-              ) : pathname === "/projects" ? (
+              ) : normalizedPath === "/projects" ? (
                 <span className="font-bold text-[var(--accent)]">All Projects</span>
               ) : (
                 <>
@@ -340,7 +352,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   </Link>
                   <span className="text-slate-300">/</span>
                   <span className="font-bold text-[var(--ink)] truncate">
-                    {platformNav.find((p) => p.href === pathname)?.label || pathname.replace("/", "")}
+                    {platformNav.find((p) => p.href === normalizedPath)?.label || normalizedPath.replace("/", "")}
                   </span>
                 </>
               )}
@@ -349,16 +361,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
           {/* Right: Quick Navigation Actions */}
           <div className="flex items-center gap-2 shrink-0">
-            {/* If on any page other than /projects, show a prominent Back to Main Page button */}
-            {pathname !== "/projects" && (
+            {/* If on any page other than /projects, show a prominent Back to Projects button */}
+            {normalizedPath !== "/projects" && (
               <Link
                 href="/projects"
                 onClick={() => setActiveProject(null)}
                 className="flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-slate-50 px-2.5 py-1.5 text-xs font-bold text-[var(--ink)] hover:bg-slate-100 hover:border-[var(--border-strong)] transition-all shadow-2xs"
               >
                 <span className="text-[var(--accent)] text-sm leading-none">←</span>
-                <span className="hidden sm:inline">Main Dashboard</span>
-                <span className="sm:hidden">Main</span>
+                <span className="hidden sm:inline">
+                  {isInsideProject ? "Back to All Projects" : "All Projects"}
+                </span>
+                <span className="sm:hidden">Projects</span>
               </Link>
             )}
 
