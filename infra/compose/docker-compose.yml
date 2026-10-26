@@ -40,9 +40,12 @@ services:
       - --api.insecure=true
       - --providers.docker=true
       - --providers.docker.exposedbydefault=false
+      - --providers.docker.apiversion=1.44
       - --providers.file.directory=/etc/traefik/dynamic
       - --providers.file.watch=true
       - --entrypoints.web.address=:80
+    environment:
+      - DOCKER_API_VERSION=1.44
     ports:
       - "${HTTP_PORT:-80}:80"
       - "${TRAEFIK_DASHBOARD_PORT:-8080}:8080"
