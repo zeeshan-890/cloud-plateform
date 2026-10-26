@@ -62,7 +62,11 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
 
   const getAppPublicUrl = (projectName: string) => {
     const slug = projectName.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-");
-    return `http://${slug}.${cleanBase}`;
+    const proto =
+      typeof window !== "undefined" && window.location.protocol === "https:"
+        ? "https:"
+        : "http:";
+    return `${proto}//${slug}.${cleanBase}`;
   };
 
   return (

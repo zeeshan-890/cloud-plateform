@@ -274,11 +274,11 @@ export default function SettingsPage() {
             <div className="grid gap-2 sm:grid-cols-2 text-xs font-mono">
               <div className="rounded bg-white p-2.5 border border-blue-200 shadow-2xs">
                 <p className="text-[10px] uppercase font-bold text-slate-500">Management Panel Domain</p>
-                <p className="font-bold text-blue-700 mt-0.5 truncate">http://{panelDomain}</p>
+                <p className="font-bold text-blue-700 mt-0.5 truncate">https://{panelDomain}</p>
               </div>
               <div className="rounded bg-white p-2.5 border border-blue-200 shadow-2xs">
                 <p className="text-[10px] uppercase font-bold text-slate-500">Default App Subdomain Pattern</p>
-                <p className="font-bold text-blue-700 mt-0.5 truncate">http://[app-name].{rootDomain}</p>
+                <p className="font-bold text-blue-700 mt-0.5 truncate">https://[app-name].{rootDomain}</p>
               </div>
             </div>
 
