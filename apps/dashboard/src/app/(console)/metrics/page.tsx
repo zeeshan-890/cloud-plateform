@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Alert, EmptyState, PageHeader } from "@/components/ui/page";
 import { api, ApiError } from "@/lib/api";
 import { useOrg } from "@/lib/org-context";
+import { setVisibilityInterval } from "@/lib/visibility";
 import type { MetricSummary, Project } from "@/lib/types";
 
 export default function MetricsPage() {
@@ -56,12 +57,12 @@ export default function MetricsPage() {
         }
       }
     })();
-    const t = setInterval(() => {
+    const cancelInterval = setVisibilityInterval(() => {
       load(projectId).catch(() => {});
     }, 10000);
     return () => {
       mounted = false;
-      clearInterval(t);
+      cancelInterval();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentOrg, projectId]);

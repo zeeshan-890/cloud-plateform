@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Alert, EmptyState, PageHeader } from "@/components/ui/page";
 import { api, ApiError } from "@/lib/api";
 import { useOrg } from "@/lib/org-context";
+import { setVisibilityInterval } from "@/lib/visibility";
 import type { Deployment, Project } from "@/lib/types";
 
 function isPreviewDeploy(d: Deployment): boolean {
@@ -83,12 +84,12 @@ export default function DeploymentsPage() {
         }
       }
     })();
-    const t = setInterval(() => {
+    const cancelInterval = setVisibilityInterval(() => {
       loadDeploys(projectId).catch(() => undefined);
     }, 4000);
     return () => {
       mounted = false;
-      clearInterval(t);
+      cancelInterval();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentOrg, projectId]);

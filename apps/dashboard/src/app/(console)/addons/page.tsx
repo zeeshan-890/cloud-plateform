@@ -17,10 +17,33 @@ export default function AddonsPage() {
   const [mode, setMode] = useState("");
   const [engine, setEngine] = useState("redis");
   const [name, setName] = useState("");
+
+  // Custom application state
+  const [tab, setTab] = useState<"catalog" | "custom">("catalog");
+  const [customEngine, setCustomEngine] = useState("");
+  const [customImage, setCustomImage] = useState("");
+  const [customPort, setCustomPort] = useState("8080");
+  const [customDesc, setCustomDesc] = useState("");
+
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [busy, setBusy] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedCategory, setSelectedCategory] = useState("all");
+
   const selected = catalog.find((c) => c.id === engine);
+
+  const filteredCatalog = catalog.filter((c) => {
+    const matchesCat = selectedCategory === "all" || c.category === selectedCategory;
+    const q = searchQuery.toLowerCase().trim();
+    const matchesQuery =
+      !q ||
+      c.name.toLowerCase().includes(q) ||
+      c.id.toLowerCase().includes(q) ||
+      c.description.toLowerCase().includes(q) ||
+      c.category.toLowerCase().includes(q);
+    return matchesCat && matchesQuery;
+  });
 
   useEffect(() => {
     if (!currentOrg) return;
@@ -93,6 +116,38 @@ export default function AddonsPage() {
     }
   }
 
+  async function onCreateCustom() {
+    if (!currentOrg || !projectId || !name.trim() || !customEngine.trim()) return;
+    setBusy(true);
+    setError("");
+    setSuccess("");
+    try {
+      const portNum = parseInt(customPort, 10) || 8080;
+      const created = await api.createAddon(
+        currentOrg.id,
+        projectId,
+        customEngine.trim(),
+        name.trim(),
+        "development",
+        {
+          docker_image: customImage.trim(),
+          port: portNum,
+          description: customDesc.trim() || undefined,
+        },
+      );
+      setName("");
+      setCustomEngine("");
+      setCustomImage("");
+      setCustomDesc("");
+      setSuccess(`Provisioned custom app: ${created.engine}/${created.name}.`);
+      await load(projectId);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Create custom app failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function onDelete(id: string) {
     if (!currentOrg || !projectId) return;
     setBusy(true);
@@ -121,8 +176,8 @@ export default function AddonsPage() {
   return (
     <div className="animate-fade-up">
       <PageHeader
-        title="Add-ons"
-        description="One-click Redis, Postgres, MySQL, MongoDB, RabbitMQ, Kafka, and SQLite. Connection URLs are stored as secrets."
+        title="Add-ons & Marketplace"
+        description="Provision one-click databases or deploy any custom Docker application on demand."
       />
 
       {error ? (
@@ -136,122 +191,299 @@ export default function AddonsPage() {
         </div>
       ) : null}
 
-      <div className="mb-6 rounded-md border border-[var(--border)] bg-[var(--surface)] p-4">
-        <p className="text-sm text-[var(--ink-muted)]">
-          Provision mode:{" "}
-          <span className="font-medium text-[var(--ink)]">{mode || "unknown"}</span>
-        </p>
-        <p className="mt-2 text-xs text-[var(--ink-faint)]">
-          Simulate mode mints realistic credentials. Shared mode provisions against broker services
-          from Compose profile <code className="font-[family-name:var(--font-mono)]">addons</code>.
-        </p>
+      <div className="mb-6 rounded-md border border-[var(--border)] bg-[var(--surface)] p-4 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-sm text-[var(--ink-muted)]">
+            Provision mode:{" "}
+            <span className="font-medium text-[var(--ink)]">{mode || "unknown"}</span>
+          </p>
+          <p className="mt-1 text-xs text-[var(--ink-faint)]">
+            Services are only created when you explicitly request them. Zero background bloat.
+          </p>
+        </div>
+
+        <div className="flex rounded-md border border-[var(--border)] bg-[var(--paper)] p-1">
+          <button
+            type="button"
+            onClick={() => setTab("catalog")}
+            className={`px-3 py-1 text-xs font-medium rounded ${
+              tab === "catalog"
+                ? "bg-[var(--brand)] text-[var(--paper)]"
+                : "text-[var(--ink-muted)] hover:text-[var(--ink)]"
+            }`}
+          >
+            One-Click Catalog ({catalog.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab("custom")}
+            className={`px-3 py-1 text-xs font-medium rounded ${
+              tab === "custom"
+                ? "bg-[var(--brand)] text-[var(--paper)]"
+                : "text-[var(--ink-muted)] hover:text-[var(--ink)]"
+            }`}
+          >
+            + Deploy Any Custom Container
+          </button>
+        </div>
       </div>
 
-      <label className="mb-4 block max-w-sm text-sm text-[var(--ink-muted)]">
-        Project
-        <select
-          className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-[var(--ink)]"
-          value={projectId}
-          onChange={(e) => setProjectId(e.target.value)}
-        >
-          {projects.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name}
-            </option>
-          ))}
-        </select>
-      </label>
+      <div className="mb-4 flex flex-col sm:flex-row gap-3 items-stretch sm:items-center justify-between">
+        <label className="block max-w-sm text-sm text-[var(--ink-muted)]">
+          Target Project
+          <select
+            className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-[var(--ink)]"
+            value={projectId}
+            onChange={(e) => setProjectId(e.target.value)}
+          >
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        </label>
 
-      {catalog.length > 0 ? (
-        <div className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {catalog.map((c) => (
-            <button
-              key={c.id}
-              type="button"
-              onClick={() => setEngine(c.id)}
-              className={`rounded-md border px-4 py-3 text-left transition-colors ${
-                engine === c.id
-                  ? "border-[var(--ink)] bg-[var(--surface)]"
-                  : "border-[var(--border)] hover:bg-[var(--surface-hover)]"
-              }`}
-            >
-              <div className="text-sm font-medium text-[var(--ink)]">{c.name}</div>
-              <div className="mt-1 text-xs uppercase tracking-wide text-[var(--ink-faint)]">
-                {c.category}
-              </div>
-              <p className="mt-2 text-xs text-[var(--ink-muted)]">{c.description}</p>
-            </button>
-          ))}
-        </div>
-      ) : null}
+        {tab === "catalog" && (
+          <div className="w-full sm:w-72">
+            <label className="block text-sm text-[var(--ink-muted)]">
+              Search Catalog
+              <Input
+                className="mt-1"
+                placeholder="Search 240+ apps (e.g. jellyfin, postgres, wireguard, n8n, ollama)..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+              />
+            </label>
+          </div>
+        )}
+      </div>
 
-      {selected ? (
-        <div className="mb-6 rounded-md border border-[var(--border)] bg-[var(--surface)] p-4">
-          <h2 className="text-sm font-semibold text-[var(--ink)]">
-            Selected: {selected.name} ({selected.id})
-          </h2>
-          <p className="mt-1 text-xs text-[var(--ink-muted)]">{selected.description}</p>
-          {selected.secret_keys?.length ? (
-            <p className="mt-2 font-[family-name:var(--font-mono)] text-xs text-[var(--ink-faint)]">
-              Secret key pattern: {selected.secret_keys.join(", ")}
-            </p>
+      {tab === "catalog" ? (
+        <>
+          {/* Category Filter Pills */}
+          <div className="mb-4 flex flex-wrap gap-1.5">
+            {[
+              { id: "all", label: "All Apps" },
+              { id: "database", label: "Databases" },
+              { id: "cache", label: "Cache & Key-Value" },
+              { id: "queue", label: "Queues & Streaming" },
+              { id: "search", label: "Search" },
+              { id: "ai", label: "AI & Vector DBs" },
+              { id: "analytics", label: "Analytics & BI" },
+              { id: "media", label: "Media & Streaming" },
+              { id: "networking", label: "Networking & VPN" },
+              { id: "productivity", label: "Productivity & Office" },
+              { id: "communication", label: "Chat & Social" },
+              { id: "finance", label: "Finance & Accounting" },
+              { id: "tool", label: "Dev Tools & Automation" },
+              { id: "cms", label: "CMS & Publishing" },
+              { id: "storage", label: "Storage & Sync" },
+              { id: "security", label: "Security & Auth" },
+              { id: "monitoring", label: "Monitoring" },
+              { id: "gaming", label: "Game Servers" },
+            ].map((cat) => (
+              <button
+                key={cat.id}
+                type="button"
+                onClick={() => setSelectedCategory(cat.id)}
+                className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${
+                  selectedCategory === cat.id
+                    ? "border-[var(--brand)] bg-[var(--brand)] text-[var(--paper)] font-medium"
+                    : "border-[var(--border)] text-[var(--ink-muted)] hover:border-[var(--ink-muted)] bg-[var(--surface)]"
+                }`}
+              >
+                {cat.label}
+              </button>
+            ))}
+          </div>
+
+          {filteredCatalog.length > 0 ? (
+            <div className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 max-h-[520px] overflow-y-auto p-1 border border-[var(--border)] rounded-lg bg-[var(--paper)]">
+              {filteredCatalog.map((c) => (
+                <button
+                  key={c.id}
+                  type="button"
+                  onClick={() => setEngine(c.id)}
+                  className={`rounded-md border p-3.5 text-left transition-all ${
+                    engine === c.id
+                      ? "border-[var(--brand)] bg-[var(--surface)] shadow-sm ring-1 ring-[var(--brand)]"
+                      : "border-[var(--border)] hover:bg-[var(--surface-hover)] bg-[var(--surface)]"
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-semibold text-[var(--ink)]">{c.name}</span>
+                    <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-[var(--paper)] border border-[var(--border)] text-[var(--ink-faint)]">
+                      {c.category}
+                    </span>
+                  </div>
+                  <p className="mt-1.5 text-xs text-[var(--ink-muted)] line-clamp-2 leading-relaxed">
+                    {c.description}
+                  </p>
+                  <div className="mt-2 text-[11px] font-mono text-[var(--brand)]">
+                    Default Port: {c.default_port ? `:${c.default_port}` : "File/Embedded"}
+                  </div>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="p-8 text-center text-xs text-[var(--ink-muted)] border border-dashed border-[var(--border)] rounded-md mb-5">
+              No matching applications found. You can deploy it using the "+ Deploy Any Custom Container" tab above!
+            </div>
+          )}
+
+          {selected ? (
+            <div className="mb-6 rounded-md border border-[var(--border)] bg-[var(--surface)] p-4">
+              <h2 className="text-sm font-semibold text-[var(--ink)]">
+                Selected: {selected.name} ({selected.id})
+              </h2>
+              <p className="mt-1 text-xs text-[var(--ink-muted)]">{selected.description}</p>
+              {selected.secret_keys?.length ? (
+                <p className="mt-2 font-[family-name:var(--font-mono)] text-xs text-[var(--ink-faint)]">
+                  Secret key pattern: {selected.secret_keys.join(", ")}
+                </p>
+              ) : null}
+            </div>
           ) : null}
-        </div>
-      ) : null}
 
-      <div className="mb-8 rounded-md border border-[var(--border)] bg-[var(--surface)] p-4">
-        <h2 className="mb-3 text-sm font-semibold text-[var(--ink)]">Create add-on instance</h2>
-        <div className="flex max-w-xl flex-wrap items-end gap-3">
-          <label className="block flex-1 text-sm text-[var(--ink-muted)]">
-            Name
+          <div className="mb-8 rounded-md border border-[var(--border)] bg-[var(--surface)] p-4">
+            <h2 className="mb-3 text-sm font-semibold text-[var(--ink)]">Create add-on instance</h2>
+            <div className="flex max-w-xl flex-wrap items-end gap-3">
+              <label className="block flex-1 text-sm text-[var(--ink-muted)]">
+                Instance Name
+                <Input
+                  className="mt-1"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="cache"
+                />
+              </label>
+              <Button type="button" onClick={onCreate} disabled={busy || !projectId || !name.trim()}>
+                Provision {engine}
+              </Button>
+            </div>
+          </div>
+        </>
+      ) : (
+        /* Custom App Form */
+        <div className="mb-8 rounded-xl border border-[var(--brand)] bg-[var(--surface)] p-5 space-y-4">
+          <div>
+            <h2 className="text-base font-semibold text-[var(--ink)]">Deploy Any Custom Container App</h2>
+            <p className="text-xs text-[var(--ink-muted)]">
+              Run any Docker Hub or OCI image. Automatically attaches internal networking and injects credentials.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-medium text-[var(--ink-muted)] mb-1">
+                Instance Name
+              </label>
+              <Input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="my-ghost-blog"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-[var(--ink-muted)] mb-1">
+                Engine / Identifier
+              </label>
+              <Input
+                value={customEngine}
+                onChange={(e) => setCustomEngine(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ""))}
+                placeholder="ghost"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-[var(--ink-muted)] mb-1">
+                Docker Image Ref
+              </label>
+              <Input
+                value={customImage}
+                onChange={(e) => setCustomImage(e.target.value)}
+                placeholder="ghost:5-alpine or plausible/analytics:latest"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-[var(--ink-muted)] mb-1">
+                Exposed Port
+              </label>
+              <Input
+                type="number"
+                value={customPort}
+                onChange={(e) => setCustomPort(e.target.value)}
+                placeholder="2368"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-[var(--ink-muted)] mb-1">
+              Description (Optional)
+            </label>
             <Input
-              className="mt-1"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="cache"
+              value={customDesc}
+              onChange={(e) => setCustomDesc(e.target.value)}
+              placeholder="Headless blogging engine"
             />
-          </label>
-          <Button type="button" onClick={onCreate} disabled={busy || !projectId || !name.trim()}>
-            Provision {engine}
-          </Button>
-        </div>
-        <p className="mt-2 text-xs text-[var(--ink-faint)]">
-          Tip: use short names like <code>cache</code>, <code>queue</code>,{" "}
-          <code>analytics</code>. One secret reference will be generated per add-on.
-        </p>
-      </div>
+          </div>
 
+          <div className="pt-2">
+            <Button
+              type="button"
+              onClick={onCreateCustom}
+              disabled={busy || !projectId || !name.trim() || !customEngine.trim()}
+            >
+              {busy ? "Deploying Custom App..." : "Deploy Custom Container"}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Active Instances Table */}
       {addons.length === 0 ? (
         <EmptyState
-          title="No add-ons yet"
-          description="Pick an engine above and provision an instance for this project."
+          title="No active add-ons or custom apps"
+          description="Provision a database above or deploy any custom container app when you need one."
         />
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full min-w-[720px] text-left text-sm">
             <thead>
               <tr className="border-b border-[var(--border)] text-[var(--ink-faint)]">
-                <th className="py-2 pr-3 font-medium">Engine</th>
+                <th className="py-2 pr-3 font-medium">Engine / App</th>
                 <th className="py-2 pr-3 font-medium">Name</th>
                 <th className="py-2 pr-3 font-medium">Status</th>
                 <th className="py-2 pr-3 font-medium">Mode</th>
                 <th className="py-2 pr-3 font-medium">Secret Ref</th>
-                <th className="py-2 pr-3 font-medium">Hint</th>
+                <th className="py-2 pr-3 font-medium">Endpoint / Hint</th>
                 <th className="py-2 font-medium" />
               </tr>
             </thead>
             <tbody>
               {addons.map((a) => (
                 <tr key={a.id} className="border-b border-[var(--border)]">
-                  <td className="py-3 pr-3 font-medium text-[var(--ink)]">{a.engine}</td>
+                  <td className="py-3 pr-3 font-medium text-[var(--ink)]">
+                    <span className="font-mono text-xs uppercase px-1.5 py-0.5 rounded bg-[var(--paper)] border border-[var(--border)] mr-2">
+                      {a.engine}
+                    </span>
+                  </td>
                   <td className="py-3 pr-3 text-[var(--ink)]">{a.name}</td>
-                  <td className="py-3 pr-3 text-[var(--ink-muted)]">{a.status}</td>
+                  <td className="py-3 pr-3">
+                    <span className="inline-block px-2 py-0.5 text-xs rounded bg-emerald-500/20 text-emerald-400 font-medium">
+                      {a.status}
+                    </span>
+                  </td>
                   <td className="py-3 pr-3 text-[var(--ink-muted)]">{a.mode}</td>
                   <td className="py-3 pr-3 font-[family-name:var(--font-mono)] text-xs text-[var(--ink-muted)]">
                     {a.secret_ref || "—"}
                   </td>
                   <td className="py-3 pr-3 font-[family-name:var(--font-mono)] text-xs text-[var(--ink-muted)]">
-                    {a.connection_hint || "—"}
+                    {a.connection_hint || a.endpoint || "—"}
                   </td>
                   <td className="py-3 text-right">
                     <Button

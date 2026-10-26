@@ -12,10 +12,11 @@ export default function AIPage() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState("");
   const [mode, setMode] = useState("simulate");
+  const [model, setModel] = useState("");
   const [prompt, setPrompt] = useState("Explain the latest failed deployment or build.");
   const [answer, setAnswer] = useState("");
   const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<"explain" | "ask" | "">("");
 
   useEffect(() => {
     if (!currentOrg) return;
@@ -30,6 +31,7 @@ export default function AIPage() {
         setProjects(list);
         if (list[0]) setProjectId(list[0].id);
         setMode(status.mode || "simulate");
+        setModel(status.model || "");
       } catch (err) {
         if (mounted) {
           setError(err instanceof ApiError ? err.message : "Failed to load AI status");
@@ -43,7 +45,7 @@ export default function AIPage() {
 
   async function onExplain() {
     if (!currentOrg || !projectId) return;
-    setBusy(true);
+    setBusy("explain");
     setError("");
     setAnswer("");
     try {
@@ -53,7 +55,27 @@ export default function AIPage() {
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Explain failed");
     } finally {
-      setBusy(false);
+      setBusy("");
+    }
+  }
+
+  async function onAsk() {
+    if (!currentOrg || !prompt.trim()) return;
+    setBusy("ask");
+    setError("");
+    setAnswer("");
+    try {
+      const res = await api.aiAsk(
+        currentOrg.id,
+        prompt,
+        projectId || undefined,
+      );
+      setAnswer(res.answer);
+      setMode(res.mode);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Ask failed");
+    } finally {
+      setBusy("");
     }
   }
 
@@ -66,11 +88,16 @@ export default function AIPage() {
     );
   }
 
+  const modeHint =
+    mode === "openai"
+      ? `Mode: openai${model ? ` (${model})` : ""}.`
+      : "Mode: simulate (set OPENAI_API_KEY and restart with --profile platform for hosted LLM).";
+
   return (
     <div className="animate-fade-up">
       <PageHeader
         title="AI ops"
-        description={`Explain failed deploys/builds from logs. Mode: ${mode} (set OPENAI_API_KEY for hosted LLM).`}
+        description={`Explain failed deploys/builds from logs, or ask a free-form question. ${modeHint}`}
       />
       {error ? (
         <div className="mb-4">
@@ -102,9 +129,23 @@ export default function AIPage() {
         />
       </label>
 
-      <Button type="button" onClick={onExplain} disabled={busy || !projectId}>
-        {busy ? "Analyzing…" : "Explain failure"}
-      </Button>
+      <div className="flex flex-wrap gap-2">
+        <Button
+          type="button"
+          onClick={onExplain}
+          disabled={!!busy || !projectId}
+        >
+          {busy === "explain" ? "Analyzing…" : "Explain failure"}
+        </Button>
+        <Button
+          type="button"
+          variant="secondary"
+          onClick={onAsk}
+          disabled={!!busy || !prompt.trim()}
+        >
+          {busy === "ask" ? "Asking…" : "Ask"}
+        </Button>
+      </div>
 
       {answer ? (
         <pre className="mt-8 max-w-3xl whitespace-pre-wrap rounded-md border border-[var(--border)] bg-[var(--surface)] p-4 text-sm text-[var(--ink)]">

@@ -261,6 +261,10 @@ export interface AddonCatalogItem {
   name: string;
   category: string;
   description: string;
+  default_port?: number;
+  default_image?: string;
+  scheme?: string;
+  logo?: string;
   secret_keys?: string[];
   modes_supported?: string[];
 }

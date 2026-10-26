@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Alert, EmptyState, PageHeader } from "@/components/ui/page";
 import { api, ApiError } from "@/lib/api";
 import { useOrg } from "@/lib/org-context";
+import { setVisibilityInterval } from "@/lib/visibility";
 import type { Build, Project } from "@/lib/types";
 
 export default function BuildsPage() {
@@ -15,6 +16,8 @@ export default function BuildsPage() {
   const [logs, setLogs] = useState("");
   const [selected, setSelected] = useState<string>("");
   const [error, setError] = useState("");
+  const [explainText, setExplainText] = useState("");
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     if (!currentOrg) return;
@@ -57,12 +60,12 @@ export default function BuildsPage() {
         }
       }
     })();
-    const t = setInterval(() => {
+    const cancelInterval = setVisibilityInterval(() => {
       loadBuilds(projectId).catch(() => undefined);
     }, 4000);
     return () => {
       mounted = false;
-      clearInterval(t);
+      cancelInterval();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentOrg, projectId]);
@@ -70,11 +73,35 @@ export default function BuildsPage() {
   async function showLogs(buildId: string) {
     if (!currentOrg || !projectId) return;
     setSelected(buildId);
+    setExplainText("");
     try {
       const res = await api.getBuildLogs(currentOrg.id, projectId, buildId);
       setLogs(res.logs || "");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Failed to load logs");
+    }
+  }
+
+  async function onExplain(buildId: string) {
+    if (!currentOrg || !projectId) return;
+    setBusy(true);
+    setError("");
+    setExplainText("");
+    setSelected(buildId);
+    try {
+      const [res, logRes] = await Promise.all([
+        api.explainFailure(currentOrg.id, projectId, {
+          build_id: buildId,
+          prompt: "Explain why this build failed and how to fix it.",
+        }),
+        api.getBuildLogs(currentOrg.id, projectId, buildId),
+      ]);
+      setLogs(logRes.logs || "");
+      setExplainText(`(${res.mode}) ${res.explanation}`);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Explain failed");
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -91,13 +118,19 @@ export default function BuildsPage() {
     <div className="animate-fade-up">
       <PageHeader
         title="Builds"
-        description="Build farm jobs from Redis Streams — status and logs."
+        description="Build farm jobs from Redis Streams — status, logs, and AI explain on failures."
       />
 
       {error ? (
         <div className="mb-4">
           <Alert>{error}</Alert>
         </div>
+      ) : null}
+
+      {explainText ? (
+        <pre className="mb-6 max-w-3xl whitespace-pre-wrap rounded-md border border-[var(--border)] bg-[var(--surface)] p-4 text-sm text-[var(--ink)]">
+          {explainText}
+        </pre>
       ) : null}
 
       <label className="mb-6 block max-w-sm text-sm text-[var(--ink-muted)]">
@@ -124,7 +157,7 @@ export default function BuildsPage() {
         <div className="grid gap-6 lg:grid-cols-2">
           <ul className="divide-y divide-[var(--border)]">
             {builds.map((b) => (
-              <li key={b.id} className="flex items-center justify-between py-3">
+              <li key={b.id} className="flex items-center justify-between gap-3 py-3">
                 <div>
                   <p className="text-sm font-medium text-[var(--ink)]">
                     {b.status}
@@ -135,13 +168,25 @@ export default function BuildsPage() {
                     {b.created_at ? new Date(b.created_at).toLocaleString() : "—"}
                   </p>
                 </div>
-                <Button
-                  type="button"
-                  variant={selected === b.id ? "primary" : "secondary"}
-                  onClick={() => showLogs(b.id)}
-                >
-                  Logs
-                </Button>
+                <div className="flex shrink-0 flex-wrap justify-end gap-2">
+                  <Button
+                    type="button"
+                    variant={selected === b.id ? "primary" : "secondary"}
+                    onClick={() => showLogs(b.id)}
+                  >
+                    Logs
+                  </Button>
+                  {b.status === "failed" ? (
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      disabled={busy}
+                      onClick={() => onExplain(b.id)}
+                    >
+                      {busy && selected === b.id ? "Analyzing…" : "Explain failure"}
+                    </Button>
+                  ) : null}
+                </div>
               </li>
             ))}
           </ul>

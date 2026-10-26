@@ -631,12 +631,13 @@ export const api = {
     engine: string,
     name: string,
     env?: string,
+    extra?: { docker_image?: string; port?: number; description?: string },
   ) {
     const data = await request<{ addon: ManagedAddon }>(
       `/orgs/${orgId}/projects/${projectId}/addons`,
       {
         method: "POST",
-        body: { engine, name, env: env || "development" },
+        body: { engine, name, env: env || "development", ...(extra || {}) },
       },
     );
     return unwrap(data, "addon") as ManagedAddon;
