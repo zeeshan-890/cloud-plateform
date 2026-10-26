@@ -4,6 +4,7 @@
 # Works on Oracle Linux, RHEL, CentOS, Rocky, AlmaLinux, Ubuntu, and Debian.
 # ==============================================================================
 set -euo pipefail
+cd "${HOME}"
 
 echo "=========================================================="
 echo "    JP Cloud Platform — 1-Click Server Installation"
