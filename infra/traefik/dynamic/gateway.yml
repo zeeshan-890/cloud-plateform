@@ -12,16 +12,26 @@ http:
       service: gateway
       tls: {}
 
-    # 2. Main Platform Panel: matches panel.<domain>, panel.localhost, panel.jp.localhost
-    panel:
-      rule: HostRegexp(`^panel\..+`) || Host(`panel.localhost`) || Host(`panel.jp.localhost`)
-      priority: 50
+    # 2. Main Platform Panel with Let's Encrypt SSL:
+    panel-live:
+      rule: Host(`panel.zeeshanabbaskhan.me`) || Host(`panel.zeeshanabbas.me`)
+      priority: 60
       entryPoints:
         - web
         - websecure
       service: dashboard
       tls:
         certResolver: letsencrypt
+
+    # 3. Panel Fallback for localhost and other dynamic subdomains:
+    panel-fallback:
+      rule: HostRegexp(`^panel\..+`) || Host(`panel.localhost`) || Host(`panel.jp.localhost`)
+      priority: 50
+      entryPoints:
+        - web
+        - websecure
+      service: dashboard
+      tls: {}
 
     # 3. Universal Fallback: matches any direct IP or host root traffic to Web Dashboard
     dashboard-fallback:
