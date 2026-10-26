@@ -2,13 +2,36 @@
 # Per-app domain routers are written here by the domain service as domain-*.yml
 http:
   routers:
+    # 1. Microservice API Gateway: matches all /api requests
     gateway:
-      rule: Host(`localhost`) || Host(`jp.localhost`) || PathPrefix(`/api`)
+      rule: PathPrefix(`/api`)
+      priority: 100
       entryPoints:
         - web
       service: gateway
+
+    # 2. Main Platform Panel: matches panel.<domain>, panel.localhost, panel.jp.localhost
+    panel:
+      rule: HostRegexp(`^panel\..+`) || Host(`panel.localhost`) || Host(`panel.jp.localhost`)
+      priority: 50
+      entryPoints:
+        - web
+      service: dashboard
+
+    # 3. Universal Fallback: matches any direct IP or host root traffic to Web Dashboard
+    dashboard-fallback:
+      rule: PathPrefix(`/`)
+      priority: 1
+      entryPoints:
+        - web
+      service: dashboard
+
   services:
     gateway:
       loadBalancer:
         servers:
           - url: http://gateway:8000
+    dashboard:
+      loadBalancer:
+        servers:
+          - url: http://dashboard:3000

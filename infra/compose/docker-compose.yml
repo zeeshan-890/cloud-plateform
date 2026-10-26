@@ -34,7 +34,7 @@ x-go-build: &go-build
 services:
   traefik:
     <<: *service-defaults
-    image: traefik:v3.2
+    image: traefik:v3.6
     command:
       - --api.dashboard=true
       - --api.insecure=true
