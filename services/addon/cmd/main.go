@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jp-cloud/addon/internal/catalog"
 	"github.com/jp-cloud/addon/internal/handlers"
 	"github.com/jp-cloud/addon/internal/provisioner"
 	"github.com/jp-cloud/addon/internal/store"
@@ -49,6 +50,15 @@ func main() {
 		os.Exit(1)
 	}
 	defer rdb.Close()
+
+	catalogDir := os.Getenv("ADDON_CATALOG_DIR")
+	if catalogDir != "" {
+		if err := catalog.LoadCatalogDir(catalogDir); err != nil {
+			log.Warn("load custom addon catalog", "err", err)
+		} else {
+			log.Info("loaded custom addon catalog", "dir", catalogDir)
+		}
+	}
 
 	prov := provisioner.NewFromEnv(pool)
 	jm := jwtutil.NewManager(cfg.JWTSecret, cfg.JWTAccessTTL, cfg.JWTRefreshTTL)

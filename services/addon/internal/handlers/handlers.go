@@ -99,9 +99,12 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Engine string `json:"engine"`
-		Name   string `json:"name"`
-		Env    string `json:"env"`
+		Engine      string `json:"engine"`
+		Name        string `json:"name"`
+		Env         string `json:"env"`
+		DockerImage string `json:"docker_image,omitempty"`
+		Port        int    `json:"port,omitempty"`
+		Description string `json:"description,omitempty"`
 	}
 	if err := httpx.Decode(r, &req); err != nil || strings.TrimSpace(req.Name) == "" || strings.TrimSpace(req.Engine) == "" {
 		httpx.Error(w, http.StatusBadRequest, "validation_error", "engine and name required")
@@ -109,8 +112,31 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	engine := strings.ToLower(strings.TrimSpace(req.Engine))
 	if !catalog.ValidEngine(engine) {
-		httpx.Error(w, http.StatusBadRequest, "validation_error", "unknown engine")
-		return
+		// Dynamically register user's custom application engine
+		port := req.Port
+		if port <= 0 {
+			port = 8080
+		}
+		desc := req.Description
+		if desc == "" {
+			if req.DockerImage != "" {
+				desc = "Custom container application: " + req.DockerImage
+			} else {
+				desc = "User-defined custom application"
+			}
+		}
+		catalog.Register(catalog.Item{
+			ID:             engine,
+			Name:           strings.ToUpper(string(engine[0])) + engine[1:],
+			Category:       "custom",
+			Description:    desc,
+			DefaultPort:    port,
+			DefaultImage:   req.DockerImage,
+			Scheme:         "http",
+			EnvPrefix:      strings.ToUpper(engine) + "_URL_",
+			SecretKeys:     []string{strings.ToUpper(engine) + "_URL"},
+			ModesSupported: []string{"simulate", "shared"},
+		})
 	}
 	env := strings.ToLower(strings.TrimSpace(req.Env))
 	if env == "" {

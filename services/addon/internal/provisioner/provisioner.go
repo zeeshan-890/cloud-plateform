@@ -17,6 +17,7 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jp-cloud/addon/internal/catalog"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -184,6 +185,16 @@ func (m *Manager) createSimulate(engine, resource, pass, safe, short string) (*R
 		meta["database"] = resource
 		meta["user"] = user
 		return &Result{Mode: "simulate", Endpoint: "localhost:3306", ConnectionURL: conn, ConnectionHint: hint, Metadata: meta}, nil
+	case "mariadb":
+		user := "jp_" + short + "_" + safe
+		if len(user) > 32 {
+			user = user[:32]
+		}
+		conn := fmt.Sprintf("mysql://%s:%s@localhost:3306/%s", user, pass, resource)
+		hint := fmt.Sprintf("mysql://%s:***@localhost:3306/%s (simulate)", user, resource)
+		meta["database"] = resource
+		meta["user"] = user
+		return &Result{Mode: "simulate", Endpoint: "localhost:3306", ConnectionURL: conn, ConnectionHint: hint, Metadata: meta}, nil
 	case "mongodb":
 		user := "jp_" + short + "_" + safe
 		conn := fmt.Sprintf("mongodb://%s:%s@localhost:27017/%s?authSource=%s", user, pass, resource, resource)
@@ -198,6 +209,13 @@ func (m *Manager) createSimulate(engine, resource, pass, safe, short string) (*R
 		meta["db"] = dbIdx
 		meta["key_prefix"] = resource + ":"
 		return &Result{Mode: "simulate", Endpoint: "localhost:6380", ConnectionURL: conn, ConnectionHint: hint, Metadata: meta}, nil
+	case "valkey":
+		dbIdx := hashDB(short + safe)
+		conn := fmt.Sprintf("redis://:%s@localhost:6379/%d", pass, dbIdx)
+		hint := fmt.Sprintf("redis://:***@localhost:6379/%d (simulate)", dbIdx)
+		meta["db"] = dbIdx
+		meta["key_prefix"] = resource + ":"
+		return &Result{Mode: "simulate", Endpoint: "localhost:6379", ConnectionURL: conn, ConnectionHint: hint, Metadata: meta}, nil
 	case "rabbitmq":
 		user := "jp_" + short + "_" + safe
 		vhost := resource
@@ -218,7 +236,61 @@ func (m *Manager) createSimulate(engine, resource, pass, safe, short string) (*R
 		path := filepath.ToSlash(filepath.Join("/tmp/jp-addons", resource+".db"))
 		meta["path"] = path
 		return &Result{Mode: "simulate", Endpoint: path, ConnectionURL: path, ConnectionHint: path + " (simulate)", Metadata: meta}, nil
+	case "meilisearch":
+		conn := fmt.Sprintf("http://:%s@localhost:7700", pass)
+		hint := "http://:***@localhost:7700 (simulate)"
+		meta["api_key"] = pass
+		return &Result{Mode: "simulate", Endpoint: "localhost:7700", ConnectionURL: conn, ConnectionHint: hint, Metadata: meta}, nil
+	case "elasticsearch":
+		conn := fmt.Sprintf("http://elastic:%s@localhost:9200", pass)
+		hint := "http://elastic:***@localhost:9200 (simulate)"
+		meta["user"] = "elastic"
+		return &Result{Mode: "simulate", Endpoint: "localhost:9200", ConnectionURL: conn, ConnectionHint: hint, Metadata: meta}, nil
+	case "clickhouse":
+		conn := fmt.Sprintf("http://default:%s@localhost:8123/%s", pass, resource)
+		hint := fmt.Sprintf("http://default:***@localhost:8123/%s (simulate)", resource)
+		meta["database"] = resource
+		return &Result{Mode: "simulate", Endpoint: "localhost:8123", ConnectionURL: conn, ConnectionHint: hint, Metadata: meta}, nil
+	case "minio":
+		accessKey := "jp_" + short + "_" + safe
+		if len(accessKey) > 20 {
+			accessKey = accessKey[:20]
+		}
+		conn := "http://localhost:9000"
+		hint := fmt.Sprintf("s3://%s:***@localhost:9000 (simulate)", accessKey)
+		meta["access_key"] = accessKey
+		meta["secret_key"] = pass
+		meta["endpoint"] = conn
+		return &Result{Mode: "simulate", Endpoint: "localhost:9000", ConnectionURL: conn, ConnectionHint: hint, Metadata: meta}, nil
+	case "adminer":
+		conn := "http://localhost:8080"
+		return &Result{Mode: "simulate", Endpoint: "localhost:8080", ConnectionURL: conn, ConnectionHint: "http://localhost:8080 (simulate)", Metadata: meta}, nil
+	case "n8n":
+		conn := "http://localhost:5678"
+		meta["encryption_key"] = pass
+		return &Result{Mode: "simulate", Endpoint: "localhost:5678", ConnectionURL: conn, ConnectionHint: "http://localhost:5678 (simulate)", Metadata: meta}, nil
+	case "vaultwarden":
+		conn := "http://localhost:80"
+		return &Result{Mode: "simulate", Endpoint: "localhost:80", ConnectionURL: conn, ConnectionHint: "http://localhost:80 (simulate)", Metadata: meta}, nil
+	case "pocketbase":
+		conn := "http://localhost:8090"
+		return &Result{Mode: "simulate", Endpoint: "localhost:8090", ConnectionURL: conn, ConnectionHint: "http://localhost:8090 (simulate)", Metadata: meta}, nil
 	default:
+		// Dynamic fallback for any registered custom marketplace app
+		if it, ok := catalog.Get(engine); ok {
+			port := it.DefaultPort
+			if port <= 0 {
+				port = 8080
+			}
+			scheme := it.Scheme
+			if scheme == "" {
+				scheme = "http"
+			}
+			endpoint := fmt.Sprintf("localhost:%d", port)
+			conn := fmt.Sprintf("%s://%s:%s@%s/%s", scheme, safe, pass, endpoint, resource)
+			hint := fmt.Sprintf("%s://%s:***@%s/%s (simulate)", scheme, safe, endpoint, resource)
+			return &Result{Mode: "simulate", Endpoint: endpoint, ConnectionURL: conn, ConnectionHint: hint, Metadata: meta}, nil
+		}
 		return nil, fmt.Errorf("unsupported engine %s", engine)
 	}
 }
@@ -229,9 +301,13 @@ func (m *Manager) createShared(ctx context.Context, engine, resource, pass, safe
 		return m.sharedPostgres(ctx, resource, pass, safe, short)
 	case "mysql":
 		return m.sharedMySQL(ctx, resource, pass, safe, short)
+	case "mariadb":
+		return m.sharedMySQL(ctx, resource, pass, safe, short)
 	case "mongodb":
 		return m.sharedMongo(resource, pass, safe, short)
 	case "redis":
+		return m.sharedRedis(ctx, resource, pass, safe, short)
+	case "valkey":
 		return m.sharedRedis(ctx, resource, pass, safe, short)
 	case "rabbitmq":
 		return m.sharedRabbit(ctx, resource, pass, safe, short)
@@ -240,6 +316,16 @@ func (m *Manager) createShared(ctx context.Context, engine, resource, pass, safe
 	case "sqlite":
 		return m.sharedSQLite(resource)
 	default:
+		envVar := strings.ToUpper(sanitize(engine)) + "_PROVISION_URL"
+		if dsn := os.Getenv(envVar); dsn != "" {
+			return &Result{
+				Mode:           "shared",
+				Endpoint:       dsn,
+				ConnectionURL:  dsn,
+				ConnectionHint: dsn,
+				Metadata:       map[string]any{"engine": engine, "resource": resource},
+			}, nil
+		}
 		return nil, fmt.Errorf("unsupported engine %s", engine)
 	}
 }
