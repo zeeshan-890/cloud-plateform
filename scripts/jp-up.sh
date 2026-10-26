@@ -44,4 +44,5 @@ docker compose "${ARGS[@]}" "${UP[@]}"
 
 echo ""
 echo "jp is up — size=$TIER workers×$REPLICAS profiles=$PROFILES"
-echo "API: http://localhost:8000/api/v1"
+echo "API:         http://localhost:${GATEWAY_PORT:-8000}/api/v1"
+echo "Web Console: http://localhost:${DASHBOARD_PORT:-3000}"

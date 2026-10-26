@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -360,45 +361,46 @@ func (m *Manager) createSimulate(engine, resource, pass, safe, short string) (*R
 		meta["port"] = 9000
 		return &Result{Mode: "simulate", Endpoint: "localhost:9000", ConnectionURL: conn, ConnectionHint: hint, Metadata: meta}, nil
 	case "adminer":
-		conn := "http://localhost:8080"
-		intConn := fmt.Sprintf("http://%s:8080", intHost)
-		pubConn := fmt.Sprintf("http://%s:8080", pubHost)
+		port := findFreeHostPort(8080)
+		conn := fmt.Sprintf("http://localhost:%d", port)
+		intConn := fmt.Sprintf("http://%s:%d", intHost, port)
+		pubConn := fmt.Sprintf("http://%s:%d", pubHost, port)
 		meta["internal_url"] = intConn
 		meta["public_url"] = pubConn
-		meta["port"] = 8080
-		return &Result{Mode: "simulate", Endpoint: "localhost:8080", ConnectionURL: conn, ConnectionHint: "http://localhost:8080 (simulate)", Metadata: meta}, nil
+		meta["port"] = port
+		return &Result{Mode: "simulate", Endpoint: fmt.Sprintf("localhost:%d", port), ConnectionURL: conn, ConnectionHint: fmt.Sprintf("%s (simulate)", conn), Metadata: meta}, nil
 	case "n8n":
-		conn := "http://localhost:5678"
-		intConn := fmt.Sprintf("http://%s:5678", intHost)
-		pubConn := fmt.Sprintf("http://%s:5678", pubHost)
+		port := findFreeHostPort(5678)
+		conn := fmt.Sprintf("http://localhost:%d", port)
+		intConn := fmt.Sprintf("http://%s:%d", intHost, port)
+		pubConn := fmt.Sprintf("http://%s:%d", pubHost, port)
 		meta["encryption_key"] = pass
 		meta["internal_url"] = intConn
 		meta["public_url"] = pubConn
-		meta["port"] = 5678
-		return &Result{Mode: "simulate", Endpoint: "localhost:5678", ConnectionURL: conn, ConnectionHint: "http://localhost:5678 (simulate)", Metadata: meta}, nil
+		meta["port"] = port
+		return &Result{Mode: "simulate", Endpoint: fmt.Sprintf("localhost:%d", port), ConnectionURL: conn, ConnectionHint: fmt.Sprintf("%s (simulate)", conn), Metadata: meta}, nil
 	case "vaultwarden":
-		conn := "http://localhost:80"
-		intConn := fmt.Sprintf("http://%s:80", intHost)
-		pubConn := fmt.Sprintf("http://%s:80", pubHost)
+		port := findFreeHostPort(80)
+		conn := fmt.Sprintf("http://localhost:%d", port)
+		intConn := fmt.Sprintf("http://%s:%d", intHost, port)
+		pubConn := fmt.Sprintf("http://%s:%d", pubHost, port)
 		meta["internal_url"] = intConn
 		meta["public_url"] = pubConn
-		meta["port"] = 80
-		return &Result{Mode: "simulate", Endpoint: "localhost:80", ConnectionURL: conn, ConnectionHint: "http://localhost:80 (simulate)", Metadata: meta}, nil
+		meta["port"] = port
+		return &Result{Mode: "simulate", Endpoint: fmt.Sprintf("localhost:%d", port), ConnectionURL: conn, ConnectionHint: fmt.Sprintf("%s (simulate)", conn), Metadata: meta}, nil
 	case "pocketbase":
-		conn := "http://localhost:8090"
-		intConn := fmt.Sprintf("http://%s:8090", intHost)
-		pubConn := fmt.Sprintf("http://%s:8090", pubHost)
+		port := findFreeHostPort(8090)
+		conn := fmt.Sprintf("http://localhost:%d", port)
+		intConn := fmt.Sprintf("http://%s:%d", intHost, port)
+		pubConn := fmt.Sprintf("http://%s:%d", pubHost, port)
 		meta["internal_url"] = intConn
 		meta["public_url"] = pubConn
-		meta["port"] = 8090
-		return &Result{Mode: "simulate", Endpoint: "localhost:8090", ConnectionURL: conn, ConnectionHint: "http://localhost:8090 (simulate)", Metadata: meta}, nil
+		meta["port"] = port
+		return &Result{Mode: "simulate", Endpoint: fmt.Sprintf("localhost:%d", port), ConnectionURL: conn, ConnectionHint: fmt.Sprintf("%s (simulate)", conn), Metadata: meta}, nil
 	default:
 		// Dynamic fallback for any registered custom marketplace app
 		if it, ok := catalog.Get(engine); ok {
-			port := it.DefaultPort
-			if port <= 0 {
-				port = 8080
-			}
+			port := findFreeHostPort(it.DefaultPort)
 			scheme := it.Scheme
 			if scheme == "" {
 				scheme = "http"
@@ -415,6 +417,21 @@ func (m *Manager) createSimulate(engine, resource, pass, safe, short string) (*R
 		}
 		return nil, fmt.Errorf("unsupported engine %s", engine)
 	}
+}
+
+// findFreeHostPort checks if a port is in use and automatically increments to the next free port.
+func findFreeHostPort(startPort int) int {
+	if startPort <= 0 {
+		startPort = 8080
+	}
+	for p := startPort; p < startPort+1000; p++ {
+		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p))
+		if err == nil {
+			_ = ln.Close()
+			return p
+		}
+	}
+	return startPort
 }
 
 func (m *Manager) createShared(ctx context.Context, engine, resource, pass, safe, short string) (*Result, error) {

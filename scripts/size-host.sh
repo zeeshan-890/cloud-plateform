@@ -45,8 +45,8 @@ else
 fi
 
 case "$TIER" in
-  lite)   REPLICAS=1; CONC=1; BUILD=simulate; RUNTIME=docker; METRICS=live; SUGGESTED=core ;;
-  small)  REPLICAS=1; CONC=1; BUILD=simulate; RUNTIME=simulate; METRICS=simulate; SUGGESTED=platform ;;
+  lite)   REPLICAS=1; CONC=1; BUILD=simulate; RUNTIME=docker; METRICS=live; SUGGESTED=core,ui ;;
+  small)  REPLICAS=1; CONC=1; BUILD=simulate; RUNTIME=simulate; METRICS=simulate; SUGGESTED=platform,ui ;;
   medium) REPLICAS=2; CONC=2; BUILD=docker; RUNTIME=docker; METRICS=live; SUGGESTED=platform,ui,data ;;
   large)  REPLICAS=4; CONC=2; BUILD=docker; RUNTIME=docker; METRICS=live; SUGGESTED=platform,ui,data,monitoring ;;
   xlarge) REPLICAS=8; CONC=4; BUILD=docker; RUNTIME=docker; METRICS=live; SUGGESTED=platform,ui,data,monitoring,dev ;;
@@ -55,6 +55,18 @@ esac
 
 SIMULATE=false
 [[ "$BUILD" == "simulate" ]] && SIMULATE=true
+
+# Dynamic host port allocation — automatically hop to next free port if default is busy
+FIND_PORT="$ROOT/scripts/find-free-port.sh"
+HTTP_PORT="$("$FIND_PORT" "${HTTP_PORT:-80}")"
+TRAEFIK_DASHBOARD_PORT="$("$FIND_PORT" "${TRAEFIK_DASHBOARD_PORT:-8080}")"
+GATEWAY_PORT="$("$FIND_PORT" "${GATEWAY_PORT:-8000}")"
+DASHBOARD_PORT="$("$FIND_PORT" "${DASHBOARD_PORT:-3000}")"
+POSTGRES_PORT="$("$FIND_PORT" "${POSTGRES_PORT:-5432}")"
+REDIS_PORT="$("$FIND_PORT" "${REDIS_PORT:-6379}")"
+REGISTRY_PORT="$("$FIND_PORT" "${REGISTRY_PORT:-5000}")"
+MINIO_PORT="$("$FIND_PORT" "${MINIO_PORT:-9000}")"
+MINIO_CONSOLE_PORT="$("$FIND_PORT" "${MINIO_CONSOLE_PORT:-9001}")"
 
 OVERLAY="infra/compose/sizing/${TIER}.yml"
 OUT="$ROOT/.env.resources"
@@ -73,12 +85,30 @@ BUILD_MODE=$BUILD
 SIMULATE_BUILD=$SIMULATE
 RUNTIME_MODE=$RUNTIME
 METRICS_MODE=$METRICS
+HTTP_PORT=$HTTP_PORT
+TRAEFIK_DASHBOARD_PORT=$TRAEFIK_DASHBOARD_PORT
+GATEWAY_PORT=$GATEWAY_PORT
+DASHBOARD_PORT=$DASHBOARD_PORT
+POSTGRES_PORT=$POSTGRES_PORT
+REDIS_PORT=$REDIS_PORT
+REGISTRY_PORT=$REGISTRY_PORT
+MINIO_PORT=$MINIO_PORT
+MINIO_CONSOLE_PORT=$MINIO_CONSOLE_PORT
 EOF
 
 echo "jp sizing: $TIER (${RAM} GB RAM, ${CPUS} CPUs)"
 echo "  workers × $REPLICAS  concurrency/worker=$CONC"
 echo "  overlay: $OVERLAY"
 echo "  suggested profiles: $SUGGESTED"
+if [[ "$HTTP_PORT" != "80" || "$GATEWAY_PORT" != "8000" || "$DASHBOARD_PORT" != "3000" || "$POSTGRES_PORT" != "5432" || "$REDIS_PORT" != "6379" ]]; then
+  echo "  auto-assigned free ports (avoided port collision):"
+  [[ "$HTTP_PORT" != "80" ]] && echo "    HTTP: 80 busy -> assigned $HTTP_PORT"
+  [[ "$TRAEFIK_DASHBOARD_PORT" != "8080" ]] && echo "    Traefik UI: 8080 busy -> assigned $TRAEFIK_DASHBOARD_PORT"
+  [[ "$DASHBOARD_PORT" != "3000" ]] && echo "    Dashboard: 3000 busy -> assigned $DASHBOARD_PORT"
+  [[ "$GATEWAY_PORT" != "8000" ]] && echo "    Gateway: 8000 busy -> assigned $GATEWAY_PORT"
+  [[ "$POSTGRES_PORT" != "5432" ]] && echo "    PostgreSQL: 5432 busy -> assigned $POSTGRES_PORT"
+  [[ "$REDIS_PORT" != "6379" ]] && echo "    Redis: 6379 busy -> assigned $REDIS_PORT"
+fi
 echo "  wrote: $OUT"
 echo ""
 echo "Next: ./scripts/jp-up.sh"

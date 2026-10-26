@@ -65,13 +65,21 @@ fi
 
 # 6. Launch Platform
 echo "==> Starting platform services with Docker Compose..."
-"$ROOT/scripts/jp-up.sh"
+"$ROOT/scripts/jp-up.sh" "" "$TIER"
+
+# Load assigned resources & ports
+if [[ -f .env.resources ]]; then
+  # shellcheck source=/dev/null
+  source .env.resources
+fi
+GW_PORT="${GATEWAY_PORT:-8000}"
+UI_PORT="${DASHBOARD_PORT:-3000}"
 
 # 7. Wait for Gateway Healthcheck
-echo "==> Waiting for API Gateway readiness..."
+echo "==> Waiting for API Gateway readiness on port ${GW_PORT}..."
 READY=false
 for i in {1..30}; do
-  if curl -sf http://localhost:8000/healthz >/dev/null 2>&1; then
+  if curl -sf "http://localhost:${GW_PORT}/healthz" >/dev/null 2>&1; then
     READY=true
     break
   fi
@@ -84,16 +92,16 @@ if [[ "$READY" == "true" ]]; then
   echo "  SUCCESS! JP Cloud Platform is online and healthy."
   echo "=========================================================="
   echo ""
-  echo "  Web Console:   http://localhost:3000"
-  echo "  API Gateway:   http://localhost:8000"
+  echo "  Web Console:   http://localhost:${UI_PORT}"
+  echo "  API Gateway:   http://localhost:${GW_PORT}"
   echo ""
   echo "  Next Steps:"
-  echo "  1. Open http://localhost:3000 in your browser to create your administrator account."
+  echo "  1. Open http://localhost:${UI_PORT} in your browser to create your administrator account."
   echo "  2. Go to 'Domains' to attach your management domain (e.g. panel.yourdomain.com)."
   echo "  3. Let's Encrypt will automatically issue an HTTPS certificate for your domain."
   echo ""
 else
-  echo "WARNING: Gateway did not respond within 60 seconds."
+  echo "WARNING: Gateway did not respond within 60 seconds on port ${GW_PORT}."
   echo "Check container status: docker compose ps"
   echo "Inspect logs: docker compose logs -f gateway"
 fi
