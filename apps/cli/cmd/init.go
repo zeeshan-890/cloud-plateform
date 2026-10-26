@@ -119,6 +119,9 @@ func initGo(cwd, name string) error {
 			return err
 		}
 		content := string(data)
+		if rel == "go.mod.tmpl" {
+			rel = "go.mod"
+		}
 		if rel == "jp.yaml" {
 			content = strings.ReplaceAll(content, "{{NAME}}", name)
 		}

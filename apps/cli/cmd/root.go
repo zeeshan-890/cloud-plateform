@@ -34,8 +34,6 @@ func init() {
 		orgsCmd,
 		orgCmd,
 		projectsCmd,
-		deployCmd,
-		statusCmd,
 		initCmd,
 		configCmd,
 	)
