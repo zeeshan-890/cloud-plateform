@@ -14,7 +14,7 @@ http:
 
     # 2. Main Platform Panel with Let's Encrypt SSL:
     panel-live:
-      rule: Host(`panel.zeeshanabbaskhan.me`) || Host(`panel.zeeshanabbas.me`)
+      rule: Host(`panel.zeeshanabbaskhan.me`)
       priority: 60
       entryPoints:
         - web
