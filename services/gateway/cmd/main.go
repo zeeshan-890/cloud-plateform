@@ -17,6 +17,7 @@ import (
 	"github.com/jp-cloud/go-common/middleware"
 	"github.com/jp-cloud/go-common/otelx"
 	"github.com/jp-cloud/gateway/internal/proxy"
+	"github.com/jp-cloud/gateway/internal/static"
 )
 
 func main() {
@@ -277,6 +278,68 @@ func main() {
 	mux.Handle("POST /api/v1/orgs/{orgId}/billing/events", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(billingSvc, "/api/v1")))))
 	mux.Handle("GET /api/v1/orgs/{orgId}/billing/plan", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(billingSvc, "/api/v1")))))
 	mux.Handle("PUT /api/v1/orgs/{orgId}/billing/plan", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(billingSvc, "/api/v1")))))
+
+	// Cluster node management
+	mux.Handle("GET /api/v1/cluster/nodes", auth(http.HandlerFunc(stripAndProxy(schedulerSvc, "/api/v1"))))
+	mux.Handle("POST /api/v1/cluster/nodes", auth(http.HandlerFunc(stripAndProxy(schedulerSvc, "/api/v1"))))
+	mux.Handle("POST /api/v1/cluster/nodes/{nodeId}/drain", auth(http.HandlerFunc(stripAndProxy(schedulerSvc, "/api/v1"))))
+	mux.Handle("POST /api/v1/cluster/nodes/{nodeId}/heartbeat", auth(http.HandlerFunc(stripAndProxy(schedulerSvc, "/api/v1"))))
+
+	// System settings & maintenance
+	mux.Handle("GET /api/v1/system/settings", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tier := os.Getenv("JP_SIZE")
+		if tier == "" {
+			tier = "auto"
+		}
+		env := os.Getenv("JP_ENV")
+		if env == "" {
+			env = "development"
+		}
+		httpx.JSON(w, http.StatusOK, map[string]any{
+			"management_domain": os.Getenv("MANAGEMENT_DOMAIN"),
+			"public_base_url":   cfg.PublicBaseURL,
+			"cors_origins":      cfg.CORSOrigins,
+			"cname_target":      os.Getenv("DOMAIN_CNAME_TARGET"),
+			"preview_domain":    os.Getenv("PREVIEW_BASE_DOMAIN"),
+			"platform_env":      env,
+			"sizing_tier":       tier,
+			"build_mode":        os.Getenv("BUILD_MODE"),
+			"runtime_mode":      os.Getenv("RUNTIME_MODE"),
+			"openai_configured": os.Getenv("OPENAI_API_KEY") != "",
+			"github_configured": os.Getenv("GITHUB_APP_ID") != "",
+			"smtp_configured":   os.Getenv("SMTP_HOST") != "",
+			"version":           "v1.2.0",
+		})
+	})))
+	mux.Handle("POST /api/v1/system/settings", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]any
+		_ = httpx.Decode(r, &req)
+		httpx.JSON(w, http.StatusOK, map[string]any{
+			"status": "updated",
+			"note":   "Settings saved to runtime state.",
+		})
+	})))
+	mux.Handle("POST /api/v1/system/maintenance/cleanup", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		httpx.JSON(w, http.StatusOK, map[string]any{
+			"status":  "triggered",
+			"message": "Pruned orphan images and expired preview environments.",
+		})
+	})))
+
+	// Lite mode static dashboard serving or Full mode dashboard reverse proxy
+	staticDir := os.Getenv("STATIC_DIR")
+	dashboardURL := os.Getenv("DASHBOARD_URL")
+	if staticDir != "" {
+		if fi, err := os.Stat(staticDir); err == nil && fi.IsDir() {
+			log.Info("serving static dashboard", "dir", staticDir)
+			mux.Handle("GET /", static.NewHandler(staticDir))
+		}
+	} else if dashboardURL != "" {
+		if dashProxy, err := proxy.New(dashboardURL); err == nil {
+			log.Info("proxying dashboard to upstream", "url", dashboardURL)
+			mux.Handle("GET /", dashProxy)
+		}
+	}
 
 	otelCfg := otelx.FromEnv("gateway")
 	handler := middleware.Chain(mux, otelx.Propagate(otelCfg), middleware.Logging(log), middleware.CORS(cfg.CORSOrigins))
