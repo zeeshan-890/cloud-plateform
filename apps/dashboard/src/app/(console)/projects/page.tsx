@@ -88,28 +88,44 @@ export default function ProjectsPage() {
           }
         />
       ) : (
-        <ul className="divide-y divide-[var(--border)] border-y border-[var(--border)]">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
           {projects.map((project) => (
-            <li key={project.id}>
-              <Link
-                href={`/projects/${project.id}`}
-                className="flex flex-col gap-1 py-4 transition-colors hover:bg-[var(--surface)] sm:flex-row sm:items-center sm:justify-between sm:px-2"
-              >
-                <div>
-                  <p className="font-medium text-[var(--ink)]">{project.name}</p>
-                  {project.description ? (
-                    <p className="mt-0.5 text-sm text-[var(--ink-muted)]">
-                      {project.description}
-                    </p>
-                  ) : null}
+            <Link
+              key={project.id}
+              href={`/projects/${project.id}`}
+              className="jp-card p-4 flex flex-col justify-between group hover:border-[var(--accent)] cursor-pointer"
+            >
+              <div>
+                <div className="flex items-start justify-between gap-2 mb-1.5">
+                  <div className="flex items-center gap-2">
+                    <div className="flex h-7 w-7 items-center justify-center rounded-md bg-blue-50 text-blue-600 ring-1 ring-blue-500/20 font-bold text-xs">
+                      {project.name.slice(0, 2).toUpperCase()}
+                    </div>
+                    <h3 className="font-bold text-[var(--ink)] text-sm group-hover:text-[var(--accent)] transition-colors">
+                      {project.name}
+                    </h3>
+                  </div>
+                  <span className="inline-flex items-center gap-1 rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 ring-1 ring-emerald-600/20 shrink-0">
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                    Active
+                  </span>
                 </div>
-                <span className="font-[family-name:var(--font-mono)] text-xs text-[var(--ink-faint)]">
+                <p className="text-xs text-[var(--ink-secondary)] font-medium line-clamp-2 mb-3 mt-1">
+                  {project.description || "Container and service infrastructure workspace."}
+                </p>
+              </div>
+
+              <div className="pt-2.5 border-t border-[var(--border)] flex items-center justify-between text-xs">
+                <span className="font-mono text-[10px] bg-slate-100 text-slate-700 font-semibold px-2 py-0.5 rounded ring-1 ring-slate-200">
                   {project.slug || project.id.slice(0, 8)}
                 </span>
-              </Link>
-            </li>
+                <span className="font-semibold text-xs text-[var(--accent)] group-hover:translate-x-0.5 transition-transform">
+                  Open console &rarr;
+                </span>
+              </div>
+            </Link>
           ))}
-        </ul>
+        </div>
       )}
     </div>
   );

@@ -189,109 +189,128 @@ export default function ConnectGitPage() {
   }
 
   return (
-    <div className="mx-auto max-w-2xl animate-fade-up">
+    <div className="max-w-3xl space-y-6">
       <PageHeader
         title="Connect Git"
-        description="Install the GitHub App (or stub locally), then connect repositories to a project."
+        description="Link GitHub repositories to trigger automatic preview and production deployments."
       />
 
-      {error ? <Alert>{error}</Alert> : null}
+      {error ? <Alert tone="error">{error}</Alert> : null}
       {success ? <Alert tone="success">{success}</Alert> : null}
 
-      <section className="mt-6 space-y-3">
-        <h2 className="text-sm font-semibold text-[var(--ink)]">GitHub App</h2>
-        <p className="text-sm text-[var(--ink-muted)]">
-          Installations: {installations.length || "none"} · Repo list mode:{" "}
-          {mode}
-          {installMode ? ` · last start: ${installMode}` : ""}
-        </p>
-        <p className="text-xs text-[var(--ink-faint)] font-[family-name:var(--font-mono)]">
-          Webhook URL: {API_BASE}/webhooks/github
-        </p>
-        <p className="text-xs text-[var(--ink-faint)] font-[family-name:var(--font-mono)]">
-          Setup URL: {API_BASE}/github/setup
-        </p>
+      <div className="jp-card p-5 space-y-4">
+        <div className="border-b border-[var(--border)] pb-3">
+          <h2 className="text-sm font-bold text-[var(--ink)]">GitHub App Integration</h2>
+          <p className="text-xs text-[var(--ink-muted)]">
+            Installations: {installations.length || "0 active"} &bull; Mode:{" "}
+            <span className="font-semibold text-[var(--ink)]">{mode}</span>
+            {installMode ? ` &bull; last start: ${installMode}` : ""}
+          </p>
+        </div>
+
         <div className="flex flex-wrap gap-2">
           <Button type="button" onClick={onInstall} disabled={busy}>
             {busy ? "Working…" : "Install GitHub App"}
           </Button>
           <Button
             type="button"
-            variant="ghost"
+            variant="secondary"
             disabled={busy}
             onClick={() => refresh().catch(() => undefined)}
           >
             Refresh
           </Button>
         </div>
+
         {installations.length > 0 ? (
-          <ul className="text-sm text-[var(--ink-muted)]">
-            {installations.map((i) => (
-              <li key={i.id}>
-                {i.account_login} ({i.installation_id})
-              </li>
-            ))}
-          </ul>
+          <div className="rounded-md border border-[var(--border)] bg-slate-50 p-3">
+            <h4 className="text-xs font-bold text-[var(--ink-secondary)] mb-1">Active Accounts</h4>
+            <ul className="text-xs font-mono text-[var(--ink)] space-y-1">
+              {installations.map((i) => (
+                <li key={i.id} className="flex items-center gap-2">
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                  {i.account_login} (ID: {i.installation_id})
+                </li>
+              ))}
+            </ul>
+          </div>
         ) : null}
-      </section>
+      </div>
 
-      <section className="mt-10 space-y-4">
-        <h2 className="text-sm font-semibold text-[var(--ink)]">
-          Connect repository
-        </h2>
-        <label className="block text-sm text-[var(--ink-muted)]">
-          Project
-          <select
-            className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-[var(--ink)]"
-            value={projectId}
-            onChange={(e) => setProjectId(e.target.value)}
-          >
-            {projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-        </label>
+      <div className="jp-card p-5 space-y-4">
+        <div className="border-b border-[var(--border)] pb-3">
+          <h2 className="text-sm font-bold text-[var(--ink)]">
+            Connect Repository to Project
+          </h2>
+          <p className="text-xs text-[var(--ink-muted)]">Select the project and repository to deploy automatically on push.</p>
+        </div>
 
-        <form onSubmit={onConnect} className="flex flex-col gap-3">
-          <Input
-            label="owner/repo"
-            placeholder="acme/web-app"
-            value={fullName}
-            onChange={(e) => setFullName(e.target.value)}
-            list="available-repos"
-            required
-          />
-          <datalist id="available-repos">
-            {available.map((r) => (
-              <option key={r.full_name} value={r.full_name} />
-            ))}
-          </datalist>
-          <Button type="submit" disabled={busy || !projectId}>
-            Connect repo
-          </Button>
-        </form>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
+              Target Project
+            </label>
+            <select
+              className="w-full rounded-md border border-[var(--border)] bg-white px-3 py-2 text-sm font-semibold text-[var(--ink)] shadow-2xs focus:border-[var(--accent)] focus:outline-none"
+              value={projectId}
+              onChange={(e) => setProjectId(e.target.value)}
+            >
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <form onSubmit={onConnect} className="space-y-3">
+              <div>
+                <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
+                  Repository (owner/repo)
+                </label>
+                <div className="flex gap-2">
+                  <Input
+                    placeholder="e.g. acme/web-app"
+                    value={fullName}
+                    onChange={(e) => setFullName(e.target.value)}
+                    list="available-repos"
+                    required
+                  />
+                  <Button type="submit" disabled={busy || !projectId}>
+                    Connect
+                  </Button>
+                </div>
+              </div>
+              <datalist id="available-repos">
+                {available.map((r) => (
+                  <option key={r.full_name} value={r.full_name} />
+                ))}
+              </datalist>
+            </form>
+          </div>
+        </div>
 
         <div className="pt-2">
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--ink-faint)]">
-            Connected
+          <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
+            Connected Repositories ({connected.length})
           </h3>
           {connected.length === 0 ? (
-            <p className="text-sm text-[var(--ink-muted)]">No repos yet.</p>
+            <p className="text-xs text-[var(--ink-muted)]">No repositories connected to this project yet.</p>
           ) : (
-            <ul className="divide-y divide-[var(--border)]">
+            <ul className="divide-y divide-[var(--border)] rounded-md border border-[var(--border)] bg-white">
               {connected.map((r) => (
                 <li
                   key={r.id}
-                  className="flex items-center justify-between py-3 text-sm"
+                  className="flex items-center justify-between px-3 py-2.5 text-xs"
                 >
-                  <span className="font-[family-name:var(--font-mono)] text-[var(--ink)]">
+                  <span className="font-mono font-bold text-[var(--ink)]">
                     {r.full_name}
                   </span>
                   <Button
                     type="button"
-                    variant="ghost"
+                    variant="danger"
+                    size="sm"
                     disabled={busy}
                     onClick={() => onDisconnect(r.id)}
                   >
@@ -302,7 +321,7 @@ export default function ConnectGitPage() {
             </ul>
           )}
         </div>
-      </section>
+      </div>
     </div>
   );
 }

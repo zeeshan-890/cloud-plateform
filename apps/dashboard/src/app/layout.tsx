@@ -4,10 +4,13 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: {
-    default: "jp — Cloud platform",
-    template: "%s · jp",
+    default: "JP Cloud Platform — Self-Hosted Console",
+    template: "%s · JP Cloud",
   },
-  description: "Build, deploy, and operate on jp.",
+  description: "Enterprise self-hosted cloud platform for modern containers and apps.",
+  icons: {
+    icon: "/icon.svg",
+  },
 };
 
 export default function RootLayout({
@@ -17,7 +20,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className="h-full antialiased">
-      <body className="min-h-full font-[family-name:var(--font-body)]">
+      <body className="min-h-full font-[family-name:var(--font-body)] bg-[var(--paper)] text-[var(--ink)]">
         <Providers>{children}</Providers>
       </body>
     </html>

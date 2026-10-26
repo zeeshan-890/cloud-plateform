@@ -207,116 +207,145 @@ export default function DeploymentsPage() {
         </pre>
       ) : null}
 
-      <label className="mb-6 block max-w-sm text-sm text-[var(--ink-muted)]">
-        Project
-        <select
-          className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-[var(--ink)]"
-          value={projectId}
-          onChange={(e) => setProjectId(e.target.value)}
-        >
-          {projects.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name}
-            </option>
-          ))}
-        </select>
-      </label>
+      <div className="jp-card p-4 mb-6 flex flex-wrap items-center justify-between gap-4">
+        <label className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
+          Target Project:
+          <select
+            className="rounded-md border border-[var(--border)] bg-white px-3 py-1.5 text-xs font-semibold text-[var(--ink)] shadow-2xs focus:border-[var(--accent)] focus:outline-none"
+            value={projectId}
+            onChange={(e) => setProjectId(e.target.value)}
+          >
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        {(configHash || drift !== null) && (
+          <div className="flex items-center gap-2 text-xs text-[var(--ink-muted)]">
+            <span>Config SHA: <code className="font-mono text-[var(--ink)] font-bold">{configHash ? configHash.slice(0, 8) : "none"}</code></span>
+            {drift !== null && (
+              <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${drift ? "bg-amber-100 text-amber-800" : "bg-emerald-100 text-emerald-800"}`}>
+                {drift ? "Drift Detected" : "In Sync"}
+              </span>
+            )}
+          </div>
+        )}
+      </div>
 
       {deployments.length === 0 ? (
         <EmptyState
           title="No deployments yet"
-          description="Connect a repo, then click Deploy to queue a build."
+          description="Connect a repo or click Deploy to trigger a build for this project."
         />
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[640px] text-left text-sm">
-            <thead>
-              <tr className="border-b border-[var(--border)] text-[var(--ink-faint)]">
-                <th className="py-2 pr-3 font-medium">Status</th>
-                <th className="py-2 pr-3 font-medium">Kind</th>
-                <th className="py-2 pr-3 font-medium">Preview URL</th>
-                <th className="py-2 pr-3 font-medium">Strategy</th>
-                <th className="py-2 pr-3 font-medium">Source</th>
-                <th className="py-2 pr-3 font-medium">Branch</th>
-                <th className="py-2 pr-3 font-medium">SHA</th>
-                <th className="py-2 pr-3 font-medium">Image</th>
-                <th className="py-2 pr-3 font-medium">Created</th>
-                <th className="py-2 font-medium" />
-              </tr>
-            </thead>
-            <tbody>
-              {deployments.map((d) => (
-                <tr key={d.id} className="border-b border-[var(--border)]">
-                  <td className="py-3 pr-3 font-medium text-[var(--ink)]">
-                    {d.status}
-                  </td>
-                  <td className="py-3 pr-3">
-                    {isPreviewDeploy(d) ? (
-                      <span className="text-xs font-medium uppercase tracking-wide text-[var(--ink-muted)]">
-                        Preview
-                      </span>
-                    ) : (
-                      <span className="text-xs text-[var(--ink-faint)]">Prod</span>
-                    )}
-                  </td>
-                  <td className="py-3 pr-3">
-                    {isPreviewDeploy(d) && d.preview_url ? (
-                      <a
-                        href={d.preview_url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="font-[family-name:var(--font-mono)] text-xs text-[var(--accent)] underline-offset-2 hover:underline"
-                      >
-                        {d.preview_url.replace(/^https?:\/\//, "")}
-                      </a>
-                    ) : (
-                      <span className="text-xs text-[var(--ink-faint)]">—</span>
-                    )}
-                  </td>
-                  <td className="py-3 pr-3 text-[var(--ink-muted)]">
-                    {d.strategy || "rolling"}
-                  </td>
-                  <td className="py-3 pr-3 text-[var(--ink-muted)]">{d.source}</td>
-                  <td className="py-3 pr-3 font-[family-name:var(--font-mono)] text-xs text-[var(--ink-muted)]">
-                    {d.git_branch || "—"}
-                  </td>
-                  <td className="py-3 pr-3 font-[family-name:var(--font-mono)] text-xs text-[var(--ink-muted)]">
-                    {(d.git_sha || "").slice(0, 12)}
-                  </td>
-                  <td className="py-3 pr-3 font-[family-name:var(--font-mono)] text-xs text-[var(--ink-muted)]">
-                    {d.image_ref || "—"}
-                  </td>
-                  <td className="py-3 pr-3 text-[var(--ink-muted)]">
-                    {d.created_at ? new Date(d.created_at).toLocaleString() : "—"}
-                  </td>
-                  <td className="py-3 text-right">
-                    <div className="flex justify-end gap-2">
-                      {d.status === "failed" ? (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          disabled={busy}
-                          onClick={() => onExplain(d)}
-                        >
-                          Explain failure
-                        </Button>
-                      ) : null}
-                      {d.status === "ready" && d.image_ref ? (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          disabled={busy}
-                          onClick={() => onRollback(d.id)}
-                        >
-                          Roll back to
-                        </Button>
-                      ) : null}
-                    </div>
-                  </td>
+        <div className="jp-card overflow-hidden">
+          <div className="border-b border-[var(--border)] bg-slate-50 px-4 py-3">
+            <h4 className="text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
+              Deployment History ({deployments.length})
+            </h4>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[700px] text-left text-sm">
+              <thead>
+                <tr className="border-b border-[var(--border)] bg-slate-50/70 text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
+                  <th className="px-4 py-3">Status</th>
+                  <th className="px-4 py-3">Kind</th>
+                  <th className="px-4 py-3">URL / Target</th>
+                  <th className="px-4 py-3">Branch & Commit</th>
+                  <th className="px-4 py-3">Date</th>
+                  <th className="px-4 py-3 text-right">Actions</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody className="divide-y divide-[var(--border)]">
+                {deployments.map((d) => {
+                  const isReady = d.status === "ready";
+                  const isFailed = d.status === "failed";
+                  const isBuilding = d.status === "building" || d.status === "deploying";
+                  return (
+                    <tr key={d.id} className="hover:bg-slate-50/50 transition-colors">
+                      <td className="px-4 py-3">
+                        <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-bold ${
+                          isReady
+                            ? "border-emerald-300 bg-emerald-50 text-emerald-800"
+                            : isFailed
+                            ? "border-red-300 bg-red-50 text-red-800"
+                            : isBuilding
+                            ? "border-blue-300 bg-blue-50 text-blue-800"
+                            : "border-slate-300 bg-slate-100 text-slate-800"
+                        }`}>
+                          <span className={`h-1.5 w-1.5 rounded-full ${
+                            isReady ? "bg-emerald-600" : isFailed ? "bg-red-600" : isBuilding ? "bg-blue-600 animate-pulse" : "bg-slate-500"
+                          }`} />
+                          {d.status}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3">
+                        {isPreviewDeploy(d) ? (
+                          <span className="rounded bg-indigo-50 border border-indigo-200 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-indigo-700">
+                            Preview
+                          </span>
+                        ) : (
+                          <span className="rounded bg-slate-100 border border-slate-200 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-slate-700">
+                            Prod
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 font-mono text-xs">
+                        {isPreviewDeploy(d) && d.preview_url ? (
+                          <a
+                            href={d.preview_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-[var(--accent)] font-semibold underline-offset-2 hover:underline"
+                          >
+                            {d.preview_url.replace(/^https?:\/\//, "")} ↗
+                          </a>
+                        ) : (
+                          <span className="text-[var(--ink-muted)]">{d.strategy || "rolling"} &bull; {d.source}</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 font-mono text-xs text-[var(--ink-secondary)]">
+                        <span className="font-bold text-[var(--ink)]">{d.git_branch || "main"}</span>
+                        {d.git_sha && <span className="text-[var(--ink-muted)] ml-1.5">@{(d.git_sha).slice(0, 7)}</span>}
+                      </td>
+                      <td className="px-4 py-3 text-xs text-[var(--ink-muted)]">
+                        {d.created_at ? new Date(d.created_at).toLocaleString() : "—"}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <div className="flex justify-end gap-2">
+                          {d.status === "failed" ? (
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              size="sm"
+                              disabled={busy}
+                              onClick={() => onExplain(d)}
+                            >
+                              Explain Error
+                            </Button>
+                          ) : null}
+                          {d.status === "ready" && d.image_ref ? (
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              size="sm"
+                              disabled={busy}
+                              onClick={() => onRollback(d.id)}
+                            >
+                              Rollback
+                            </Button>
+                          ) : null}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </div>

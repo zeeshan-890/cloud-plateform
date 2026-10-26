@@ -112,83 +112,109 @@ export default function SecretsPage() {
       />
       {error ? <Alert>{error}</Alert> : null}
 
-      <div className="mb-6 flex flex-wrap items-end gap-3">
-        <label className="flex flex-col gap-1 text-sm">
-          <span className="text-[var(--ink-muted)]">Project</span>
-          <select
-            className="rounded-md border border-[var(--border)] bg-[var(--paper)] px-3 py-2"
-            value={projectId}
-            onChange={(e) => setProjectId(e.target.value)}
-          >
-            {projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="flex flex-col gap-1 text-sm">
-          <span className="text-[var(--ink-muted)]">Environment</span>
-          <select
-            className="rounded-md border border-[var(--border)] bg-[var(--paper)] px-3 py-2"
-            value={env}
-            onChange={(e) => setEnv(e.target.value)}
-          >
-            {ENVS.map((e) => (
-              <option key={e} value={e}>
-                {e}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
+      <div className="jp-card p-5 mb-6 space-y-4">
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
+              Target Project
+            </label>
+            <select
+              className="w-full rounded-md border border-[var(--border)] bg-white px-3 py-2 text-sm font-semibold text-[var(--ink)] shadow-2xs focus:border-[var(--accent)] focus:outline-none"
+              value={projectId}
+              onChange={(e) => setProjectId(e.target.value)}
+            >
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </div>
 
-      <div className="mb-8 flex flex-wrap items-end gap-3">
-        <Input
-          placeholder="KEY"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          className="max-w-[180px]"
-        />
-        <Input
-          placeholder="value"
-          type="password"
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          className="max-w-[240px]"
-        />
-        <Button onClick={onSet} disabled={busy || !name.trim() || !value}>
-          Set secret
-        </Button>
+          <div>
+            <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
+              Environment Scope
+            </label>
+            <select
+              className="w-full rounded-md border border-[var(--border)] bg-white px-3 py-2 text-sm font-semibold text-[var(--ink)] shadow-2xs focus:border-[var(--accent)] focus:outline-none"
+              value={env}
+              onChange={(e) => setEnv(e.target.value)}
+            >
+              {ENVS.map((e) => (
+                <option key={e} value={e}>
+                  {e.toUpperCase()}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div className="border-t border-[var(--border)] pt-4">
+          <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
+            Add or Update Environment Variable
+          </label>
+          <div className="flex flex-wrap items-center gap-2">
+            <Input
+              placeholder="VARIABLE_NAME"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="min-w-[180px] flex-1 font-mono uppercase"
+            />
+            <Input
+              placeholder="Secret Value"
+              type="password"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              className="min-w-[220px] flex-2"
+            />
+            <Button onClick={onSet} disabled={busy || !name.trim() || !value}>
+              Save Secret
+            </Button>
+          </div>
+        </div>
       </div>
 
       {secrets.length === 0 ? (
-        <EmptyState title="No secrets" description={`Nothing stored in ${env} yet.`} />
+        <EmptyState title="No secrets configured" description={`No environment variables defined in ${env.toUpperCase()} scope yet.`} />
       ) : (
-        <table className="w-full text-left text-sm">
-          <thead>
-            <tr className="border-b border-[var(--border)] text-[var(--ink-muted)]">
-              <th className="py-2 font-medium">Name</th>
-              <th className="py-2 font-medium">Version</th>
-              <th className="py-2 font-medium">Hint</th>
-              <th className="py-2 font-medium" />
-            </tr>
-          </thead>
-          <tbody>
-            {secrets.map((s) => (
-              <tr key={s.id} className="border-b border-[var(--border)]">
-                <td className="py-2 font-mono">{s.name}</td>
-                <td className="py-2">{s.current_version}</td>
-                <td className="py-2 font-mono text-[var(--ink-muted)]">{s.value_hint}</td>
-                <td className="py-2 text-right">
-                  <Button variant="ghost" disabled={busy} onClick={() => onDelete(s.name)}>
-                    Unset
-                  </Button>
-                </td>
+        <div className="jp-card overflow-hidden">
+          <div className="border-b border-[var(--border)] bg-slate-50 px-4 py-3 flex items-center justify-between">
+            <h4 className="text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
+              Encrypted Variables ({secrets.length})
+            </h4>
+            <span className="rounded bg-slate-200/70 px-2 py-0.5 text-[10px] font-bold text-slate-700 uppercase">
+              {env}
+            </span>
+          </div>
+          <table className="w-full text-left text-sm">
+            <thead>
+              <tr className="border-b border-[var(--border)] bg-slate-50/70 text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
+                <th className="px-4 py-3">Key Name</th>
+                <th className="px-4 py-3">Version</th>
+                <th className="px-4 py-3">Value Fingerprint</th>
+                <th className="px-4 py-3 text-right">Actions</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody className="divide-y divide-[var(--border)]">
+              {secrets.map((s) => (
+                <tr key={s.id} className="hover:bg-slate-50/50 transition-colors">
+                  <td className="px-4 py-3 font-mono font-bold text-[var(--ink)]">{s.name}</td>
+                  <td className="px-4 py-3">
+                    <span className="rounded bg-slate-100 px-2 py-0.5 font-mono text-xs font-semibold text-slate-700">
+                      v{s.current_version}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 font-mono text-xs text-[var(--ink-muted)]">{s.value_hint}</td>
+                  <td className="px-4 py-3 text-right">
+                    <Button variant="danger" size="sm" disabled={busy} onClick={() => onDelete(s.name)}>
+                      Delete
+                    </Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

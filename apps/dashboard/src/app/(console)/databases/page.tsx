@@ -109,73 +109,84 @@ export default function DatabasesPage() {
       />
       {error ? <Alert>{error}</Alert> : null}
 
-      <div className="mb-6 flex flex-wrap items-end gap-3">
-        <label className="flex flex-col gap-1 text-sm">
-          <span className="text-[var(--ink-muted)]">Project</span>
-          <select
-            className="rounded-md border border-[var(--border)] bg-[var(--paper)] px-3 py-2"
-            value={projectId}
-            onChange={(e) => setProjectId(e.target.value)}
-          >
-            {projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        {mode ? (
-          <p className="text-sm text-[var(--ink-muted)]">
-            Mode <span className="font-medium text-[var(--ink)]">{mode}</span>
-          </p>
-        ) : null}
-      </div>
+      <div className="mb-6 grid gap-4 md:grid-cols-2">
+        <div className="jp-card p-4 space-y-3">
+          <h3 className="text-sm font-bold text-[var(--ink)]">Target Project</h3>
+          <div className="flex items-center gap-3">
+            <select
+              className="flex-1 rounded-md border border-[var(--border)] bg-white px-3 py-2 text-sm font-semibold text-[var(--ink)] shadow-2xs focus:border-[var(--accent)] focus:outline-none"
+              value={projectId}
+              onChange={(e) => setProjectId(e.target.value)}
+            >
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+            {mode ? (
+              <span className="rounded border border-[var(--border)] bg-slate-100 px-2.5 py-1 text-xs font-bold text-[var(--ink-secondary)]">
+                {mode}
+              </span>
+            ) : null}
+          </div>
+        </div>
 
-      <div className="mb-8 flex flex-wrap items-end gap-3">
-        <label className="flex flex-col gap-1 text-sm">
-          <span className="text-[var(--ink-muted)]">Name</span>
-          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="app" />
-        </label>
-        <Button onClick={onCreate} disabled={busy || !name.trim()}>
-          Provision
-        </Button>
+        <div className="jp-card p-4 space-y-3">
+          <h3 className="text-sm font-bold text-[var(--ink)]">Provision Postgres</h3>
+          <div className="flex items-center gap-2">
+            <Input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. production_db"
+            />
+            <Button onClick={onCreate} disabled={busy || !name.trim()}>
+              Provision
+            </Button>
+          </div>
+        </div>
       </div>
 
       {databases.length === 0 ? (
         <EmptyState title="No databases" description="Provision a Postgres schema for this project." />
       ) : (
-        <table className="w-full text-left text-sm">
-          <thead>
-            <tr className="border-b border-[var(--border)] text-[var(--ink-muted)]">
-              <th className="py-2 font-medium">Name</th>
-              <th className="py-2 font-medium">Status</th>
-              <th className="py-2 font-medium">Hint</th>
-              <th className="py-2 font-medium">Secret</th>
-              <th className="py-2 font-medium" />
-            </tr>
-          </thead>
-          <tbody>
-            {databases.map((d) => (
-              <tr key={d.id} className="border-b border-[var(--border)]">
-                <td className="py-2 font-medium">{d.name}</td>
-                <td className="py-2 text-[var(--ink-muted)]">
-                  {d.status} · {d.mode}
-                </td>
-                <td className="max-w-xs truncate py-2 text-[var(--ink-muted)]" title={d.connection_hint}>
-                  {d.connection_hint}
-                </td>
-                <td className="max-w-[160px] truncate py-2 text-[var(--ink-muted)]" title={d.secret_ref}>
-                  {d.secret_ref}
-                </td>
-                <td className="py-2 text-right">
-                  <Button variant="ghost" onClick={() => onDelete(d.id)} disabled={busy}>
-                    Delete
-                  </Button>
-                </td>
+        <div className="jp-card overflow-hidden">
+          <table className="w-full text-left text-sm">
+            <thead>
+              <tr className="border-b border-[var(--border)] bg-slate-50 text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
+                <th className="px-4 py-3">Name</th>
+                <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3">Connection Hint</th>
+                <th className="px-4 py-3">Secret Ref</th>
+                <th className="px-4 py-3 text-right">Actions</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody className="divide-y divide-[var(--border)]">
+              {databases.map((d) => (
+                <tr key={d.id} className="hover:bg-slate-50/50 transition-colors">
+                  <td className="px-4 py-3 font-bold text-[var(--ink)]">{d.name}</td>
+                  <td className="px-4 py-3">
+                    <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-300 bg-emerald-50 px-2 py-0.5 text-xs font-bold text-emerald-800">
+                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-600 animate-pulse" />
+                      {d.status} · {d.mode}
+                    </span>
+                  </td>
+                  <td className="max-w-xs truncate px-4 py-3 font-mono text-xs text-[var(--ink-secondary)]" title={d.connection_hint}>
+                    {d.connection_hint}
+                  </td>
+                  <td className="max-w-[160px] truncate px-4 py-3 font-mono text-xs text-[var(--ink-secondary)]" title={d.secret_ref}>
+                    {d.secret_ref}
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    <Button variant="danger" size="sm" onClick={() => onDelete(d.id)} disabled={busy}>
+                      Delete
+                    </Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

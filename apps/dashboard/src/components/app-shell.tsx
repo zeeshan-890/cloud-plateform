@@ -41,27 +41,28 @@ function NavLink({ item }: { item: NavItem }) {
   if (item.soon) {
     return (
       <span
-        className="flex items-center justify-between rounded-md px-3 py-2 text-sm text-[var(--ink-faint)] cursor-not-allowed"
+        className="flex items-center justify-between rounded-md px-3 py-1.5 text-xs text-[var(--ink-faint)] cursor-not-allowed opacity-60 font-medium"
         title="Coming soon"
       >
         {item.label}
-        <span className="text-[10px] uppercase tracking-wider text-[var(--ink-faint)]">
+        <span className="text-[9px] uppercase tracking-wider bg-slate-100 px-1.5 py-0.5 rounded text-[var(--ink-faint)]">
           Soon
         </span>
       </span>
     );
   }
-  const active = pathname === item.href || pathname.startsWith(item.href + "/");
+  const active = pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href + "/"));
   return (
     <Link
       href={item.href}
-      className={`block rounded-md px-3 py-2 text-sm transition-colors duration-200 ${
+      className={`flex items-center justify-between rounded-md px-3 py-1.5 text-xs font-semibold transition-all duration-150 ${
         active
-          ? "bg-[var(--ink)] text-[var(--paper)]"
-          : "text-[var(--ink-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--ink)]"
+          ? "bg-[var(--accent)] text-white shadow-xs"
+          : "text-[var(--ink-secondary)] hover:bg-slate-100 hover:text-[var(--ink)]"
       }`}
     >
-      {item.label}
+      <span>{item.label}</span>
+      {active && <span className="h-1.5 w-1.5 rounded-full bg-white/90 animate-pulse" />}
     </Link>
   );
 }
@@ -79,35 +80,38 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   const sidebar = (
-    <aside className="flex h-full w-64 flex-col border-r border-[var(--border)] bg-[var(--paper)]">
-      <div className="flex items-center justify-between px-5 py-5">
+    <aside className="flex h-full w-60 flex-col border-r border-[var(--border)] bg-[var(--surface)] shadow-2xs">
+      <div className="flex items-center justify-between px-4 py-4 border-b border-[var(--border)] mb-3">
         <BrandMark size="md" href="/projects" />
         <button
           type="button"
-          className="lg:hidden rounded-md p-2 text-[var(--ink-muted)] hover:bg-[var(--surface)]"
+          className="lg:hidden rounded-md p-1.5 text-[var(--ink-muted)] hover:bg-[var(--surface-hover)]"
           onClick={() => setMobileOpen(false)}
           aria-label="Close menu"
         >
-          Close
+          ✕
         </button>
       </div>
 
-      <div className="relative px-3 pb-4">
+      <div className="relative px-3 pb-3">
         <button
           type="button"
           onClick={() => setOrgMenuOpen((v) => !v)}
-          className="flex w-full items-center justify-between rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-left text-sm transition-colors hover:bg-[var(--surface-hover)]"
+          className="flex w-full items-center justify-between rounded-md border border-[var(--border)] bg-slate-50 px-3 py-2 text-left text-xs font-bold transition-all hover:bg-slate-100 hover:border-[var(--border-strong)] shadow-2xs"
           disabled={loading}
         >
-          <span className="truncate font-medium text-[var(--ink)]">
-            {currentOrg?.name || (loading ? "Loading…" : "No organization")}
-          </span>
-          <span className="text-[var(--ink-faint)]" aria-hidden>
-            ▾
+          <div className="flex items-center gap-1.5 truncate">
+            <span className="flex h-2 w-2 rounded-full bg-[var(--accent)] shrink-0" />
+            <span className="truncate text-[var(--ink)]">
+              {currentOrg?.name || (loading ? "Loading…" : "No organization")}
+            </span>
+          </div>
+          <span className="text-[var(--ink-faint)] text-[10px]" aria-hidden>
+            ▼
           </span>
         </button>
         {orgMenuOpen ? (
-          <div className="absolute left-3 right-3 z-20 mt-1 overflow-hidden rounded-md border border-[var(--border)] bg-[var(--paper)] shadow-lg">
+          <div className="absolute left-3 right-3 z-30 mt-1 overflow-hidden rounded-md border border-[var(--border)] bg-[var(--surface)] shadow-md">
             {orgs.map((org) => (
               <button
                 key={org.id}
@@ -147,14 +151,24 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       </nav>
 
-      <div className="border-t border-[var(--border)] px-4 py-4">
-        <p className="truncate text-sm font-medium text-[var(--ink)]">
-          {user?.name}
-        </p>
-        <p className="truncate text-xs text-[var(--ink-muted)]">{user?.email}</p>
+      <div className="border-t border-[var(--border)] px-3.5 py-3 bg-slate-50/80">
+        <div className="flex items-center gap-2 mb-2">
+          <div className="flex h-7 w-7 items-center justify-center rounded-full bg-[var(--accent)] text-white text-xs font-bold shrink-0">
+            {user?.name?.slice(0, 1).toUpperCase() || "A"}
+          </div>
+          <div className="truncate flex-1">
+            <p className="truncate text-xs font-bold text-[var(--ink)] leading-tight">
+              {user?.name || "Administrator"}
+            </p>
+            <p className="truncate text-[10px] text-[var(--ink-secondary)] font-medium">
+              {user?.email || "admin@local"}
+            </p>
+          </div>
+        </div>
         <Button
-          variant="ghost"
-          className="mt-2 w-full justify-start px-0"
+          variant="secondary"
+          size="sm"
+          className="w-full text-xs"
           onClick={handleLogout}
         >
           Sign out
@@ -165,13 +179,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex min-h-screen bg-[var(--paper)]">
-      <div className="hidden lg:block">{sidebar}</div>
+      <div className="hidden lg:block shrink-0">{sidebar}</div>
 
       {mobileOpen ? (
         <div className="fixed inset-0 z-40 lg:hidden">
           <button
             type="button"
-            className="absolute inset-0 bg-[var(--ink)]/40"
+            className="absolute inset-0 bg-slate-900/50 backdrop-blur-xs"
             aria-label="Close overlay"
             onClick={() => setMobileOpen(false)}
           />
@@ -180,10 +194,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       ) : null}
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex items-center gap-3 border-b border-[var(--border)] px-4 py-3 lg:hidden">
+        <header className="flex items-center gap-3 border-b border-[var(--border)] bg-[var(--surface)] px-4 py-2.5 lg:hidden shadow-xs">
           <button
             type="button"
-            className="rounded-md border border-[var(--border)] px-3 py-2 text-sm text-[var(--ink)]"
+            className="rounded-md border border-[var(--border)] px-2.5 py-1 text-xs font-semibold text-[var(--ink)] hover:bg-slate-50"
             onClick={() => setMobileOpen(true)}
             aria-label="Open menu"
           >
@@ -191,7 +205,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </button>
           <BrandMark size="sm" href="/projects" />
         </header>
-        <main className="flex-1 px-4 py-6 sm:px-8 lg:px-10">{children}</main>
+        <main className="flex-1 px-4 py-5 sm:px-6 lg:px-8 max-w-7xl w-full">{children}</main>
       </div>
     </div>
   );

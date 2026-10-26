@@ -15,21 +15,27 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
         <input
           ref={ref}
           id={inputId}
-          className={`rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-sm text-[var(--ink)] placeholder:text-[var(--ink-faint)] transition-colors duration-200 focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/30 disabled:opacity-50 ${error ? "border-[var(--danger)]" : ""} ${className}`}
+          className={`rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--ink)] placeholder:text-[var(--ink-faint)] shadow-2xs transition-colors duration-150 focus:border-[var(--accent)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)] disabled:opacity-50 ${
+            error ? "border-[var(--danger)] ring-1 ring-[var(--danger)]" : ""
+          } ${className}`}
           {...props}
         />
         {hint && !error ? (
           <span className="text-xs text-[var(--ink-muted)]">{hint}</span>
         ) : null}
-        {error ? <span className="text-xs text-[var(--danger)]">{error}</span> : null}
+        {error ? (
+          <span className="text-xs font-medium text-[var(--danger)]">{error}</span>
+        ) : null}
       </>
     );
     if (!label) {
-      return <div className="flex flex-col gap-1.5">{field}</div>;
+      return <div className="flex flex-col gap-1">{field}</div>;
     }
     return (
-      <label className="flex flex-col gap-1.5" htmlFor={inputId}>
-        <span className="text-sm font-medium text-[var(--ink)]">{label}</span>
+      <label className="flex flex-col gap-1" htmlFor={inputId}>
+        <span className="text-xs font-semibold uppercase tracking-wider text-[var(--ink-secondary)]">
+          {label}
+        </span>
         {field}
       </label>
     );

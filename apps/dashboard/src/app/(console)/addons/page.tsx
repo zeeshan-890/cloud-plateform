@@ -231,12 +231,12 @@ export default function AddonsPage() {
         </div>
       ) : null}
 
-      <div className="mb-5 rounded-lg border border-blue-500/20 bg-blue-500/10 p-3.5 text-xs text-blue-200 flex items-start gap-3">
-        <span className="text-base font-bold text-blue-400 mt-0.5">💡</span>
+      <div className="mb-5 rounded-lg border border-blue-200 bg-blue-50/80 p-3.5 text-xs text-blue-950 flex items-start gap-3 shadow-2xs">
+        <span className="text-base font-bold text-blue-600 mt-0.5">💡</span>
         <div className="flex-1">
-          <p className="font-semibold text-blue-100 text-sm">Zero-Domain Architecture & Internal Express Linking</p>
-          <p className="mt-1 text-blue-300 leading-relaxed">
-            All services communicate over the internal Docker network (<code className="bg-blue-900/40 text-blue-200 px-1.5 py-0.5 rounded font-mono">jp</code>). Connect your Express, Node.js, Python, or Go servers using the <strong>Docker Internal URLs</strong> below. For public outside browser access without any domain name, open apps directly via your <strong>Server IP and Port</strong> (<code className="bg-blue-900/40 text-blue-200 px-1.5 py-0.5 rounded font-mono">http://{hostName}:PORT</code>).
+          <p className="font-bold text-blue-900 text-sm">Zero-Domain Architecture & Internal Express Linking</p>
+          <p className="mt-1 text-blue-800 leading-relaxed font-medium">
+            All services communicate over the internal Docker network (<code className="bg-blue-100 text-blue-900 px-1.5 py-0.5 rounded font-mono font-bold">jp</code>). Connect your Express, Node.js, Python, or Go servers using the <strong>Docker Internal URLs</strong> below. For public outside browser access without any domain name, open apps directly via your <strong>Server IP and Port</strong> (<code className="bg-blue-100 text-blue-900 px-1.5 py-0.5 rounded font-mono font-bold">http://{hostName}:PORT</code>).
           </p>
         </div>
       </div>

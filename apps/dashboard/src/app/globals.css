@@ -1,29 +1,46 @@
-@import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Syne:wght@600;700;800&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap");
 @import "tailwindcss";
 
 :root {
-  --font-display: "Syne", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-display: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --font-body: "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 
-  /* Deep ink + sharp vermillion — brand-first, not purple SaaS */
-  --ink: #0b1426;
-  --ink-muted: #4a5568;
-  --ink-faint: #8b95a8;
-  --paper: #f3f5f8;
+  /* High-Contrast Enterprise Theme — Distinct & High Visibility */
+  --ink: #090e17;
+  --ink-secondary: #1e293b;
+  --ink-muted: #475569;
+  --ink-faint: #64748b;
+  
+  --paper: #f1f5f9;
   --surface: #ffffff;
-  --surface-hover: #e8ecf2;
-  --border: #d5dbe6;
-  --accent: #ff4f1a;
-  --accent-hover: #e64412;
-  --accent-deep: #c7350a;
-  --danger: #b42318;
-  --danger-soft: #fef3f2;
-  --danger-border: #fecdca;
-  --ok: #067647;
-  --ok-soft: #ecfdf3;
-  --ok-border: #abefc6;
-  --grid: rgba(11, 20, 38, 0.06);
+  --surface-hover: #f8fafc;
+  --surface-active: #e2e8f0;
+  
+  --border: #cbd5e1;
+  --border-strong: #94a3b8;
+  --border-focus: #2563eb;
+
+  --accent: #2563eb;
+  --brand: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-deep: #1e40af;
+  --accent-soft: #eff6ff;
+  --accent-border: #bfdbfe;
+
+  --danger: #b91c1c;
+  --danger-soft: #fef2f2;
+  --danger-border: #fecaca;
+
+  --ok: #047857;
+  --ok-soft: #ecfdf5;
+  --ok-border: #a7f3d0;
+
+  --warning: #b45309;
+  --warning-soft: #fffbeb;
+  --warning-border: #fde68a;
+
+  --grid: rgba(15, 23, 42, 0.05);
 }
 
 @theme inline {
@@ -46,17 +63,45 @@ body {
   background: var(--paper);
   color: var(--ink);
   font-family: var(--font-body), system-ui, sans-serif;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
 }
 
 ::selection {
-  background: color-mix(in srgb, var(--accent) 35%, white);
+  background: color-mix(in srgb, var(--accent) 25%, white);
   color: var(--ink);
+}
+
+/* High-Contrast Card Styles with Sharp Visible Borders & Shadows */
+.jp-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  box-shadow: 0 1px 3px 0 rgba(15, 23, 42, 0.06), 0 1px 2px -1px rgba(15, 23, 42, 0.04);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.jp-card:hover {
+  border-color: var(--border-strong);
+  box-shadow: 0 4px 6px -1px rgba(15, 23, 42, 0.08), 0 2px 4px -2px rgba(15, 23, 42, 0.04);
+}
+
+.jp-card-compact {
+  padding: 0.875rem 1rem;
+}
+
+.hero-atmosphere {
+  background-color: var(--paper);
+  background-image:
+    linear-gradient(135deg, transparent 60%, rgba(37, 99, 235, 0.04) 100%),
+    linear-gradient(var(--grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size: auto, 32px 32px, 32px 32px;
 }
 
 @keyframes fade-up {
   from {
     opacity: 0;
-    transform: translateY(12px);
+    transform: translateY(8px);
   }
   to {
     opacity: 1;
@@ -64,14 +109,12 @@ body {
   }
 }
 
-@keyframes pulse-soft {
-  0%,
-  100% {
-    opacity: 0.45;
-  }
-  50% {
-    opacity: 1;
-  }
+.animate-fade-up {
+  animation: fade-up 0.35s ease-out both;
+}
+
+.animate-slide-in {
+  animation: slide-in 0.2s ease-out both;
 }
 
 @keyframes slide-in {
@@ -80,55 +123,5 @@ body {
   }
   to {
     transform: translateX(0);
-  }
-}
-
-@keyframes grid-drift {
-  from {
-    background-position: 0 0;
-  }
-  to {
-    background-position: 48px 48px;
-  }
-}
-
-.animate-fade-up {
-  animation: fade-up 0.55s ease-out both;
-}
-
-.animate-fade-up-delay {
-  animation: fade-up 0.65s ease-out 0.12s both;
-}
-
-.animate-fade-up-delay-2 {
-  animation: fade-up 0.7s ease-out 0.22s both;
-}
-
-.animate-pulse-soft {
-  animation: pulse-soft 1.6s ease-in-out infinite;
-}
-
-.animate-slide-in {
-  animation: slide-in 0.25s ease-out both;
-}
-
-.hero-atmosphere {
-  background-color: var(--paper);
-  background-image:
-    linear-gradient(135deg, transparent 40%, color-mix(in srgb, var(--accent) 8%, transparent) 100%),
-    linear-gradient(var(--grid) 1px, transparent 1px),
-    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
-  background-size: auto, 48px 48px, 48px 48px;
-  animation: grid-drift 28s linear infinite;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .animate-fade-up,
-  .animate-fade-up-delay,
-  .animate-fade-up-delay-2,
-  .animate-pulse-soft,
-  .animate-slide-in,
-  .hero-atmosphere {
-    animation: none !important;
   }
 }

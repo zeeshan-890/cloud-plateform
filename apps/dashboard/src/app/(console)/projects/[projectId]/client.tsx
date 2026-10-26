@@ -23,14 +23,21 @@ export default function ProjectDetailClient() {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
+  // Resolve actual projectId from params or URL path in static export
+  const rawId = params?.projectId;
+  const actualProjectId =
+    typeof window !== "undefined" && (!rawId || rawId === "default")
+      ? window.location.pathname.split("/projects/")[1]?.split("/")[0]?.split("?")[0] || rawId
+      : rawId;
+
   useEffect(() => {
-    if (!currentOrg || !params.projectId) return;
+    if (!currentOrg || !actualProjectId || actualProjectId === "default") return;
     let mounted = true;
     (async () => {
       setLoading(true);
       setError("");
       try {
-        const p = await api.getProject(currentOrg.id, params.projectId);
+        const p = await api.getProject(currentOrg.id, actualProjectId);
         if (mounted) {
           setProject(p);
           setName(p.name);
@@ -49,7 +56,7 @@ export default function ProjectDetailClient() {
     return () => {
       mounted = false;
     };
-  }, [currentOrg, params.projectId]);
+  }, [currentOrg, actualProjectId]);
 
   async function onSave(e: FormEvent) {
     e.preventDefault();
@@ -137,13 +144,16 @@ export default function ProjectDetailClient() {
       <div className="grid gap-6 lg:grid-cols-3">
         <form
           onSubmit={onSave}
-          className="space-y-4 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-6 lg:col-span-2"
+          className="jp-card space-y-4 p-5 lg:col-span-2"
         >
-          <h2 className="text-base font-semibold text-[var(--color-fg)]">
-            General Settings
-          </h2>
+          <div className="border-b border-[var(--border)] pb-3">
+            <h2 className="text-base font-bold text-[var(--ink)]">
+              General Settings
+            </h2>
+            <p className="text-xs text-[var(--ink-muted)]">Update project metadata and display details.</p>
+          </div>
           <div>
-            <label className="mb-1 block text-xs font-medium text-[var(--color-fg-muted)]">
+            <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
               Project Name
             </label>
             <Input
@@ -154,7 +164,7 @@ export default function ProjectDetailClient() {
             />
           </div>
           <div>
-            <label className="mb-1 block text-xs font-medium text-[var(--color-fg-muted)]">
+            <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
               Description
             </label>
             <textarea
@@ -162,7 +172,7 @@ export default function ProjectDetailClient() {
               onChange={(e) => setDescription(e.target.value)}
               disabled={saving}
               rows={3}
-              className="w-full rounded-md border border-[var(--color-border)] bg-transparent px-3 py-2 text-sm text-[var(--color-fg)] placeholder:text-[var(--color-fg-subtle)] focus:border-[var(--color-primary)] focus:outline-none"
+              className="w-full rounded-md border border-[var(--border)] bg-white px-3 py-2 text-sm text-[var(--ink)] placeholder:text-[var(--ink-faint)] focus:border-[var(--accent)] focus:ring-1 focus:ring-[var(--accent)] focus:outline-none transition-all shadow-2xs"
               placeholder="What does this project do?"
             />
           </div>
@@ -173,50 +183,50 @@ export default function ProjectDetailClient() {
           </div>
         </form>
 
-        <div className="space-y-6">
-          <div className="space-y-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-6">
-            <h3 className="text-sm font-semibold text-[var(--color-fg)]">
+        <div className="space-y-4">
+          <div className="jp-card space-y-3 p-4">
+            <h3 className="text-sm font-bold text-[var(--ink)]">
               Quick Links
             </h3>
-            <ul className="space-y-2 text-xs text-[var(--color-fg-muted)]">
+            <ul className="space-y-2 text-xs font-medium text-[var(--ink-secondary)]">
               <li>
                 <Link
                   href="/secrets"
-                  className="hover:text-[var(--color-primary)]"
+                  className="flex items-center gap-1.5 hover:text-[var(--accent)] hover:translate-x-0.5 transition-all"
                 >
-                  → Environment Variables & Secrets
+                  <span className="text-[var(--accent)]">→</span> Environment Variables & Secrets
                 </Link>
               </li>
               <li>
                 <Link
                   href="/domains"
-                  className="hover:text-[var(--color-primary)]"
+                  className="flex items-center gap-1.5 hover:text-[var(--accent)] hover:translate-x-0.5 transition-all"
                 >
-                  → Custom Domains & TLS
+                  <span className="text-[var(--accent)]">→</span> Custom Domains & TLS
                 </Link>
               </li>
               <li>
                 <Link
                   href="/databases"
-                  className="hover:text-[var(--color-primary)]"
+                  className="flex items-center gap-1.5 hover:text-[var(--accent)] hover:translate-x-0.5 transition-all"
                 >
-                  → Managed Databases
+                  <span className="text-[var(--accent)]">→</span> Managed Databases
                 </Link>
               </li>
               <li>
                 <Link
                   href="/addons"
-                  className="hover:text-[var(--color-primary)]"
+                  className="flex items-center gap-1.5 hover:text-[var(--accent)] hover:translate-x-0.5 transition-all"
                 >
-                  → Add-ons Marketplace
+                  <span className="text-[var(--accent)]">→</span> Add-ons Marketplace
                 </Link>
               </li>
             </ul>
           </div>
 
-          <div className="space-y-3 rounded-xl border border-red-500/20 bg-red-500/5 p-6">
-            <h3 className="text-sm font-semibold text-red-500">Danger Zone</h3>
-            <p className="text-xs text-[var(--color-fg-muted)]">
+          <div className="jp-card space-y-3 border-red-300 bg-red-50/50 p-4">
+            <h3 className="text-sm font-bold text-red-700">Danger Zone</h3>
+            <p className="text-xs text-red-800/80 leading-relaxed">
               Deleting this project deletes all associated deployments,
               secrets, and routing configurations permanently.
             </p>
