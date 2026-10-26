@@ -148,7 +148,7 @@ Defaults are **real** (`scripts/go-real.*` / `.env`). Simulate only if you expli
 | Secrets / envs / logs | **Real** |
 | Metrics | **`live`**; Prometheus via `--profile monitoring` |
 | Storage / DB | **MinIO** + **schema** Postgres (`--profile data`) |
-| AI | Heuristic without key; OpenAI API with `OPENAI_API_KEY` |
+| AI | Heuristic without key; OpenAI API with `OPENAI_API_KEY` (service on `--profile platform`; verify mode on Dashboard → AI ops) |
 
 ```powershell
 .\scripts\go-real.ps1

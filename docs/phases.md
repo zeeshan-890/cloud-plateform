@@ -75,7 +75,8 @@
 
 - **jp.yaml**: schema in `packages/jp-schema`; `jp apply` / `jp deploy` validate + POST desired state; project stores last-applied config + hash; drift stub on `GET .../config/drift`; dashboard shows hash/drift
 - **Deploy strategies**: `rolling` (default — stop previous, start new) and `blue_green` (start alongside, Traefik flip stub, drain previous); rollback preserves/carries `strategy`
-- **ai** (8019): tools fetch build logs, runtime logs, recent `jp.deploy` events; hosted LLM via `OPENAI_API_KEY` (+ `AI_BASE_URL` / `AI_MODEL`); **simulate** heuristic when no key; `POST .../ai/explain`, `POST .../ai/ask`; CLI `jp ai "..."`; dashboard Explain failure
+- **ai** (8019): tools fetch build logs, runtime logs, recent `jp.deploy` events; hosted LLM via `OPENAI_API_KEY` (+ `AI_BASE_URL` / `AI_MODEL`); **simulate** heuristic when no key; `POST .../ai/explain`, `POST .../ai/ask`; CLI `jp ai "..."`; dashboard **AI ops** (Explain + Ask), **Deployments** and **Builds** Explain failure
+- **AI enablement**: set `OPENAI_API_KEY` in `.env`; start with `--profile platform` (includes `ai` on :8019). Dashboard → AI ops shows mode `openai` when the key is set, else `simulate`. Without a key, Explain still works via heuristics. CLI: `jp ai "why did this fail?" --project <id>`
 - **billing** (8020): plans (`free`/`pro`/`scale`), usage events (`build_minutes`, `runtime_hours` stubs), summary API; consumes `jp.build` + `jp.deploy` streams
 - Gateway routes; dashboard Billing + AI pages; OpenAPI + `.env.example` updated
 - Compose `--profile platform` also starts: **ai**, **billing**
