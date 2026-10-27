@@ -155,39 +155,62 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 			ModesSupported: []string{"simulate", "shared"},
 		})
 	}
+	// Target environment defaults to production if unspecified so container deployments always receive credentials
 	env := strings.ToLower(strings.TrimSpace(req.Env))
 	if env == "" {
-		env = "development"
+		env = "production"
 	}
 	res, err := h.Provisioner.Create(r.Context(), orgID, projectID, engine, req.Name)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, "provision_failed", err.Error())
 		return
 	}
-	secretName := catalog.SecretName(engine, req.Name)
-	secretRef := h.storeSecret(r, orgID, projectID, env, secretName, res.ConnectionURL)
-	if intURL, ok := res.Metadata["internal_url"].(string); ok && intURL != "" && intURL != res.ConnectionURL {
-		h.storeSecret(r, orgID, projectID, env, secretName+"_INTERNAL", intURL)
+
+	// Environments to receive the credentials (always include both target and production)
+	envsToInject := []string{env}
+	if env != "production" {
+		envsToInject = append(envsToInject, "production")
 	}
-	if pubURL, ok := res.Metadata["public_url"].(string); ok && pubURL != "" {
-		h.storeSecret(r, orgID, projectID, env, secretName+"_PUBLIC", pubURL)
-	}
-	// Inject standard canonical aliases so application frameworks (Prisma, Django, Next.js, Redis clients) connect automatically
-	switch engine {
-	case "postgres", "postgresql":
-		h.storeSecret(r, orgID, projectID, env, "DATABASE_URL", res.ConnectionURL)
-		h.storeSecret(r, orgID, projectID, env, "POSTGRES_URL", res.ConnectionURL)
-	case "redis", "valkey", "dragonfly":
-		h.storeSecret(r, orgID, projectID, env, "REDIS_URL", res.ConnectionURL)
-	case "mysql", "mariadb":
-		h.storeSecret(r, orgID, projectID, env, "MYSQL_URL", res.ConnectionURL)
-		h.storeSecret(r, orgID, projectID, env, "DATABASE_URL", res.ConnectionURL)
-	case "mongodb", "mongo":
-		h.storeSecret(r, orgID, projectID, env, "MONGODB_URI", res.ConnectionURL)
-		h.storeSecret(r, orgID, projectID, env, "MONGO_URL", res.ConnectionURL)
-	case "rabbitmq":
-		h.storeSecret(r, orgID, projectID, env, "RABBITMQ_URL", res.ConnectionURL)
-		h.storeSecret(r, orgID, projectID, env, "AMQP_URL", res.ConnectionURL)
+
+	var secretRef string
+	for _, targetEnv := range envsToInject {
+		// Store one proper canonical connection URL per add-on
+		switch engine {
+		case "postgres", "postgresql":
+			ref := h.storeSecret(r, orgID, projectID, targetEnv, "DATABASE_URL", res.ConnectionURL)
+			h.storeSecret(r, orgID, projectID, targetEnv, "POSTGRES_URL", res.ConnectionURL)
+			if secretRef == "" {
+				secretRef = ref
+			}
+		case "redis", "valkey", "dragonfly":
+			ref := h.storeSecret(r, orgID, projectID, targetEnv, "REDIS_URL", res.ConnectionURL)
+			if secretRef == "" {
+				secretRef = ref
+			}
+		case "mysql", "mariadb":
+			ref := h.storeSecret(r, orgID, projectID, targetEnv, "DATABASE_URL", res.ConnectionURL)
+			h.storeSecret(r, orgID, projectID, targetEnv, "MYSQL_URL", res.ConnectionURL)
+			if secretRef == "" {
+				secretRef = ref
+			}
+		case "mongodb", "mongo":
+			ref := h.storeSecret(r, orgID, projectID, targetEnv, "MONGODB_URI", res.ConnectionURL)
+			h.storeSecret(r, orgID, projectID, targetEnv, "MONGO_URL", res.ConnectionURL)
+			if secretRef == "" {
+				secretRef = ref
+			}
+		case "rabbitmq":
+			ref := h.storeSecret(r, orgID, projectID, targetEnv, "RABBITMQ_URL", res.ConnectionURL)
+			if secretRef == "" {
+				secretRef = ref
+			}
+		default:
+			secretName := catalog.SecretName(engine, req.Name)
+			ref := h.storeSecret(r, orgID, projectID, targetEnv, secretName, res.ConnectionURL)
+			if secretRef == "" {
+				secretRef = ref
+			}
+		}
 	}
 	a := &store.Addon{
 		OrgID: orgID, ProjectID: projectID, Engine: engine, Name: strings.TrimSpace(req.Name),

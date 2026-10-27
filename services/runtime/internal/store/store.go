@@ -2,8 +2,13 @@ package store
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -231,4 +236,147 @@ func (s *Store) GetProjectHostnames(ctx context.Context, projectID string, rootD
 	}
 
 	return hostnames, nil
+}
+
+// GetContainerEnvs retrieves and decrypts all environment variables and add-on connection strings for a project.
+func (s *Store) GetContainerEnvs(ctx context.Context, projectID, env string) ([]string, error) {
+	envMap := make(map[string]string)
+
+	// 1. Fetch decrypted secrets from secrets + secret_versions tables
+	query := `
+		SELECT s.name, sv.ciphertext, sv.nonce
+		FROM secrets s
+		JOIN secret_versions sv ON sv.secret_id = s.id AND sv.version = s.current_version
+		WHERE s.project_id = $1 AND (s.environment = $2 OR s.environment = 'all' OR s.environment = 'production' OR s.environment = 'development')
+		ORDER BY CASE
+			WHEN s.environment = $2 THEN 1
+			WHEN s.environment = 'all' THEN 2
+			WHEN s.environment = 'production' THEN 3
+			ELSE 4
+		END
+	`
+	rows, err := s.pool.Query(ctx, query, projectID, env)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var name string
+			var ct, nonce []byte
+			if err := rows.Scan(&name, &ct, &nonce); err == nil {
+				// Don't overwrite if already set by a more specific environment priority
+				if _, exists := envMap[name]; !exists {
+					if plain, err := decryptSecret(ct, nonce); err == nil {
+						// Clean up: skip redundant _INTERNAL / _PUBLIC keys from container env
+						if !strings.HasSuffix(name, "_INTERNAL") && !strings.HasSuffix(name, "_PUBLIC") {
+							// If value points to localhost (legacy simulate), fix it to the internal Docker service host
+							val := strings.TrimSpace(plain)
+							val = strings.ReplaceAll(val, "@localhost:5432", "@postgres:5432")
+							val = strings.ReplaceAll(val, "@127.0.0.1:5432", "@postgres:5432")
+							val = strings.ReplaceAll(val, "@localhost:6379", "@redis:6379")
+							val = strings.ReplaceAll(val, "@127.0.0.1:6379", "@redis:6379")
+							val = strings.ReplaceAll(val, "@localhost:6380", "@redis:6379")
+							val = strings.ReplaceAll(val, "@localhost:27017", "@mongodb:27017")
+							val = strings.ReplaceAll(val, "@127.0.0.1:27017", "@mongodb:27017")
+							val = strings.ReplaceAll(val, "@localhost:3306", "@mysql:3306")
+							envMap[name] = val
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// 2. Fetch and guarantee add-on connection strings from managed_addons
+	addonRows, err := s.pool.Query(ctx, `
+		SELECT engine, name, metadata
+		FROM managed_addons
+		WHERE project_id = $1 AND status = 'ready'
+	`, projectID)
+	if err == nil {
+		defer addonRows.Close()
+		for addonRows.Next() {
+			var engine, addonName string
+			var metaJSON []byte
+			if err := addonRows.Scan(&engine, &addonName, &metaJSON); err == nil {
+				var meta map[string]any
+				_ = json.Unmarshal(metaJSON, &meta)
+
+				intUrl := ""
+				if u, ok := meta["connection_url"].(string); ok && u != "" {
+					intUrl = u
+				} else if u, ok := meta["internal_url"].(string); ok && u != "" {
+					intUrl = u
+				}
+				// Fix any localhost reference to container network hostname
+				intUrl = strings.ReplaceAll(intUrl, "@localhost:5432", "@postgres:5432")
+				intUrl = strings.ReplaceAll(intUrl, "@127.0.0.1:5432", "@postgres:5432")
+				intUrl = strings.ReplaceAll(intUrl, "@localhost:6379", "@redis:6379")
+				intUrl = strings.ReplaceAll(intUrl, "@127.0.0.1:6379", "@redis:6379")
+				intUrl = strings.ReplaceAll(intUrl, "@localhost:6380", "@redis:6379")
+				intUrl = strings.ReplaceAll(intUrl, "@localhost:27017", "@mongodb:27017")
+				intUrl = strings.ReplaceAll(intUrl, "@127.0.0.1:27017", "@mongodb:27017")
+				intUrl = strings.ReplaceAll(intUrl, "@localhost:3306", "@mysql:3306")
+
+				if intUrl != "" {
+					switch engine {
+					case "postgres", "postgresql":
+						if _, ok := envMap["DATABASE_URL"]; !ok || strings.Contains(envMap["DATABASE_URL"], "localhost") {
+							envMap["DATABASE_URL"] = intUrl
+						}
+						if _, ok := envMap["POSTGRES_URL"]; !ok || strings.Contains(envMap["POSTGRES_URL"], "localhost") {
+							envMap["POSTGRES_URL"] = intUrl
+						}
+					case "redis", "valkey", "dragonfly":
+						if _, ok := envMap["REDIS_URL"]; !ok || strings.Contains(envMap["REDIS_URL"], "localhost") {
+							envMap["REDIS_URL"] = intUrl
+						}
+					case "mysql", "mariadb":
+						if _, ok := envMap["DATABASE_URL"]; !ok || strings.Contains(envMap["DATABASE_URL"], "localhost") {
+							envMap["DATABASE_URL"] = intUrl
+						}
+						if _, ok := envMap["MYSQL_URL"]; !ok || strings.Contains(envMap["MYSQL_URL"], "localhost") {
+							envMap["MYSQL_URL"] = intUrl
+						}
+					case "mongodb", "mongo":
+						if _, ok := envMap["MONGODB_URI"]; !ok || strings.Contains(envMap["MONGODB_URI"], "localhost") {
+							envMap["MONGODB_URI"] = intUrl
+						}
+						if _, ok := envMap["MONGO_URL"]; !ok || strings.Contains(envMap["MONGO_URL"], "localhost") {
+							envMap["MONGO_URL"] = intUrl
+						}
+					case "rabbitmq":
+						if _, ok := envMap["RABBITMQ_URL"]; !ok || strings.Contains(envMap["RABBITMQ_URL"], "localhost") {
+							envMap["RABBITMQ_URL"] = intUrl
+						}
+					}
+				}
+			}
+		}
+	}
+
+	var envList []string
+	for k, v := range envMap {
+		envList = append(envList, fmt.Sprintf("%s=%s", k, v))
+	}
+	return envList, nil
+}
+
+func decryptSecret(ciphertext, nonce []byte) (string, error) {
+	raw := strings.TrimSpace(os.Getenv("SECRETS_MASTER_KEY"))
+	if raw == "" {
+		raw = "jp-dev-secrets-master-key-32b!!"
+	}
+	sum := sha256.Sum256([]byte(raw))
+	block, err := aes.NewCipher(sum[:])
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	plain, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return "", err
+	}
+	return string(plain), nil
 }

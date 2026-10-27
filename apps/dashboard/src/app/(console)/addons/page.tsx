@@ -31,7 +31,7 @@ export default function AddonsPage() {
   const [deployTarget, setDeployTarget] = useState<"standalone" | "attach">("standalone");
   const [standaloneProjectName, setStandaloneProjectName] = useState("");
   const [targetProjectId, setTargetProjectId] = useState("");
-  const [targetEnv, setTargetEnv] = useState("development");
+  const [targetEnv, setTargetEnv] = useState("production");
   const [instanceName, setInstanceName] = useState("");
 
   // Custom Image Fields
@@ -70,13 +70,43 @@ export default function AddonsPage() {
   }
 
   function getInternalUrl(addon: ManagedAddon): string {
-    if (addon.metadata?.internal_url) return String(addon.metadata.internal_url);
+    let url = addon.metadata?.internal_url ? String(addon.metadata.internal_url) : "";
+    if (url) {
+      if (addon.engine === "postgres" && url.includes("localhost:5432")) {
+        url = url.replace("localhost:5432", "postgres:5432");
+      } else if ((addon.engine === "redis" || addon.engine === "valkey") && url.includes("localhost:6379")) {
+        url = url.replace("localhost:6379", "redis:6379");
+      } else if (addon.engine === "mongodb" && url.includes("localhost:27017")) {
+        url = url.replace("localhost:27017", "mongodb:27017");
+      } else if ((addon.engine === "mysql" || addon.engine === "mariadb") && url.includes("localhost:3306")) {
+        url = url.replace("localhost:3306", "mysql:3306");
+      }
+      return url;
+    }
     const port = addon.metadata?.port || 8080;
     if (addon.engine === "redis" || addon.engine === "valkey") return `redis://redis:6379/0`;
     if (addon.engine === "postgres") return `postgres://jp:jp_dev_password@postgres:5432/jp`;
     if (addon.engine === "mysql" || addon.engine === "mariadb") return `mysql://jp:jp_dev_password@mysql:3306/jp`;
     if (addon.engine === "mongodb") return `mongodb://jp:jp_dev_password@mongodb:27017/jp`;
     return `http://addon-${addon.name}:${port}`;
+  }
+
+  function getAddonEnvSnippet(addon: ManagedAddon): string {
+    const intUrl = getInternalUrl(addon);
+    const engine = (addon.engine || "").toLowerCase();
+    const primaryKey = addon.secret_ref || (
+      engine === "postgres" ? "DATABASE_URL" :
+      engine === "redis" || engine === "valkey" ? "REDIS_URL" :
+      engine === "mongodb" ? "MONGODB_URI" :
+      engine === "rabbitmq" ? "RABBITMQ_URL" :
+      `${engine.toUpperCase()}_URL`
+    );
+
+    let snippet = `${primaryKey}=${intUrl}`;
+    if (engine === "postgres" && primaryKey !== "DATABASE_URL") {
+      snippet += `\nDATABASE_URL=${intUrl}`;
+    }
+    return snippet;
   }
 
   function getPublicUrl(addon: ManagedAddon): string {
@@ -982,18 +1012,12 @@ export default function AddonsPage() {
             <div className="relative">
               <pre className="rounded-lg bg-slate-900 p-4 text-xs text-emerald-400 font-mono overflow-x-auto shadow-inner leading-relaxed">
 {`# Injected into your app's .env automatically:
-${snippetAddon.secret_ref || `${snippetAddon.engine.toUpperCase()}_URL`}=${getInternalUrl(snippetAddon)}
-
-# Canonical Framework Alias:
-DATABASE_URL=${getInternalUrl(snippetAddon)}`}
+${getAddonEnvSnippet(snippetAddon)}`}
               </pre>
               <button
                 type="button"
                 onClick={() =>
-                  copyToClipboard(
-                    `${snippetAddon.secret_ref || `${snippetAddon.engine.toUpperCase()}_URL`}=${getInternalUrl(snippetAddon)}\nDATABASE_URL=${getInternalUrl(snippetAddon)}`,
-                    "snippet"
-                  )
+                  copyToClipboard(getAddonEnvSnippet(snippetAddon), "snippet")
                 }
                 className="absolute top-2.5 right-2.5 px-2.5 py-1 text-xs font-bold rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition-colors"
               >

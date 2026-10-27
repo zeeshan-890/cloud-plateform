@@ -432,8 +432,13 @@ func (h *Handler) startInstance(r *http.Request, in *store.Instance) error {
 		rootDomain = "zeeshanabbaskhan.me"
 	}
 	hostnames, _ := h.Store.GetProjectHostnames(r.Context(), in.ProjectID, rootDomain)
+	targetEnv := "production"
+	if in.IsPreview {
+		targetEnv = "preview"
+	}
+	containerEnvs, _ := h.Store.GetContainerEnvs(r.Context(), in.ProjectID, targetEnv)
 
-	cid, mode, detectedPort, err := h.Engine.StartWithConfig(r.Context(), name, in.ImageRef, in.Port, nil, hostnames)
+	cid, mode, detectedPort, err := h.Engine.StartWithConfig(r.Context(), name, in.ImageRef, in.Port, containerEnvs, hostnames)
 	in.Mode = mode
 	if detectedPort > 0 {
 		in.Port = detectedPort

@@ -221,10 +221,9 @@ func (m *Manager) createSimulate(engine, resource, pass, safe, short string) (*R
 		if len(role) > 63 {
 			role = role[:63]
 		}
-		conn := fmt.Sprintf("postgres://%s:%s@localhost:5432/jp?sslmode=disable&search_path=%s", role, pass, schema)
 		intConn := fmt.Sprintf("postgres://%s:%s@%s:5432/jp?sslmode=disable&search_path=%s", role, pass, intHost, schema)
 		pubConn := fmt.Sprintf("postgres://%s:%s@%s:5432/jp?sslmode=disable&search_path=%s", role, pass, pubHost, schema)
-		hint := fmt.Sprintf("postgres://%s:***@localhost:5432/jp?search_path=%s (simulate)", role, schema)
+		hint := fmt.Sprintf("postgres://%s:***@%s:5432/jp?search_path=%s", role, intHost, schema)
 		meta["schema"] = schema
 		meta["role"] = role
 		meta["user"] = role
@@ -235,16 +234,30 @@ func (m *Manager) createSimulate(engine, resource, pass, safe, short string) (*R
 		meta["internal_url"] = intConn
 		meta["public_url"] = pubConn
 		meta["port"] = 5432
-		return &Result{Mode: "simulate", Endpoint: "localhost:5432", ConnectionURL: conn, ConnectionHint: hint, Metadata: meta}, nil
+
+		if m.PG != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_, _ = m.PG.Exec(ctx, fmt.Sprintf(`DO $$ BEGIN
+				IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '%s') THEN
+					CREATE ROLE %s WITH LOGIN PASSWORD '%s';
+				ELSE
+					ALTER ROLE %s WITH LOGIN PASSWORD '%s';
+				END IF;
+			END $$;`, role, role, pass, role, pass))
+			_, _ = m.PG.Exec(ctx, fmt.Sprintf(`CREATE SCHEMA IF NOT EXISTS %s AUTHORIZATION %s`, schema, role))
+			_, _ = m.PG.Exec(ctx, fmt.Sprintf(`GRANT ALL ON SCHEMA %s TO %s`, schema, role))
+			_, _ = m.PG.Exec(ctx, fmt.Sprintf(`ALTER ROLE %s SET search_path TO %s`, role, schema))
+			cancel()
+		}
+		return &Result{Mode: "simulate", Endpoint: fmt.Sprintf("%s:5432", intHost), ConnectionURL: intConn, ConnectionHint: hint, Metadata: meta}, nil
 	case "mysql", "mariadb":
 		user := "jp_" + short + "_" + safe
 		if len(user) > 32 {
 			user = user[:32]
 		}
-		conn := fmt.Sprintf("mysql://%s:%s@localhost:3306/%s", user, pass, resource)
 		intConn := fmt.Sprintf("mysql://%s:%s@%s:3306/%s", user, pass, intHost, resource)
 		pubConn := fmt.Sprintf("mysql://%s:%s@%s:3306/%s", user, pass, pubHost, resource)
-		hint := fmt.Sprintf("mysql://%s:***@localhost:3306/%s (simulate)", user, resource)
+		hint := fmt.Sprintf("mysql://%s:***@%s:3306/%s", user, intHost, resource)
 		meta["database"] = resource
 		meta["user"] = user
 		meta["username"] = user
@@ -253,13 +266,12 @@ func (m *Manager) createSimulate(engine, resource, pass, safe, short string) (*R
 		meta["internal_url"] = intConn
 		meta["public_url"] = pubConn
 		meta["port"] = 3306
-		return &Result{Mode: "simulate", Endpoint: "localhost:3306", ConnectionURL: conn, ConnectionHint: hint, Metadata: meta}, nil
+		return &Result{Mode: "simulate", Endpoint: fmt.Sprintf("%s:3306", intHost), ConnectionURL: intConn, ConnectionHint: hint, Metadata: meta}, nil
 	case "mongodb":
 		user := "jp_" + short + "_" + safe
-		conn := fmt.Sprintf("mongodb://%s:%s@localhost:27017/%s?authSource=%s", user, pass, resource, resource)
 		intConn := fmt.Sprintf("mongodb://%s:%s@%s:27017/%s?authSource=%s", user, pass, intHost, resource, resource)
 		pubConn := fmt.Sprintf("mongodb://%s:%s@%s:27017/%s?authSource=%s", user, pass, pubHost, resource, resource)
-		hint := fmt.Sprintf("mongodb://%s:***@localhost:27017/%s (simulate)", user, resource)
+		hint := fmt.Sprintf("mongodb://%s:***@%s:27017/%s", user, intHost, resource)
 		meta["database"] = resource
 		meta["user"] = user
 		meta["username"] = user
@@ -268,13 +280,12 @@ func (m *Manager) createSimulate(engine, resource, pass, safe, short string) (*R
 		meta["internal_url"] = intConn
 		meta["public_url"] = pubConn
 		meta["port"] = 27017
-		return &Result{Mode: "simulate", Endpoint: "localhost:27017", ConnectionURL: conn, ConnectionHint: hint, Metadata: meta}, nil
+		return &Result{Mode: "simulate", Endpoint: fmt.Sprintf("%s:27017", intHost), ConnectionURL: intConn, ConnectionHint: hint, Metadata: meta}, nil
 	case "redis":
 		dbIdx := hashDB(short + safe)
-		conn := fmt.Sprintf("redis://:%s@localhost:6380/%d", pass, dbIdx)
 		intConn := fmt.Sprintf("redis://:%s@%s:6379/%d", pass, intHost, dbIdx)
 		pubConn := fmt.Sprintf("redis://:%s@%s:6379/%d", pass, pubHost, dbIdx)
-		hint := fmt.Sprintf("redis://:***@localhost:6380/%d (simulate)", dbIdx)
+		hint := fmt.Sprintf("redis://:***@%s:6379/%d", intHost, dbIdx)
 		meta["db"] = dbIdx
 		meta["key_prefix"] = resource + ":"
 		meta["password"] = pass
@@ -282,13 +293,12 @@ func (m *Manager) createSimulate(engine, resource, pass, safe, short string) (*R
 		meta["internal_url"] = intConn
 		meta["public_url"] = pubConn
 		meta["port"] = 6379
-		return &Result{Mode: "simulate", Endpoint: "localhost:6380", ConnectionURL: conn, ConnectionHint: hint, Metadata: meta}, nil
+		return &Result{Mode: "simulate", Endpoint: fmt.Sprintf("%s:6379", intHost), ConnectionURL: intConn, ConnectionHint: hint, Metadata: meta}, nil
 	case "valkey":
 		dbIdx := hashDB(short + safe)
-		conn := fmt.Sprintf("redis://:%s@localhost:6379/%d", pass, dbIdx)
 		intConn := fmt.Sprintf("redis://:%s@%s:6379/%d", pass, intHost, dbIdx)
 		pubConn := fmt.Sprintf("redis://:%s@%s:6379/%d", pass, pubHost, dbIdx)
-		hint := fmt.Sprintf("redis://:***@localhost:6379/%d (simulate)", dbIdx)
+		hint := fmt.Sprintf("redis://:***@%s:6379/%d", intHost, dbIdx)
 		meta["db"] = dbIdx
 		meta["key_prefix"] = resource + ":"
 		meta["password"] = pass
@@ -296,14 +306,13 @@ func (m *Manager) createSimulate(engine, resource, pass, safe, short string) (*R
 		meta["internal_url"] = intConn
 		meta["public_url"] = pubConn
 		meta["port"] = 6379
-		return &Result{Mode: "simulate", Endpoint: "localhost:6379", ConnectionURL: conn, ConnectionHint: hint, Metadata: meta}, nil
+		return &Result{Mode: "simulate", Endpoint: fmt.Sprintf("%s:6379", intHost), ConnectionURL: intConn, ConnectionHint: hint, Metadata: meta}, nil
 	case "rabbitmq":
 		user := "jp_" + short + "_" + safe
 		vhost := resource
-		conn := fmt.Sprintf("amqp://%s:%s@localhost:5672/%s", user, pass, url.PathEscape(vhost))
 		intConn := fmt.Sprintf("amqp://%s:%s@%s:5672/%s", user, pass, intHost, url.PathEscape(vhost))
 		pubConn := fmt.Sprintf("amqp://%s:%s@%s:5672/%s", user, pass, pubHost, url.PathEscape(vhost))
-		hint := fmt.Sprintf("amqp://%s:***@localhost:5672/%s (simulate)", user, vhost)
+		hint := fmt.Sprintf("amqp://%s:***@%s:5672/%s", user, intHost, vhost)
 		meta["vhost"] = vhost
 		meta["user"] = user
 		meta["username"] = user
@@ -312,7 +321,7 @@ func (m *Manager) createSimulate(engine, resource, pass, safe, short string) (*R
 		meta["internal_url"] = intConn
 		meta["public_url"] = pubConn
 		meta["port"] = 5672
-		return &Result{Mode: "simulate", Endpoint: "localhost:5672", ConnectionURL: conn, ConnectionHint: hint, Metadata: meta}, nil
+		return &Result{Mode: "simulate", Endpoint: fmt.Sprintf("%s:5672", intHost), ConnectionURL: intConn, ConnectionHint: hint, Metadata: meta}, nil
 	case "kafka":
 		prefix := resource + "."
 		brokers := "localhost:9092"
