@@ -493,7 +493,27 @@ export const api = {
     );
     return (unwrap(data, "environments") as ProjectEnvironment[]) || [];
   },
-  async listSecrets(orgId: string, projectId: string, env: string) {
+  async listSecrets(orgId: string, projectId: string, env?: string) {
+    if (!env || env === "all") {
+      try {
+        const data = await request<{ secrets: SecretMeta[] }>(
+          `/orgs/${orgId}/projects/${projectId}/secrets`,
+        );
+        return (unwrap(data, "secrets") as SecretMeta[]) || [];
+      } catch {
+        const envs = ["development", "production", "staging", "preview"];
+        const results = await Promise.all(
+          envs.map((e) =>
+            request<{ secrets: SecretMeta[] }>(
+              `/orgs/${orgId}/projects/${projectId}/environments/${e}/secrets`,
+            )
+              .then((d) => (unwrap(d, "secrets") as SecretMeta[]) || [])
+              .catch(() => [] as SecretMeta[])
+          )
+        );
+        return results.flat();
+      }
+    }
     const data = await request<{ secrets: SecretMeta[] }>(
       `/orgs/${orgId}/projects/${projectId}/environments/${env}/secrets`,
     );

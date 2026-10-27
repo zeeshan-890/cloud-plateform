@@ -30,6 +30,7 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /orgs/{orgId}/projects/{projectId}/environments", auth(http.HandlerFunc(h.ListEnvironments)))
 	mux.Handle("POST /orgs/{orgId}/projects/{projectId}/environments", auth(http.HandlerFunc(h.CreateEnvironment)))
 
+	mux.Handle("GET /orgs/{orgId}/projects/{projectId}/secrets", auth(http.HandlerFunc(h.ListAllSecrets)))
 	mux.Handle("GET /orgs/{orgId}/projects/{projectId}/environments/{env}/secrets", auth(http.HandlerFunc(h.ListSecrets)))
 	mux.Handle("POST /orgs/{orgId}/projects/{projectId}/environments/{env}/secrets", auth(http.HandlerFunc(h.CreateSecret)))
 	mux.Handle("GET /orgs/{orgId}/projects/{projectId}/environments/{env}/secrets/{name}", auth(http.HandlerFunc(h.GetSecret)))
@@ -122,7 +123,7 @@ func (h *Handler) ListSecrets(w http.ResponseWriter, r *http.Request) {
 	if !h.requireMember(w, r, orgID, uid) {
 		return
 	}
-	if !validEnv(env) {
+	if env != "" && env != "all" && !validEnv(env) {
 		httpx.Error(w, http.StatusBadRequest, "validation_error", "invalid environment")
 		return
 	}
@@ -132,7 +133,40 @@ func (h *Handler) ListSecrets(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusInternalServerError, "internal", "failed to list secrets")
 		return
 	}
+	// Decrypt values for project members so credentials can be viewed and managed
+	for i := range list {
+		ct, nonce, err := h.Store.GetCiphertext(r.Context(), list[i].ID, list[i].CurrentVersion)
+		if err == nil {
+			if plain, err := h.Crypto.Decrypt(ct, nonce); err == nil {
+				list[i].Value = string(plain)
+			}
+		}
+	}
 	httpx.JSON(w, http.StatusOK, map[string]any{"secrets": list, "environment": env})
+}
+
+func (h *Handler) ListAllSecrets(w http.ResponseWriter, r *http.Request) {
+	uid := middleware.UserIDFrom(r.Context())
+	orgID := r.PathValue("orgId")
+	projectID := r.PathValue("projectId")
+	if !h.requireMember(w, r, orgID, uid) {
+		return
+	}
+	_ = h.Store.EnsureDefaultEnvironments(r.Context(), orgID, projectID)
+	list, err := h.Store.ListSecrets(r.Context(), orgID, projectID, "all")
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "internal", "failed to list secrets")
+		return
+	}
+	for i := range list {
+		ct, nonce, err := h.Store.GetCiphertext(r.Context(), list[i].ID, list[i].CurrentVersion)
+		if err == nil {
+			if plain, err := h.Crypto.Decrypt(ct, nonce); err == nil {
+				list[i].Value = string(plain)
+			}
+		}
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"secrets": list, "environment": "all"})
 }
 
 func (h *Handler) CreateSecret(w http.ResponseWriter, r *http.Request) {
@@ -198,6 +232,11 @@ func (h *Handler) GetSecret(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, "internal", "failed")
 		return
+	}
+	if ct, nonce, err := h.Store.GetCiphertext(r.Context(), meta.ID, meta.CurrentVersion); err == nil {
+		if plain, err := h.Crypto.Decrypt(ct, nonce); err == nil {
+			meta.Value = string(plain)
+		}
 	}
 	versions, _ := h.Store.ListVersions(r.Context(), meta.ID)
 	h.Store.Audit(r.Context(), orgID, projectID, env, name, "secret.read_meta", uid, middleware.RequestIDFrom(r.Context()), nil)

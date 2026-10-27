@@ -38,6 +38,7 @@ type SecretMeta struct {
 	Name           string    `json:"name"`
 	CurrentVersion int       `json:"current_version"`
 	ValueHint      string    `json:"value_hint"`
+	Value          string    `json:"value,omitempty"`
 	CreatedBy      *string   `json:"created_by,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
@@ -121,11 +122,16 @@ func (s *Store) CreateEnvironment(ctx context.Context, orgID, projectID, name st
 }
 
 func (s *Store) ListSecrets(ctx context.Context, orgID, projectID, env string) ([]SecretMeta, error) {
-	rows, err := s.pool.Query(ctx, `
+	q := `
 		SELECT id, org_id, project_id, environment, name, current_version, value_hint, created_by, created_at, updated_at
-		FROM secrets WHERE org_id=$1 AND project_id=$2 AND environment=$3
-		ORDER BY name ASC
-	`, orgID, projectID, env)
+		FROM secrets WHERE org_id=$1 AND project_id=$2`
+	args := []any{orgID, projectID}
+	if env != "" && env != "all" {
+		q += ` AND environment=$3`
+		args = append(args, env)
+	}
+	q += ` ORDER BY environment ASC, name ASC`
+	rows, err := s.pool.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}

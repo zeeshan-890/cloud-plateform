@@ -209,7 +209,7 @@ func PublicServiceHost() string {
 }
 
 func (m *Manager) createSimulate(engine, resource, pass, safe, short string) (*Result, error) {
-	meta := map[string]any{"resource": resource, "simulate": true}
+	meta := map[string]any{"resource": resource, "simulate": true, "password": pass}
 	intHost := InternalServiceHost(engine, safe)
 	pubHost := PublicServiceHost()
 	meta["internal_host"] = intHost
@@ -227,6 +227,11 @@ func (m *Manager) createSimulate(engine, resource, pass, safe, short string) (*R
 		hint := fmt.Sprintf("postgres://%s:***@localhost:5432/jp?search_path=%s (simulate)", role, schema)
 		meta["schema"] = schema
 		meta["role"] = role
+		meta["user"] = role
+		meta["username"] = role
+		meta["password"] = pass
+		meta["database"] = "jp"
+		meta["connection_url"] = intConn
 		meta["internal_url"] = intConn
 		meta["public_url"] = pubConn
 		meta["port"] = 5432
@@ -242,6 +247,9 @@ func (m *Manager) createSimulate(engine, resource, pass, safe, short string) (*R
 		hint := fmt.Sprintf("mysql://%s:***@localhost:3306/%s (simulate)", user, resource)
 		meta["database"] = resource
 		meta["user"] = user
+		meta["username"] = user
+		meta["password"] = pass
+		meta["connection_url"] = intConn
 		meta["internal_url"] = intConn
 		meta["public_url"] = pubConn
 		meta["port"] = 3306
@@ -254,6 +262,9 @@ func (m *Manager) createSimulate(engine, resource, pass, safe, short string) (*R
 		hint := fmt.Sprintf("mongodb://%s:***@localhost:27017/%s (simulate)", user, resource)
 		meta["database"] = resource
 		meta["user"] = user
+		meta["username"] = user
+		meta["password"] = pass
+		meta["connection_url"] = intConn
 		meta["internal_url"] = intConn
 		meta["public_url"] = pubConn
 		meta["port"] = 27017
@@ -266,6 +277,8 @@ func (m *Manager) createSimulate(engine, resource, pass, safe, short string) (*R
 		hint := fmt.Sprintf("redis://:***@localhost:6380/%d (simulate)", dbIdx)
 		meta["db"] = dbIdx
 		meta["key_prefix"] = resource + ":"
+		meta["password"] = pass
+		meta["connection_url"] = intConn
 		meta["internal_url"] = intConn
 		meta["public_url"] = pubConn
 		meta["port"] = 6379
@@ -278,6 +291,8 @@ func (m *Manager) createSimulate(engine, resource, pass, safe, short string) (*R
 		hint := fmt.Sprintf("redis://:***@localhost:6379/%d (simulate)", dbIdx)
 		meta["db"] = dbIdx
 		meta["key_prefix"] = resource + ":"
+		meta["password"] = pass
+		meta["connection_url"] = intConn
 		meta["internal_url"] = intConn
 		meta["public_url"] = pubConn
 		meta["port"] = 6379
@@ -291,6 +306,9 @@ func (m *Manager) createSimulate(engine, resource, pass, safe, short string) (*R
 		hint := fmt.Sprintf("amqp://%s:***@localhost:5672/%s (simulate)", user, vhost)
 		meta["vhost"] = vhost
 		meta["user"] = user
+		meta["username"] = user
+		meta["password"] = pass
+		meta["connection_url"] = intConn
 		meta["internal_url"] = intConn
 		meta["public_url"] = pubConn
 		meta["port"] = 5672

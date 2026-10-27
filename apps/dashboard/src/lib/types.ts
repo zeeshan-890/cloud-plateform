@@ -200,6 +200,7 @@ export interface SecretMeta {
   name: string;
   current_version: number;
   value_hint: string;
+  value?: string;
   created_at?: string;
   updated_at?: string;
 }

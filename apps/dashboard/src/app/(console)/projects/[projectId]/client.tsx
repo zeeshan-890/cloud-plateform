@@ -9,7 +9,7 @@ import { Alert, PageHeader } from "@/components/ui/page";
 import { api, ApiError } from "@/lib/api";
 import { useOrg } from "@/lib/org-context";
 import { useProject } from "@/lib/project-context";
-import type { ManagedAddon, Project } from "@/lib/types";
+import type { ManagedAddon, Project, SecretMeta } from "@/lib/types";
 
 export default function ProjectDetailClient() {
   const params = useParams<{ projectId: string }>();
@@ -41,10 +41,15 @@ export default function ProjectDetailClient() {
   const [addingDomain, setAddingDomain] = useState(false);
 
   // Sub-tab states for Secrets
-  const [secretEnv, setSecretEnv] = useState("production");
+  const [secretEnv, setSecretEnv] = useState("all");
+  const [newSecretEnv, setNewSecretEnv] = useState("production");
   const [secretKey, setSecretKey] = useState("");
   const [secretVal, setSecretVal] = useState("");
-  const [secretsList, setSecretsList] = useState<Array<{ id: string; name: string; current_version: number; value_hint: string }>>([]);
+  const [secretValVisible, setSecretValVisible] = useState(false);
+  const [secretsList, setSecretsList] = useState<SecretMeta[]>([]);
+  const [revealedSecrets, setRevealedSecrets] = useState<Record<string, boolean>>({});
+  const [showAllSecrets, setShowAllSecrets] = useState(false);
+  const [revealedAddonPass, setRevealedAddonPass] = useState<Record<string, boolean>>({});
   const [savingSecret, setSavingSecret] = useState(false);
 
   // Sub-tab states for Databases & Add-ons
@@ -119,6 +124,9 @@ export default function ProjectDetailClient() {
       api.listSecrets(currentOrg.id, actualProjectId, secretEnv)
         .then((s) => setSecretsList(s))
         .catch(() => setSecretsList([]));
+      api.listAddons(currentOrg.id, actualProjectId)
+        .then((res) => setAddonsList(res.addons || []))
+        .catch(() => setAddonsList([]));
     } else if (currentTab === "addons" || currentTab === "databases") {
       api.listAddons(currentOrg.id, actualProjectId)
         .then((res) => setAddonsList(res.addons || []))
@@ -242,8 +250,9 @@ export default function ProjectDetailClient() {
     setError("");
     setSuccess("");
     try {
-      await api.setSecret(currentOrg.id, project.id, secretEnv, secretKey.trim(), secretVal);
-      setSuccess(`Secret "${secretKey.trim()}" saved for ${secretEnv.toUpperCase()}.`);
+      const targetScope = secretEnv === "all" ? newSecretEnv : secretEnv;
+      await api.setSecret(currentOrg.id, project.id, targetScope, secretKey.trim(), secretVal);
+      setSuccess(`Secret "${secretKey.trim()}" saved for ${targetScope.toUpperCase()}.`);
       setSecretKey("");
       setSecretVal("");
       const updated = await api.listSecrets(currentOrg.id, project.id, secretEnv);
@@ -252,6 +261,20 @@ export default function ProjectDetailClient() {
       setError(err instanceof ApiError ? err.message : "Failed to set secret");
     } finally {
       setSavingSecret(false);
+    }
+  }
+
+  async function handleDeleteSecret(secretName: string, env: string) {
+    if (!currentOrg || !project) return;
+    const ok = window.confirm(`Permanently delete variable "${secretName}" from ${env.toUpperCase()}?`);
+    if (!ok) return;
+    try {
+      await api.deleteSecret(currentOrg.id, project.id, env, secretName);
+      setSuccess(`Deleted variable "${secretName}".`);
+      const updated = await api.listSecrets(currentOrg.id, project.id, secretEnv);
+      setSecretsList(updated);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to delete secret");
     }
   }
 
@@ -727,81 +750,374 @@ export default function ProjectDetailClient() {
       )}
 
       {/* ========================================================
-          TAB 6: SECRETS & ENV VARS
+          TAB 6: SECRETS & ENV VARS (Viewable, All Envs & Addons)
           ======================================================== */}
       {currentTab === "secrets" && (
         <div className="space-y-6">
+          {/* Add-ons & Database Connection Card */}
+          {addonsList.length > 0 && (
+            <div className="jp-card overflow-hidden">
+              <div className="border-b border-[var(--border)] bg-slate-50 px-5 py-3.5 flex items-center justify-between">
+                <div>
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)] flex items-center gap-2">
+                    <span>🧩 Connected Add-ons & Database Credentials</span>
+                    <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-bold text-blue-800 font-mono">
+                      {addonsList.length} Connected
+                    </span>
+                  </h3>
+                  <p className="text-[11px] text-[var(--ink-muted)] mt-0.5">
+                    Live connection strings, credentials, and hostnames auto-injected into {project.name}.
+                  </p>
+                </div>
+                <Link href={`/projects/${actualProjectId}?tab=addons`}>
+                  <Button variant="secondary" size="sm" className="text-xs font-bold">
+                    + Add More Add-ons
+                  </Button>
+                </Link>
+              </div>
+
+              <div className="divide-y divide-[var(--border)]">
+                {addonsList.map((addon) => {
+                  const intUrl = getInternalUrl(addon);
+                  const meta = (addon.metadata || {}) as Record<string, any>;
+                  const user = String(meta.username || meta.user || meta.role || (addon.engine === "redis" ? "default" : "jp"));
+                  const pass = String(meta.password || "jp_dev_password");
+                  const db = String(meta.database || meta.schema || "jp");
+                  const port = meta.port || (addon.engine === "postgres" ? 5432 : addon.engine === "redis" ? 6379 : addon.engine === "mysql" ? 3306 : 8080);
+                  const isPassRevealed = revealedAddonPass[addon.id] || showAllSecrets;
+                  const injectedKey = addon.engine === "postgres" ? "DATABASE_URL" : addon.engine === "redis" ? "REDIS_URL" : addon.engine === "mysql" ? "MYSQL_URL" : addon.engine === "mongodb" ? "MONGODB_URI" : `${addon.engine.toUpperCase()}_URL`;
+
+                  return (
+                    <div key={addon.id} className="p-5 space-y-3 bg-white hover:bg-slate-50/50 transition-colors">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-xs uppercase px-2 py-0.5 rounded bg-slate-100 border border-[var(--border)] font-bold text-[var(--ink)]">
+                            {addon.engine}
+                          </span>
+                          <span className="font-bold text-sm text-[var(--ink)]">{addon.name}</span>
+                          <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 border border-emerald-300 px-2 py-0.5 text-[10px] font-bold text-emerald-800">
+                            <span className="h-1.5 w-1.5 rounded-full bg-emerald-600 animate-pulse" />
+                            Connected to App
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => copyToClipboard(`${injectedKey}=${intUrl}`, `addon-env-${addon.id}`)}
+                            className="px-2.5 py-1 text-xs font-bold rounded border border-[var(--border)] bg-white hover:bg-slate-100 text-[var(--ink-secondary)] transition-all shadow-2xs"
+                          >
+                            {copiedKey === `addon-env-${addon.id}` ? "✓ Copied .env Line" : `Copy ${injectedKey} for .env`}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Credentials Grid */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 text-xs">
+                        <div className="rounded-lg bg-slate-50 border border-[var(--border)] p-2.5">
+                          <span className="text-[10px] uppercase font-bold text-[var(--ink-muted)] block">Injected Env Key</span>
+                          <code className="font-mono font-bold text-blue-700">{injectedKey}</code>
+                        </div>
+
+                        <div className="rounded-lg bg-slate-50 border border-[var(--border)] p-2.5">
+                          <span className="text-[10px] uppercase font-bold text-[var(--ink-muted)] block">Host & Port (Internal Docker)</span>
+                          <code className="font-mono text-[var(--ink)]">{addon.engine}:{port}</code>
+                        </div>
+
+                        <div className="rounded-lg bg-slate-50 border border-[var(--border)] p-2.5">
+                          <span className="text-[10px] uppercase font-bold text-[var(--ink-muted)] block">Username / Role</span>
+                          <div className="flex items-center justify-between">
+                            <code className="font-mono font-semibold text-[var(--ink)]">{user}</code>
+                            <button
+                              type="button"
+                              onClick={() => copyToClipboard(user, `user-${addon.id}`)}
+                              className="text-[10px] text-[var(--accent)] font-bold hover:underline"
+                            >
+                              {copiedKey === `user-${addon.id}` ? "✓" : "Copy"}
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="rounded-lg bg-slate-50 border border-[var(--border)] p-2.5">
+                          <span className="text-[10px] uppercase font-bold text-[var(--ink-muted)] block">Password</span>
+                          <div className="flex items-center justify-between">
+                            <code className="font-mono text-xs text-[var(--ink)]">
+                              {isPassRevealed ? pass : "••••••••••••"}
+                            </code>
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setRevealedAddonPass((prev) => ({
+                                    ...prev,
+                                    [addon.id]: !prev[addon.id],
+                                  }))
+                                }
+                                className="text-[11px] text-slate-500 hover:text-slate-900 font-bold"
+                              >
+                                {isPassRevealed ? "🙈" : "👁️"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => copyToClipboard(pass, `pass-${addon.id}`)}
+                                className="text-[10px] text-[var(--accent)] font-bold hover:underline"
+                              >
+                                {copiedKey === `pass-${addon.id}` ? "✓" : "Copy"}
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Connection URL Bar */}
+                      <div className="rounded-lg border border-[var(--border)] bg-slate-900 p-3 text-xs flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2 shadow-inner">
+                        <div className="flex items-center gap-2 overflow-hidden">
+                          <span className="text-[10px] font-mono uppercase font-bold text-slate-400 shrink-0">Connection URL:</span>
+                          <code className="font-mono text-emerald-400 truncate">
+                            {isPassRevealed ? intUrl : intUrl.replace(/:([^@]+)@/, ":••••••••@")}
+                          </code>
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setRevealedAddonPass((prev) => ({
+                                ...prev,
+                                [addon.id]: !prev[addon.id],
+                              }))
+                            }
+                            className="text-xs px-2 py-1 rounded bg-slate-800 text-slate-300 hover:text-white font-medium"
+                          >
+                            {isPassRevealed ? "🙈 Mask" : "👁️ Reveal"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => copyToClipboard(intUrl, `url-${addon.id}`)}
+                            className="text-xs px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-bold transition-colors"
+                          >
+                            {copiedKey === `url-${addon.id}` ? "✓ Copied" : "Copy Full URL"}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* New Secret Addition Form */}
           <div className="jp-card p-5 space-y-4">
             <div className="border-b border-[var(--border)] pb-3 flex items-center justify-between">
               <div>
-                <h2 className="text-sm font-bold text-[var(--ink)]">Environment Variables</h2>
+                <h2 className="text-sm font-bold text-[var(--ink)]">Add Environment Variable</h2>
                 <p className="text-xs text-[var(--ink-muted)]">
-                  Encrypted secrets injected securely into container runtime.
+                  Encrypted secrets injected securely into your container runtime.
                 </p>
               </div>
-              <div className="flex items-center gap-2">
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => setBulkSecretOpen(true)}
-                  className="font-bold text-xs"
-                >
-                  📋 Bulk Edit (.env)
-                </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={() => setBulkSecretOpen(true)}
+                className="font-bold text-xs"
+              >
+                📋 Bulk Edit (.env)
+              </Button>
+            </div>
+
+            <form onSubmit={handleSaveSecret} className="flex flex-wrap items-center gap-2">
+              <div className="w-full sm:w-44">
                 <select
-                  className="rounded-md border border-[var(--border)] bg-white px-2.5 py-1 text-xs font-bold text-[var(--ink)]"
-                  value={secretEnv}
-                  onChange={(e) => setSecretEnv(e.target.value)}
+                  className="w-full rounded-md border border-[var(--border)] bg-white px-2.5 py-2 text-xs font-bold text-[var(--ink)] shadow-2xs"
+                  value={newSecretEnv}
+                  onChange={(e) => setNewSecretEnv(e.target.value)}
                 >
                   <option value="production">PRODUCTION</option>
                   <option value="staging">STAGING</option>
                   <option value="development">DEVELOPMENT</option>
+                  <option value="preview">PREVIEW</option>
                 </select>
               </div>
-            </div>
 
-            <form onSubmit={handleSaveSecret} className="flex flex-wrap gap-2">
               <Input
                 placeholder="VARIABLE_NAME"
                 value={secretKey}
                 onChange={(e) => setSecretKey(e.target.value)}
-                className="min-w-[180px] font-mono uppercase"
+                className="min-w-[180px] flex-1 font-mono uppercase"
                 required
               />
-              <Input
-                placeholder="Value"
-                type="password"
-                value={secretVal}
-                onChange={(e) => setSecretVal(e.target.value)}
-                className="min-w-[220px] flex-1"
-                required
-              />
+
+              <div className="relative min-w-[220px] flex-2">
+                <Input
+                  placeholder="Secret Value"
+                  type={secretValVisible ? "text" : "password"}
+                  value={secretVal}
+                  onChange={(e) => setSecretVal(e.target.value)}
+                  className="pr-10"
+                  required
+                />
+                <button
+                  type="button"
+                  onClick={() => setSecretValVisible(!secretValVisible)}
+                  className="absolute right-2.5 top-2.5 text-xs text-slate-400 hover:text-slate-700"
+                  title={secretValVisible ? "Hide value" : "Show value"}
+                >
+                  {secretValVisible ? "🙈" : "👁️"}
+                </button>
+              </div>
+
               <Button type="submit" disabled={savingSecret || !secretKey.trim() || !secretVal}>
-                {savingSecret ? "Saving..." : "Save"}
+                {savingSecret ? "Saving..." : "Save Secret"}
               </Button>
             </form>
           </div>
 
+          {/* Variables Table with Environment Scope Filter & Reveal All */}
           <div className="jp-card overflow-hidden">
-            <div className="border-b border-[var(--border)] bg-slate-50 px-4 py-3">
-              <h3 className="text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
-                Variables in {secretEnv.toUpperCase()} ({secretsList.length})
-              </h3>
+            <div className="border-b border-[var(--border)] bg-slate-50 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
+                  Environment Variables ({secretsList.length})
+                </h3>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {/* Scope Filter Tabs */}
+                <div className="flex items-center rounded-lg border border-[var(--border)] bg-white p-0.5 shadow-2xs text-xs">
+                  {[
+                    { id: "all", label: "All Envs" },
+                    { id: "production", label: "Production" },
+                    { id: "staging", label: "Staging" },
+                    { id: "development", label: "Development" },
+                  ].map((tab) => (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setSecretEnv(tab.id)}
+                      className={`px-2.5 py-1 font-semibold rounded-md transition-all ${
+                        secretEnv === tab.id
+                          ? "bg-[var(--accent)] text-white font-bold shadow-2xs"
+                          : "text-[var(--ink-secondary)] hover:text-[var(--ink)]"
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
+
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setShowAllSecrets(!showAllSecrets)}
+                  className="text-xs font-semibold"
+                >
+                  {showAllSecrets ? "🙈 Hide All Values" : "👁️ Reveal All Values"}
+                </Button>
+              </div>
             </div>
+
             {secretsList.length === 0 ? (
-              <div className="p-6 text-center text-xs text-[var(--ink-muted)]">
-                No secrets stored in {secretEnv} scope.
+              <div className="p-8 text-center text-xs text-[var(--ink-muted)] space-y-2">
+                <p className="font-semibold text-[var(--ink)]">
+                  No secrets stored in {secretEnv === "all" ? "any environment" : `${secretEnv.toUpperCase()} scope`}.
+                </p>
+                <p>
+                  Add a variable above or click &quot;Bulk Edit (.env)&quot; to paste multiple keys.
+                </p>
               </div>
             ) : (
-              <ul className="divide-y divide-[var(--border)]">
-                {secretsList.map((s) => (
-                  <li key={s.id} className="flex items-center justify-between p-3.5 text-xs">
-                    <span className="font-mono font-bold text-[var(--ink)]">{s.name}</span>
-                    <span className="font-mono text-xs text-[var(--ink-muted)]">{s.value_hint}</span>
-                  </li>
-                ))}
-              </ul>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm min-w-[750px]">
+                  <thead>
+                    <tr className="border-b border-[var(--border)] bg-slate-50/50 text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
+                      <th className="px-4 py-2.5">Key Name</th>
+                      <th className="px-4 py-2.5">Scope</th>
+                      <th className="px-4 py-2.5">Decrypted Value</th>
+                      <th className="px-4 py-2.5 text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[var(--border)]">
+                    {secretsList.map((s) => {
+                      const isRevealed = revealedSecrets[s.id] || showAllSecrets;
+                      const plainValue = s.value || s.value_hint;
+
+                      return (
+                        <tr key={s.id} className="hover:bg-slate-50/70 transition-colors">
+                          <td className="px-4 py-3 font-mono font-bold text-[var(--ink)]">
+                            {s.name}
+                          </td>
+
+                          <td className="px-4 py-3">
+                            <span
+                              className={`rounded px-2 py-0.5 font-mono text-[10px] font-bold uppercase border ${
+                                s.environment === "production"
+                                  ? "bg-purple-50 text-purple-800 border-purple-200"
+                                  : s.environment === "staging"
+                                  ? "bg-amber-50 text-amber-800 border-amber-200"
+                                  : "bg-blue-50 text-blue-800 border-blue-200"
+                              }`}
+                            >
+                              {s.environment}
+                            </span>
+                          </td>
+
+                          <td className="px-4 py-3">
+                            <div className="flex items-center gap-2 max-w-md">
+                              {isRevealed ? (
+                                <code className="font-mono text-xs text-emerald-800 bg-emerald-50 px-2 py-1 rounded border border-emerald-200 break-all select-all">
+                                  {plainValue}
+                                </code>
+                              ) : (
+                                <span className="font-mono text-xs text-slate-400 select-none tracking-widest">
+                                  ••••••••••••••••
+                                </span>
+                              )}
+                            </div>
+                          </td>
+
+                          <td className="px-4 py-3 text-right">
+                            <div className="flex items-center justify-end gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setRevealedSecrets((prev) => ({
+                                    ...prev,
+                                    [s.id]: !prev[s.id],
+                                  }))
+                                }
+                                className="px-2 py-1 text-xs font-semibold rounded border border-[var(--border)] bg-white hover:bg-slate-100 text-[var(--ink-secondary)] transition-colors"
+                                title={isRevealed ? "Mask value" : "Reveal value"}
+                              >
+                                {isRevealed ? "🙈 Hide" : "👁️ View"}
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => copyToClipboard(plainValue, `sec-${s.id}`)}
+                                className="px-2 py-1 text-xs font-semibold rounded border border-[var(--border)] bg-white hover:bg-slate-100 text-[var(--ink-secondary)] transition-colors"
+                              >
+                                {copiedKey === `sec-${s.id}` ? "✓ Copied" : "Copy"}
+                              </button>
+
+                              <Button
+                                variant="danger"
+                                size="sm"
+                                onClick={() => handleDeleteSecret(s.name, s.environment)}
+                                className="text-xs"
+                              >
+                                Delete
+                              </Button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             )}
           </div>
         </div>

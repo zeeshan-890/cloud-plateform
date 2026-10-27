@@ -221,6 +221,7 @@ func main() {
 	// Phase 5 — Secrets & environments
 	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/environments", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(secretSvc, "/api/v1")))))
 	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/environments", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(secretSvc, "/api/v1")))))
+	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/secrets", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(secretSvc, "/api/v1")))))
 	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/environments/{env}/secrets", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(secretSvc, "/api/v1")))))
 	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/environments/{env}/secrets", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(secretSvc, "/api/v1")))))
 	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/environments/{env}/secrets/{name}", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(secretSvc, "/api/v1")))))
