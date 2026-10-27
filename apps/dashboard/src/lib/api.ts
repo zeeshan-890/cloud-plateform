@@ -477,6 +477,27 @@ export const api = {
     });
   },
 
+  // Certificates & SSL
+  async listCertificates(orgId: string, projectId: string) {
+    const data = await request<{ certificates: import("./types").Certificate[] }>(
+      `/orgs/${orgId}/projects/${projectId}/certificates`,
+    );
+    return (unwrap(data, "certificates") as import("./types").Certificate[]) || [];
+  },
+  async getCertificate(orgId: string, projectId: string, certId: string) {
+    const data = await request<{ certificate: import("./types").Certificate }>(
+      `/orgs/${orgId}/projects/${projectId}/certificates/${certId}`,
+    );
+    return unwrap(data, "certificate") as import("./types").Certificate;
+  },
+  async renewCertificate(orgId: string, projectId: string, certId: string) {
+    const data = await request<{ certificate: import("./types").Certificate }>(
+      `/orgs/${orgId}/projects/${projectId}/certificates/${certId}/renew`,
+      { method: "POST", body: {} },
+    );
+    return unwrap(data, "certificate") as import("./types").Certificate;
+  },
+
   // Runtime
   async listRuntimeInstances(orgId: string, projectId: string) {
     const data = await request<{ instances: RuntimeInstance[]; mode?: string }>(
@@ -522,13 +543,6 @@ export const api = {
     }>(`/orgs/${orgId}/projects/${projectId}/runtime/instances/${instanceId}/logs${qs}`);
   },
 
-  // Certificates
-  async listCertificates(orgId: string, projectId: string) {
-    const data = await request<{ certificates: Certificate[] }>(
-      `/orgs/${orgId}/projects/${projectId}/certificates`,
-    );
-    return (unwrap(data, "certificates") as Certificate[]) || [];
-  },
 
   // Secrets & environments
   async listEnvironments(orgId: string, projectId: string) {

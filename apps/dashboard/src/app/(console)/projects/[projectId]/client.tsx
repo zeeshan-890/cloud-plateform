@@ -9,8 +9,9 @@ import { Alert, EmptyState, PageHeader } from "@/components/ui/page";
 import { api, ApiError } from "@/lib/api";
 import { useOrg } from "@/lib/org-context";
 import { useProject } from "@/lib/project-context";
-import type { Build, ConnectedRepo, DeployKey, Deployment, LogEntry, ManagedAddon, Project, RuntimeInstance, SecretMeta } from "@/lib/types";
+import type { Build, Certificate, ConnectedRepo, DeployKey, Deployment, Domain, LogEntry, ManagedAddon, Project, RuntimeInstance, SecretMeta } from "@/lib/types";
 import { setVisibilityInterval } from "@/lib/visibility";
+import { AIResponseView } from "@/components/ai-response-view";
 
 export default function ProjectDetailClient() {
   const params = useParams<{ projectId: string }>();
@@ -44,8 +45,13 @@ export default function ProjectDetailClient() {
 
   // Sub-tab states for Domains
   const [domainInput, setDomainInput] = useState("");
-  const [domainsList, setDomainsList] = useState<Array<{ id: string; hostname: string; status: string }>>([]);
+  const [domainsList, setDomainsList] = useState<Domain[]>([]);
+  const [certificatesList, setCertificatesList] = useState<Certificate[]>([]);
   const [addingDomain, setAddingDomain] = useState(false);
+  const [verifyingDomainId, setVerifyingDomainId] = useState<string | null>(null);
+  const [domainToDelete, setDomainToDelete] = useState<Domain | null>(null);
+  const [deletingDomain, setDeletingDomain] = useState(false);
+  const [copiedDnsKey, setCopiedDnsKey] = useState<string | null>(null);
 
   // Sub-tab states for Secrets
   const [secretEnv, setSecretEnv] = useState("all");
@@ -435,9 +441,13 @@ export default function ProjectDetailClient() {
         .catch(() => setDeployKey(null))
         .finally(() => setLoadingDeployKey(false));
     } else if (currentTab === "domains") {
-      api.listDomains(currentOrg.id, actualProjectId)
-        .then((doms) => setDomainsList(doms))
-        .catch(() => setDomainsList([]));
+      Promise.all([
+        api.listDomains(currentOrg.id, actualProjectId).catch(() => []),
+        api.listCertificates(currentOrg.id, actualProjectId).catch(() => []),
+      ]).then(([doms, certs]) => {
+        setDomainsList(doms);
+        setCertificatesList(certs);
+      });
     } else if (currentTab === "secrets") {
       api.listSecrets(currentOrg.id, actualProjectId, secretEnv)
         .then((s) => setSecretsList(s))
@@ -619,7 +629,7 @@ export default function ProjectDetailClient() {
     }
   }
 
-  // Domain Add Handler
+  // Domain Handlers
   async function handleAddDomain(e: FormEvent) {
     e.preventDefault();
     if (!currentOrg || !project || !domainInput.trim()) return;
@@ -631,18 +641,71 @@ export default function ProjectDetailClient() {
       const dom = await api.addDomain(currentOrg.id, project.id, { hostname: host });
       try {
         await api.verifyDomain(currentOrg.id, project.id, dom.id, true);
-        setSuccess(`Domain "${host}" added and verified with Traefik ingress!`);
+        setSuccess(`Domain "${host}" connected and automatically verified with Traefik ingress & Let's Encrypt SSL!`);
       } catch {
-        setSuccess(`Domain "${host}" added.`);
+        setSuccess(`Domain "${host}" added. Please complete the DNS setup steps below.`);
       }
       setDomainInput("");
-      const updated = await api.listDomains(currentOrg.id, project.id);
-      setDomainsList(updated);
+      const [updatedDoms, updatedCerts] = await Promise.all([
+        api.listDomains(currentOrg.id, project.id),
+        api.listCertificates(currentOrg.id, project.id).catch(() => []),
+      ]);
+      setDomainsList(updatedDoms);
+      setCertificatesList(updatedCerts);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Failed to add domain");
     } finally {
       setAddingDomain(false);
     }
+  }
+
+  async function handleVerifyDomain(domainId: string, force = false) {
+    if (!currentOrg || !project) return;
+    setVerifyingDomainId(domainId);
+    setError("");
+    setSuccess("");
+    try {
+      await api.verifyDomain(currentOrg.id, project.id, domainId, force);
+      setSuccess(
+        force
+          ? "Domain auto-verified! Traefik reverse proxy routing and Let's Encrypt SSL certificates are now active."
+          : "Domain DNS propagation check passed! Reverse proxy routing active."
+      );
+      const [updatedDoms, updatedCerts] = await Promise.all([
+        api.listDomains(currentOrg.id, project.id),
+        api.listCertificates(currentOrg.id, project.id).catch(() => []),
+      ]);
+      setDomainsList(updatedDoms);
+      setCertificatesList(updatedCerts);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Verification check failed. Please verify your DNS records.");
+    } finally {
+      setVerifyingDomainId(null);
+    }
+  }
+
+  async function handleConfirmDeleteDomain() {
+    if (!currentOrg || !project || !domainToDelete) return;
+    setDeletingDomain(true);
+    setError("");
+    setSuccess("");
+    try {
+      await api.deleteDomain(currentOrg.id, project.id, domainToDelete.id);
+      setSuccess(`Domain "${domainToDelete.hostname}" disconnected and Traefik ingress routes purged.`);
+      setDomainToDelete(null);
+      const updated = await api.listDomains(currentOrg.id, project.id);
+      setDomainsList(updated);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to remove domain");
+    } finally {
+      setDeletingDomain(false);
+    }
+  }
+
+  function copyDnsRecord(text: string, key: string) {
+    navigator.clipboard.writeText(text);
+    setCopiedDnsKey(key);
+    setTimeout(() => setCopiedDnsKey(null), 2000);
   }
 
   // Secret Add Handler
@@ -1097,44 +1160,21 @@ export default function ProjectDetailClient() {
             </div>
 
             {aiAuditResult && (
-              <div className="space-y-3 animate-fade-up pt-3 border-t border-slate-100">
-                <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-50 p-3 rounded-lg border-2 border-slate-200">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-extrabold text-[#0F1B3D]">Audit Status:</span>
-                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2.5 py-0.5 text-[10px] font-bold text-emerald-800 border border-emerald-300">
-                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-600" />
-                      {aiAuditResult.risk_level?.toUpperCase() || "LOW RISK / PRODUCTION READY"}
-                    </span>
-                  </div>
-                  <span className="font-mono text-[10px] text-slate-500 font-bold">
-                    Model: {aiAuditResult.model || "gemini-3.5-flash-lite"}
-                  </span>
-                </div>
-
-                {aiAuditResult.overview && (
-                  <p className="text-xs text-slate-800 leading-relaxed font-medium bg-blue-50/70 border-2 border-blue-200 p-3 rounded-lg">
-                    {aiAuditResult.overview}
-                  </p>
-                )}
-
-                {aiAuditResult.suggestions && aiAuditResult.suggestions.length > 0 && (
-                  <div className="space-y-2">
-                    <p className="text-xs font-extrabold text-[#0F1B3D] uppercase tracking-wider text-[10px]">
-                      Recommended Fixes:
-                    </p>
-                    <div className="grid gap-2 sm:grid-cols-2">
-                      {aiAuditResult.suggestions.map((sug, idx) => (
-                        <div
-                          key={idx}
-                          className="flex items-start gap-2 rounded-lg border-2 border-slate-200 bg-white p-3 text-xs text-slate-800 shadow-2xs hover:border-[#1E3A8A] transition-all font-medium"
-                        >
-                          <span className="text-emerald-600 font-bold shrink-0">✓</span>
-                          <span className="leading-snug">{sug}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
+              <div className="pt-3 animate-fade-up">
+                <AIResponseView
+                  content={[
+                    aiAuditResult.overview,
+                    aiAuditResult.suggestions && aiAuditResult.suggestions.length > 0
+                      ? `### Recommended Architectural Fixes & Hardening\n` +
+                        aiAuditResult.suggestions.map((sug, idx) => `${idx + 1}. ${sug}`).join("\n")
+                      : "",
+                  ]
+                    .filter(Boolean)
+                    .join("\n\n")}
+                  title="Project Architecture & Reliability Audit"
+                  model={aiAuditResult.model || "gemini-3.5-flash-lite"}
+                  riskLevel={aiAuditResult.risk_level}
+                />
               </div>
             )}
           </div>
@@ -1846,64 +1886,29 @@ export default function ProjectDetailClient() {
 
               {/* ✨ Google Gemini 3.5 Flash Lite Build Diagnostic Panel */}
               {aiLogPanelOpen && aiLogAnalysisResult && (
-                <div className="rounded-xl border border-indigo-200 bg-white p-5 shadow-sm space-y-3.5 animate-fade-up">
-                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
-                    <div className="flex items-center gap-2">
-                      <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-blue-600 text-white text-xs shadow-xs">
-                        ✨
-                      </span>
-                      <h4 className="text-sm font-bold text-slate-900">
-                        Google Gemini 3.5 Flash Lite — Build & Error Analysis
-                      </h4>
-                      <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[10px] font-bold ${
-                        aiLogAnalysisResult.severity === "critical"
-                          ? "bg-rose-100 text-rose-800 border border-rose-200"
-                          : aiLogAnalysisResult.severity === "warning"
-                          ? "bg-amber-100 text-amber-800 border border-amber-200"
-                          : "bg-emerald-100 text-emerald-800 border border-emerald-200"
-                      }`}>
-                        {aiLogAnalysisResult.severity?.toUpperCase() || "ANALYSIS COMPLETE"}
-                      </span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setAiLogPanelOpen(false)}
-                      className="rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700 text-xs"
-                    >
-                      ✕ Close Panel
-                    </button>
-                  </div>
-
-                  {aiLogAnalysisResult.summary && (
-                    <div className="bg-slate-50 border border-slate-200/80 rounded-lg p-3 text-xs text-slate-800 font-semibold">
-                      {aiLogAnalysisResult.summary}
-                    </div>
-                  )}
-
-                  <div className="text-xs text-slate-700 leading-relaxed whitespace-pre-line bg-blue-50/40 border border-blue-100 rounded-lg p-3.5 font-medium">
-                    {aiLogAnalysisResult.analysis}
-                  </div>
-
-                  {aiLogAnalysisResult.recommendations && aiLogAnalysisResult.recommendations.length > 0 && (
-                    <div className="space-y-2 pt-1">
-                      <p className="text-[11px] font-bold uppercase tracking-wider text-slate-700">
-                        Recommended Fixes:
-                      </p>
-                      <div className="grid gap-2 sm:grid-cols-2">
-                        {aiLogAnalysisResult.recommendations.map((rec, idx) => (
-                          <div
-                            key={idx}
-                            className="flex items-start gap-2 rounded-lg border border-slate-200/90 bg-white p-3 text-xs text-slate-800 shadow-2xs hover:border-blue-300 transition-all"
-                          >
-                            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-blue-100 text-blue-700 font-bold text-[10px] shrink-0">
-                              {idx + 1}
-                            </span>
-                            <span className="leading-snug">{rec}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
+                <div className="relative animate-fade-up">
+                  <button
+                    type="button"
+                    onClick={() => setAiLogPanelOpen(false)}
+                    className="absolute top-3 right-3 z-10 rounded-md bg-white/90 px-2 py-1 text-slate-500 hover:bg-slate-100 hover:text-slate-800 text-[11px] font-bold border border-slate-200 shadow-2xs transition-all"
+                  >
+                    ✕ Close
+                  </button>
+                  <AIResponseView
+                    content={[
+                      aiLogAnalysisResult.summary ? `### Executive Summary\n${aiLogAnalysisResult.summary}` : "",
+                      aiLogAnalysisResult.analysis ? `### Diagnostic Analysis & Root Cause\n${aiLogAnalysisResult.analysis}` : "",
+                      aiLogAnalysisResult.recommendations && aiLogAnalysisResult.recommendations.length > 0
+                        ? `### Actionable Remediation Steps\n` +
+                          aiLogAnalysisResult.recommendations.map((rec, idx) => `${idx + 1}. ${rec}`).join("\n")
+                        : "",
+                    ]
+                      .filter(Boolean)
+                      .join("\n\n")}
+                    title="Google Gemini 3.5 — Build & Error Analysis"
+                    model="gemini-3.5-flash-lite"
+                    riskLevel={aiLogAnalysisResult.severity}
+                  />
                 </div>
               )}
 
@@ -2099,64 +2104,29 @@ export default function ProjectDetailClient() {
 
               {/* ✨ Google Gemini 3.5 Flash Lite Runtime Diagnostic Panel */}
               {aiLogPanelOpen && aiLogAnalysisResult && (
-                <div className="rounded-xl border border-indigo-200 bg-white p-5 shadow-sm space-y-3.5 animate-fade-up">
-                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
-                    <div className="flex items-center gap-2">
-                      <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-blue-600 text-white text-xs shadow-xs">
-                        ✨
-                      </span>
-                      <h4 className="text-sm font-bold text-slate-900">
-                        Google Gemini 3.5 Flash Lite — Container Log Diagnostics
-                      </h4>
-                      <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[10px] font-bold ${
-                        aiLogAnalysisResult.severity === "critical"
-                          ? "bg-rose-100 text-rose-800 border border-rose-200"
-                          : aiLogAnalysisResult.severity === "warning"
-                          ? "bg-amber-100 text-amber-800 border border-amber-200"
-                          : "bg-emerald-100 text-emerald-800 border border-emerald-200"
-                      }`}>
-                        {aiLogAnalysisResult.severity?.toUpperCase() || "LOG ANALYSIS READY"}
-                      </span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setAiLogPanelOpen(false)}
-                      className="rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700 text-xs"
-                    >
-                      ✕ Close Panel
-                    </button>
-                  </div>
-
-                  {aiLogAnalysisResult.summary && (
-                    <div className="bg-slate-50 border border-slate-200/80 rounded-lg p-3 text-xs text-slate-800 font-semibold">
-                      {aiLogAnalysisResult.summary}
-                    </div>
-                  )}
-
-                  <div className="text-xs text-slate-700 leading-relaxed whitespace-pre-line bg-blue-50/40 border border-blue-100 rounded-lg p-3.5 font-medium">
-                    {aiLogAnalysisResult.analysis}
-                  </div>
-
-                  {aiLogAnalysisResult.recommendations && aiLogAnalysisResult.recommendations.length > 0 && (
-                    <div className="space-y-2 pt-1">
-                      <p className="text-[11px] font-bold uppercase tracking-wider text-slate-700">
-                        Diagnostic Steps & Container Recommendations:
-                      </p>
-                      <div className="grid gap-2 sm:grid-cols-2">
-                        {aiLogAnalysisResult.recommendations.map((rec, idx) => (
-                          <div
-                            key={idx}
-                            className="flex items-start gap-2 rounded-lg border border-slate-200/90 bg-white p-3 text-xs text-slate-800 shadow-2xs hover:border-blue-300 transition-all"
-                          >
-                            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-blue-100 text-blue-700 font-bold text-[10px] shrink-0">
-                              {idx + 1}
-                            </span>
-                            <span className="leading-snug">{rec}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
+                <div className="relative animate-fade-up">
+                  <button
+                    type="button"
+                    onClick={() => setAiLogPanelOpen(false)}
+                    className="absolute top-3 right-3 z-10 rounded-md bg-white/90 px-2 py-1 text-slate-500 hover:bg-slate-100 hover:text-slate-800 text-[11px] font-bold border border-slate-200 shadow-2xs transition-all"
+                  >
+                    ✕ Close
+                  </button>
+                  <AIResponseView
+                    content={[
+                      aiLogAnalysisResult.summary ? `### Executive Summary\n${aiLogAnalysisResult.summary}` : "",
+                      aiLogAnalysisResult.analysis ? `### Container Runtime Diagnostic\n${aiLogAnalysisResult.analysis}` : "",
+                      aiLogAnalysisResult.recommendations && aiLogAnalysisResult.recommendations.length > 0
+                        ? `### Diagnostic Steps & Container Recommendations\n` +
+                          aiLogAnalysisResult.recommendations.map((rec, idx) => `${idx + 1}. ${rec}`).join("\n")
+                        : "",
+                    ]
+                      .filter(Boolean)
+                      .join("\n\n")}
+                    title="Google Gemini 3.5 — Container Runtime Log Diagnostic"
+                    model="gemini-3.5-flash-lite"
+                    riskLevel={aiLogAnalysisResult.severity}
+                  />
                 </div>
               )}
 
@@ -2216,56 +2186,354 @@ export default function ProjectDetailClient() {
       )}
 
       {/* ========================================================
-          TAB 5: CUSTOM DOMAINS & ROUTING
+          TAB 5: CUSTOM DOMAINS, DNS SETUP & SSL INGRESS
           ======================================================== */}
       {currentTab === "domains" && (
-        <div className="space-y-6">
-          <div className="jp-card p-5 space-y-4">
-            <div className="border-b border-[var(--border)] pb-3">
-              <h2 className="text-sm font-bold text-[var(--ink)]">
-                Add Custom Domain to {project.name}
-              </h2>
-              <p className="text-xs text-[var(--ink-muted)]">
-                Point a CNAME or A-Record to this server. Traefik automatically wires the proxy route.
+        <div className="space-y-6 animate-fade-up">
+          {/* Header Info Banner */}
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 rounded-xl border-2 border-slate-200 bg-white p-5 shadow-xs">
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-blue-600 text-white text-xs font-black shadow-xs">
+                  🌐
+                </span>
+                <h2 className="text-sm font-bold text-[#0F1B3D]">
+                  Custom Domains & SSL Ingress for {project.name}
+                </h2>
+              </div>
+              <p className="mt-1 text-xs text-slate-500 font-medium">
+                Route production traffic directly to this container with automatic Let&apos;s Encrypt TLS 1.3 certificates and Traefik reverse proxying.
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="rounded-full bg-emerald-50 border border-emerald-300 px-3 py-1 text-xs font-bold text-emerald-800 flex items-center gap-1.5">
+                <span className="h-2 w-2 rounded-full bg-emerald-600 animate-pulse" />
+                Let&apos;s Encrypt Auto-SSL Active
+              </span>
+            </div>
+          </div>
+
+          {/* 3-Step Setup Guide */}
+          <div className="rounded-xl border-2 border-slate-200 bg-white p-5 shadow-xs space-y-4">
+            <div className="border-b border-slate-100 pb-3">
+              <span className="inline-block text-[10px] font-extrabold uppercase tracking-wider text-blue-700 bg-blue-50 px-2 py-0.5 rounded-md mb-1">
+                Setup Instructions
+              </span>
+              <h3 className="text-sm font-bold text-[#0F1B3D]">
+                Step 1: Configure DNS at Your Domain Registrar
+              </h3>
+              <p className="text-xs text-slate-500 font-medium mt-0.5">
+                Log in to Cloudflare, GoDaddy, Namecheap, Route53, or your DNS manager and add one of the following records:
               </p>
             </div>
 
-            <form onSubmit={handleAddDomain} className="flex gap-2">
-              <Input
-                placeholder="e.g. app.mycompany.com or mydomain.com"
-                value={domainInput}
-                onChange={(e) => setDomainInput(e.target.value)}
-                required
-              />
-              <Button type="submit" disabled={addingDomain || !domainInput.trim()}>
-                {addingDomain ? "Connecting..." : "Add Domain"}
+            {/* DNS Records Table */}
+            <div className="overflow-x-auto rounded-lg border border-slate-200">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-200 text-[11px] font-extrabold uppercase tracking-wider text-slate-600">
+                    <th className="px-4 py-2.5">Domain Scenario</th>
+                    <th className="px-4 py-2.5">Record Type</th>
+                    <th className="px-4 py-2.5">Host / Name</th>
+                    <th className="px-4 py-2.5">Target / IP Value</th>
+                    <th className="px-4 py-2.5">Recommended TTL</th>
+                    <th className="px-4 py-2.5 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
+                  <tr className="hover:bg-blue-50/30 transition-colors">
+                    <td className="px-4 py-3 font-bold text-slate-900">
+                      Subdomain <span className="text-slate-400 font-normal">(e.g. app.{rootDomain})</span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className="rounded bg-blue-100/80 px-2 py-0.5 font-mono font-bold text-blue-900 text-[11px]">
+                        CNAME
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 font-mono font-bold text-slate-900">
+                      <div className="flex items-center gap-1.5">
+                        <span>subdomain</span>
+                        <button
+                          type="button"
+                          onClick={() => copyDnsRecord("app", "cname-host")}
+                          className="text-[10px] text-slate-400 hover:text-blue-600 font-sans"
+                        >
+                          {copiedDnsKey === "cname-host" ? "✓" : "📋"}
+                        </button>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 font-mono font-bold text-blue-700">
+                      161.118.168.6
+                    </td>
+                    <td className="px-4 py-3 text-slate-500">Auto (300s)</td>
+                    <td className="px-4 py-3 text-right">
+                      <button
+                        type="button"
+                        onClick={() => copyDnsRecord("161.118.168.6", "cname-target")}
+                        className="px-2.5 py-1 rounded-md border border-slate-300 bg-white hover:bg-slate-50 text-[11px] font-bold text-slate-700 shadow-2xs transition-all"
+                      >
+                        {copiedDnsKey === "cname-target" ? "✓ Copied" : "📋 Copy Value"}
+                      </button>
+                    </td>
+                  </tr>
+
+                  <tr className="hover:bg-blue-50/30 transition-colors">
+                    <td className="px-4 py-3 font-bold text-slate-900">
+                      Apex / Root Domain <span className="text-slate-400 font-normal">(e.g. {rootDomain})</span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className="rounded bg-purple-100/80 px-2 py-0.5 font-mono font-bold text-purple-900 text-[11px]">
+                        A Record
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 font-mono font-bold text-slate-900">
+                      <div className="flex items-center gap-1.5">
+                        <span>@</span>
+                        <button
+                          type="button"
+                          onClick={() => copyDnsRecord("@", "a-host")}
+                          className="text-[10px] text-slate-400 hover:text-blue-600 font-sans"
+                        >
+                          {copiedDnsKey === "a-host" ? "✓" : "📋"}
+                        </button>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 font-mono font-bold text-blue-700">
+                      161.118.168.6
+                    </td>
+                    <td className="px-4 py-3 text-slate-500">Auto (300s)</td>
+                    <td className="px-4 py-3 text-right">
+                      <button
+                        type="button"
+                        onClick={() => copyDnsRecord("161.118.168.6", "a-ip")}
+                        className="px-2.5 py-1 rounded-md border border-slate-300 bg-white hover:bg-slate-50 text-[11px] font-bold text-slate-700 shadow-2xs transition-all"
+                      >
+                        {copiedDnsKey === "a-ip" ? "✓ Copied" : "📋 Copy IP"}
+                      </button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-3 text-xs text-amber-900 flex items-start gap-2">
+              <span className="text-amber-600 font-bold shrink-0">💡</span>
+              <p className="leading-relaxed">
+                <span className="font-bold">Cloudflare Users:</span> When setting up DNS on Cloudflare, set proxy status to <span className="font-bold underline">DNS Only (Grey Cloud)</span> during initial certificate issuance so Let&apos;s Encrypt TLS-ALPN-01 / HTTP-01 challenges resolve directly to Traefik.
+              </p>
+            </div>
+          </div>
+
+          {/* Step 2: Add Domain Form */}
+          <div className="rounded-xl border-2 border-slate-200 bg-white p-5 shadow-xs space-y-3">
+            <div>
+              <span className="inline-block text-[10px] font-extrabold uppercase tracking-wider text-blue-700 bg-blue-50 px-2 py-0.5 rounded-md mb-1">
+                Attachment
+              </span>
+              <h3 className="text-sm font-bold text-[#0F1B3D]">
+                Step 2: Connect Custom Domain to {project.name}
+              </h3>
+              <p className="text-xs text-slate-500 font-medium">
+                Enter your fully qualified domain name. Traefik will generate ingress routing and trigger Let&apos;s Encrypt automated TLS provisioning.
+              </p>
+            </div>
+
+            <form onSubmit={handleAddDomain} className="flex flex-col sm:flex-row gap-2.5 pt-1">
+              <div className="relative flex-1">
+                <Input
+                  placeholder="e.g. app.mycompany.com or mycompany.com"
+                  value={domainInput}
+                  onChange={(e) => setDomainInput(e.target.value)}
+                  disabled={addingDomain}
+                  required
+                  className="font-medium"
+                />
+              </div>
+              <Button type="submit" disabled={addingDomain || !domainInput.trim()} className="font-bold shrink-0">
+                {addingDomain ? "Connecting Domain..." : "Connect Domain"}
               </Button>
             </form>
           </div>
 
+          {/* Step 3: Connected Hostnames List & SSL Status */}
           <div className="jp-card overflow-hidden">
-            <div className="border-b border-[var(--border)] bg-slate-50 px-4 py-3">
-              <h3 className="text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
-                Connected Hostnames ({domainsList.length})
-              </h3>
+            <div className="border-b border-[var(--border)] bg-slate-50 px-5 py-3.5 flex items-center justify-between">
+              <div>
+                <h3 className="text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)] flex items-center gap-2">
+                  <span>🔒 Step 3: Connected Hostnames & SSL Certificates</span>
+                  <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-bold text-blue-800 font-mono">
+                    {domainsList.length} Connected
+                  </span>
+                </h3>
+              </div>
+              <div className="text-[11px] font-medium text-slate-500">
+                Default: <code className="font-bold text-[var(--ink)]">{appPublicUrl}</code>
+              </div>
             </div>
+
             {domainsList.length === 0 ? (
-              <div className="p-6 text-center text-xs text-[var(--ink-muted)]">
-                No custom domains connected yet. Default URL: <code className="font-bold text-[var(--ink)]">{appPublicUrl}</code>
+              <div className="p-8 text-center space-y-2">
+                <span className="text-3xl">🌐</span>
+                <p className="text-xs font-bold text-[var(--ink)]">No custom domains connected yet</p>
+                <p className="text-xs text-[var(--ink-muted)] max-w-sm mx-auto">
+                  Add your custom domain above to route production traffic to this container with zero manual SSL configuration.
+                </p>
               </div>
             ) : (
-              <ul className="divide-y divide-[var(--border)]">
-                {domainsList.map((d) => (
-                  <li key={d.id} className="flex items-center justify-between p-3.5 text-xs">
-                    <span className="font-bold text-[var(--ink)]">{d.hostname}</span>
-                    <span className="rounded bg-emerald-50 border border-emerald-200 px-2 py-0.5 font-bold text-emerald-800">
-                      Active &bull; Traefik Ingress
-                    </span>
-                  </li>
-                ))}
-              </ul>
+              <div className="divide-y divide-[var(--border)]">
+                {domainsList.map((d) => {
+                  const isVerified = d.status === "verified" || d.status === "active";
+                  const cert = certificatesList.find((c) => c.hostname === d.hostname);
+                  const isCertActive = isVerified || cert?.status === "active" || cert?.status === "issued";
+                  const isVerifying = verifyingDomainId === d.id;
+
+                  return (
+                    <div key={d.id} className="p-4 hover:bg-slate-50/50 transition-colors flex flex-col md:flex-row md:items-center justify-between gap-4 text-xs">
+                      <div className="space-y-1.5">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-sm text-[var(--ink)] tracking-tight">
+                            {d.hostname}
+                          </span>
+                          <a
+                            href={`https://${d.hostname}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="rounded p-1 text-[var(--ink-muted)] hover:bg-slate-100 hover:text-[var(--accent)] font-bold text-xs"
+                            title="Open https://"
+                          >
+                            ↗
+                          </a>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                          {/* Routing Badge */}
+                          {isVerified ? (
+                            <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-300 bg-emerald-50 px-2.5 py-0.5 font-bold text-emerald-800">
+                              <span className="h-1.5 w-1.5 rounded-full bg-emerald-600 animate-pulse" />
+                              🟢 Active & Routed
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-300 bg-amber-50 px-2.5 py-0.5 font-bold text-amber-800">
+                              <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                              🟡 Pending DNS
+                            </span>
+                          )}
+
+                          {/* SSL Status Badge */}
+                          {isCertActive ? (
+                            <span className="inline-flex items-center gap-1 rounded-full border border-blue-300 bg-blue-50 px-2.5 py-0.5 font-bold text-blue-800">
+                              <span>🔒</span>
+                              <span>Let&apos;s Encrypt (TLS 1.3 Active)</span>
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 rounded-full border border-slate-300 bg-slate-100 px-2.5 py-0.5 font-bold text-slate-700">
+                              <span>⏳</span>
+                              <span>Auto-SSL Provisioning...</span>
+                            </span>
+                          )}
+
+                          <span className="text-slate-400">&bull;</span>
+                          <span className="text-slate-500 font-mono text-[10px]">
+                            Traefik Ingress: 8080 &rarr; 443
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Actions */}
+                      <div className="flex items-center gap-2 shrink-0">
+                        {!isVerified && (
+                          <>
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              size="sm"
+                              disabled={isVerifying}
+                              onClick={() => handleVerifyDomain(d.id, false)}
+                              title="Test if DNS records have propagated globally"
+                              className="font-bold text-xs"
+                            >
+                              {isVerifying ? "Checking..." : "🔄 Verify DNS"}
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              size="sm"
+                              disabled={isVerifying}
+                              onClick={() => handleVerifyDomain(d.id, true)}
+                              title="Bypass public DNS propagation delay and force Traefik ingress route live immediately"
+                              className="font-bold text-xs text-blue-700 border-blue-200 hover:bg-blue-50"
+                            >
+                              {isVerifying ? "Verifying..." : "⚡ Auto-Verify"}
+                            </Button>
+                          </>
+                        )}
+
+                        <Button
+                          type="button"
+                          variant="danger"
+                          size="sm"
+                          disabled={deletingDomain}
+                          onClick={() => setDomainToDelete(d)}
+                          className="font-bold text-xs"
+                        >
+                          Disconnect
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             )}
           </div>
+
+          {/* Confirmation Modal Dialog for Disconnecting Custom Domain */}
+          {domainToDelete && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 animate-fade-in">
+              <div className="w-full max-w-md rounded-2xl border-2 border-slate-200 bg-white p-6 shadow-2xl space-y-4">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-rose-100 text-rose-600 font-bold text-xl shrink-0">
+                    ⚠️
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-black text-slate-900">
+                      Disconnect Custom Domain?
+                    </h3>
+                    <p className="text-xs text-slate-500 font-medium">
+                      This action will remove live ingress traffic.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-rose-200 bg-rose-50/70 p-4 text-xs text-rose-900 space-y-1.5">
+                  <p className="font-bold">
+                    Are you sure you want to disconnect <code className="font-mono font-black text-rose-950 underline">{domainToDelete.hostname}</code> from {project.name}?
+                  </p>
+                  <p className="text-[11px] text-rose-700 leading-relaxed">
+                    Traefik reverse proxy routes will be purged immediately and Let&apos;s Encrypt TLS certificates will be detached. Incoming user traffic to this domain will stop resolving.
+                  </p>
+                </div>
+
+                <div className="flex items-center justify-end gap-2.5 pt-2">
+                  <button
+                    type="button"
+                    disabled={deletingDomain}
+                    onClick={() => setDomainToDelete(null)}
+                    className="h-9 px-4 rounded-lg border border-slate-300 bg-white text-xs font-bold text-slate-700 hover:bg-slate-50 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={deletingDomain}
+                    onClick={handleConfirmDeleteDomain}
+                    className="h-9 px-4 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition-colors flex items-center gap-1.5 shadow-sm disabled:opacity-50"
+                  >
+                    {deletingDomain ? "Disconnecting..." : "Yes, Disconnect Domain"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

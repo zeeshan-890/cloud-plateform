@@ -6,6 +6,7 @@ import { Alert, EmptyState } from "@/components/ui/page";
 import { api, ApiError } from "@/lib/api";
 import { useOrg } from "@/lib/org-context";
 import type { Project } from "@/lib/types";
+import { AIResponseView } from "@/components/ai-response-view";
 
 const PROMPT_TEMPLATES = [
   {
@@ -295,35 +296,12 @@ ${res.recommendations?.map((r, i) => `${i + 1}. ${r}`).join("\n") || "No action 
 
       {/* Answer / AI Analysis Output Card */}
       {answer ? (
-        <div className="bg-white rounded-xl border-2 border-slate-300 p-6 shadow-sm space-y-4 animate-fade-up">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3">
-            <div className="flex items-center gap-2">
-              <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-blue-700 to-indigo-800 text-white text-xs shadow-xs">
-                ✨
-              </span>
-              <h3 className="text-sm font-extrabold text-[#0F1B3D]">
-                Gemini 3.5 Flash Lite Output
-              </h3>
-              <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-[10px] font-bold text-emerald-800 border border-emerald-300">
-                Mode: {mode}
-              </span>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={copyAnswer}
-                className="h-8 px-3 rounded-md bg-white border-2 border-slate-300 text-slate-700 font-bold text-xs inline-flex items-center gap-1.5 hover:border-[#1E3A8A] hover:text-[#1E3A8A] transition-colors shadow-sm"
-              >
-                <span>{copied ? "✓ Copied" : "📋 Copy Output"}</span>
-              </button>
-            </div>
-          </div>
-
-          <div className="bg-slate-50 border-2 border-slate-200 rounded-xl p-4 text-xs font-mono text-slate-800 leading-relaxed whitespace-pre-wrap shadow-inner overflow-x-auto">
-            {answer}
-          </div>
-        </div>
+        <AIResponseView
+          content={answer}
+          model={model}
+          mode={mode}
+          title="Gemini 3.5 Operational Intelligence Report"
+        />
       ) : null}
     </div>
   );
