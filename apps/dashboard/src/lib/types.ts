@@ -80,6 +80,14 @@ export interface GitInstallation {
   created_at?: string;
 }
 
+export interface DeployKey {
+  id: string;
+  project_id: string;
+  public_key: string;
+  key_type: string;
+  created_at: string;
+}
+
 export interface ConnectedRepo {
   id: string;
   org_id: string;

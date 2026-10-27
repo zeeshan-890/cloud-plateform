@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -53,6 +54,7 @@ func main() {
 		DeploymentURL: cfg.DeploymentURL,
 		RegistryAPI:   strings.TrimRight(cfg.RegistryURL, "/"),
 		RegistryURL:   strings.TrimRight(getEnv("REGISTRY_PUSH_URL", getEnv("REGISTRY_HOST", "registry:5000")), "/"),
+		RepositoryURL: strings.TrimRight(getEnv("REPOSITORY_URL", "http://repository:8005"), "/"),
 		Simulate:      simulateBuild(),
 		HTTP:          &http.Client{Timeout: 30 * time.Second},
 		Log:           log,
@@ -116,6 +118,7 @@ type Worker struct {
 	DeploymentURL string
 	RegistryAPI   string
 	RegistryURL   string
+	RepositoryURL string
 	Simulate      bool
 	HTTP          *http.Client
 	Log           *slog.Logger
@@ -167,7 +170,27 @@ func (w *Worker) process(ctx context.Context, env events.Envelope) {
 	} else {
 		logs.WriteString("cloning " + cloneURL + "\n")
 		w.patchBuild(ctx, buildID, "running", "", "", logs.String(), "")
-		if err := gitClone(ctx, actualCloneURL, gitBranch, gitSHA, workDir); err != nil {
+
+		var sshKeyFile string
+		if strings.HasPrefix(actualCloneURL, "git@") || strings.HasPrefix(actualCloneURL, "ssh://") {
+			privKey, err := w.fetchDeployKey(ctx, projectID)
+			if err != nil {
+				w.Log.Warn("failed to fetch deploy key for SSH clone", "project_id", projectID, "err", err)
+				logs.WriteString("warning: could not retrieve deploy key: " + err.Error() + "\n")
+			} else if privKey != "" {
+				tmpKey, err := os.CreateTemp("", "id_ed25519_*")
+				if err == nil {
+					_ = os.Chmod(tmpKey.Name(), 0o600)
+					_, _ = tmpKey.WriteString(privKey)
+					_ = tmpKey.Close()
+					sshKeyFile = tmpKey.Name()
+					defer os.Remove(sshKeyFile)
+					logs.WriteString("using project SSH deploy key\n")
+				}
+			}
+		}
+
+		if err := gitClone(ctx, actualCloneURL, gitBranch, gitSHA, workDir, sshKeyFile); err != nil {
 			logs.WriteString("clone failed: " + err.Error() + " — falling back to simulated tree\n")
 			framework = detectFromName(fullName)
 			writeSimulatedTree(workDir, framework)
@@ -252,6 +275,32 @@ func (w *Worker) registerImage(ctx context.Context, orgID, projectID, imageRef, 
 	_ = resp.Body.Close()
 }
 
+func (w *Worker) fetchDeployKey(ctx context.Context, projectID string) (string, error) {
+	if w.RepositoryURL == "" || projectID == "" {
+		return "", errors.New("repository URL or project ID missing")
+	}
+	url := fmt.Sprintf("%s/internal/projects/%s/deploy-key", w.RepositoryURL, projectID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := w.HTTP.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("status %d", resp.StatusCode)
+	}
+	var data struct {
+		PrivateKey string `json:"private_key"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return "", err
+	}
+	return data.PrivateKey, nil
+}
+
 func (w *Worker) patchBuild(ctx context.Context, id, status, framework, imageRef, logs, errMsg string) {
 	body, _ := json.Marshal(map[string]any{
 		"status": status, "framework": framework, "image_ref": imageRef, "logs": logs, "error": errMsg,
@@ -288,19 +337,23 @@ func (w *Worker) patchDeploy(ctx context.Context, id, status, commitStatus, imag
 	_ = resp.Body.Close()
 }
 
-func gitClone(ctx context.Context, url, branch, sha, dir string) error {
+func gitClone(ctx context.Context, url, branch, sha, dir, sshKeyPath string) error {
 	args := []string{"clone", "--depth", "1"}
 	if branch != "" && branch != "HEAD" {
 		args = append(args, "--branch", branch)
 	}
 	args = append(args, url, dir)
 	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	env := append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	if sshKeyPath != "" {
+		env = append(env, fmt.Sprintf("GIT_SSH_COMMAND=ssh -i %s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null", sshKeyPath))
+	}
+	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if branch != "" && branch != "HEAD" {
 			fallbackCmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", url, dir)
-			fallbackCmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+			fallbackCmd.Env = env
 			fout, ferr := fallbackCmd.CombinedOutput()
 			if ferr == nil {
 				return checkoutSHA(ctx, sha, dir)

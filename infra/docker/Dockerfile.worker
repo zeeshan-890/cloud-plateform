@@ -15,7 +15,7 @@ WORKDIR /src/services/worker
 RUN go mod tidy && CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /out/service ./cmd
 
 FROM alpine:3.20
-RUN apk add --no-cache ca-certificates tzdata git docker-cli docker-cli-buildx
+RUN apk add --no-cache ca-certificates tzdata git docker-cli docker-cli-buildx openssh-client
 WORKDIR /app
 COPY --from=build /out/service /app/service
 RUN mkdir -p /tmp/jp-builds

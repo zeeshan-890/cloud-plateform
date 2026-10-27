@@ -184,6 +184,9 @@ func main() {
 	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/repos", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(repository, "/api/v1")))))
 	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/repos", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(repository, "/api/v1")))))
 	mux.Handle("DELETE /api/v1/orgs/{orgId}/projects/{projectId}/repos/{repoId}", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(repository, "/api/v1")))))
+	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/deploy-key", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(repository, "/api/v1")))))
+	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/deploy-key/generate", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(repository, "/api/v1")))))
+
 
 	// Phase 2 — Deployments
 	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/deployments", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(deployment, "/api/v1")))))

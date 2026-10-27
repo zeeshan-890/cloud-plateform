@@ -3,17 +3,30 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jp-cloud/repository/internal/sshkey"
 )
 
 var (
 	ErrNotFound      = errors.New("not found")
 	ErrAlreadyExists = errors.New("already exists")
 )
+
+type DeployKey struct {
+	ID         string    `json:"id"`
+	OrgID      string    `json:"org_id"`
+	ProjectID  string    `json:"project_id"`
+	PublicKey  string    `json:"public_key"`
+	PrivateKey string    `json:"private_key,omitempty"`
+	KeyType    string    `json:"key_type"`
+	CreatedAt  time.Time `json:"created_at"`
+}
 
 type Installation struct {
 	ID             string    `json:"id"`
@@ -285,3 +298,109 @@ func indexOf(s, sub string) int {
 	}
 	return -1
 }
+
+func (s *Store) GetOrCreateDeployKey(ctx context.Context, orgID, projectID string) (*DeployKey, error) {
+	k := &DeployKey{}
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, org_id, project_id, public_key, private_key, key_type, created_at
+		FROM project_deploy_keys WHERE project_id=$1
+	`, projectID).Scan(&k.ID, &k.OrgID, &k.ProjectID, &k.PublicKey, &k.PrivateKey, &k.KeyType, &k.CreatedAt)
+	if err == nil {
+		return k, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
+	}
+
+	// Generate a new keypair
+	comment := fmt.Sprintf("jp-deploy-%s", shortID(projectID))
+	pub, priv, err := sshkey.GenerateEd25519(comment)
+	if err != nil {
+		return nil, fmt.Errorf("generate keypair: %w", err)
+	}
+
+	k = &DeployKey{
+		ID:         uuid.NewString(),
+		OrgID:      orgID,
+		ProjectID:  projectID,
+		PublicKey:  pub,
+		PrivateKey: priv,
+		KeyType:    "ed25519",
+		CreatedAt:  time.Now().UTC(),
+	}
+
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO project_deploy_keys (id, org_id, project_id, public_key, private_key, key_type, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (project_id) DO NOTHING
+	`, k.ID, k.OrgID, k.ProjectID, k.PublicKey, k.PrivateKey, k.KeyType, k.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+
+	// Fetch again in case another worker/goroutine inserted simultaneously
+	err = s.pool.QueryRow(ctx, `
+		SELECT id, org_id, project_id, public_key, private_key, key_type, created_at
+		FROM project_deploy_keys WHERE project_id=$1
+	`, projectID).Scan(&k.ID, &k.OrgID, &k.ProjectID, &k.PublicKey, &k.PrivateKey, &k.KeyType, &k.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return k, nil
+}
+
+func (s *Store) RotateDeployKey(ctx context.Context, orgID, projectID string) (*DeployKey, error) {
+	comment := fmt.Sprintf("jp-deploy-%s", shortID(projectID))
+	pub, priv, err := sshkey.GenerateEd25519(comment)
+	if err != nil {
+		return nil, fmt.Errorf("generate keypair: %w", err)
+	}
+
+	k := &DeployKey{
+		ID:         uuid.NewString(),
+		OrgID:      orgID,
+		ProjectID:  projectID,
+		PublicKey:  pub,
+		PrivateKey: priv,
+		KeyType:    "ed25519",
+		CreatedAt:  time.Now().UTC(),
+	}
+
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO project_deploy_keys (id, org_id, project_id, public_key, private_key, key_type, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (project_id) DO UPDATE SET
+			public_key = EXCLUDED.public_key,
+			private_key = EXCLUDED.private_key,
+			key_type = EXCLUDED.key_type,
+			created_at = EXCLUDED.created_at
+	`, k.ID, k.OrgID, k.ProjectID, k.PublicKey, k.PrivateKey, k.KeyType, k.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return k, nil
+}
+
+func (s *Store) GetDeployKeyByProject(ctx context.Context, projectID string) (*DeployKey, error) {
+	k := &DeployKey{}
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, org_id, project_id, public_key, private_key, key_type, created_at
+		FROM project_deploy_keys WHERE project_id=$1
+	`, projectID).Scan(&k.ID, &k.OrgID, &k.ProjectID, &k.PublicKey, &k.PrivateKey, &k.KeyType, &k.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return k, err
+}
+
+func shortID(id string) string {
+	clean := strings.ReplaceAll(id, "-", "")
+	if len(clean) > 8 {
+		return clean[:8]
+	}
+	if clean == "" {
+		return "unknown"
+	}
+	return clean
+}
+

@@ -10,6 +10,7 @@ import { useOrg } from "@/lib/org-context";
 import type {
   AvailableRepo,
   ConnectedRepo,
+  DeployKey,
   GitInstallation,
   Project,
 } from "@/lib/types";
@@ -24,6 +25,11 @@ export default function ConnectGitPage() {
   const [connected, setConnected] = useState<ConnectedRepo[]>([]);
   
   // Direct connect form
+  const [gitAuthMethod, setGitAuthMethod] = useState<"deploy_key" | "pat">("deploy_key");
+  const [deployKey, setDeployKey] = useState<DeployKey | null>(null);
+  const [loadingDeployKey, setLoadingDeployKey] = useState(false);
+  const [generatingDeployKey, setGeneratingDeployKey] = useState(false);
+  const [copiedDeployKey, setCopiedDeployKey] = useState(false);
   const [fullName, setFullName] = useState("");
   const [branch, setBranch] = useState("main");
   const [patToken, setPatToken] = useState("");
@@ -103,8 +109,14 @@ export default function ConnectGitPage() {
     let mounted = true;
     (async () => {
       try {
-        const repos = await api.listRepos(currentOrg.id, projectId);
-        if (mounted) setConnected(repos);
+        const [repos, key] = await Promise.all([
+          api.listRepos(currentOrg.id, projectId),
+          api.getDeployKey(currentOrg.id, projectId).catch(() => null),
+        ]);
+        if (mounted) {
+          setConnected(repos);
+          setDeployKey(key);
+        }
       } catch (err) {
         if (mounted) {
           setError(
@@ -130,19 +142,65 @@ export default function ConnectGitPage() {
     loadReposForOrg(patToken.trim());
   }
 
+  async function handleRotateDeployKey() {
+    if (!currentOrg || !projectId) return;
+    if (!window.confirm("Regenerating the deploy key will invalidate the current key. You will need to update the key on GitHub. Proceed?")) {
+      return;
+    }
+    setGeneratingDeployKey(true);
+    setError("");
+    setSuccess("");
+    try {
+      const key = await api.generateDeployKey(currentOrg.id, projectId);
+      setDeployKey(key);
+      setSuccess("✓ Generated new SSH Deploy Key. Please add it to your GitHub repository Deploy keys.");
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to rotate deploy key");
+    } finally {
+      setGeneratingDeployKey(false);
+    }
+  }
+
+  function handleCopyDeployKey() {
+    if (!deployKey?.public_key) return;
+    navigator.clipboard.writeText(deployKey.public_key);
+    setCopiedDeployKey(true);
+    setTimeout(() => setCopiedDeployKey(false), 2500);
+  }
+
   async function onConnectRepo(repoFullName: string, defaultBranch = "main", isPrivate = false) {
     if (!currentOrg || !projectId || !repoFullName.trim()) return;
     setBusy(true);
     setError("");
     setSuccess("");
     try {
+      let cleanName = repoFullName.trim();
+      let cloneUrl = "";
+
+      if (cleanName.startsWith("git@github.com:")) {
+        cleanName = cleanName.replace(/^git@github\.com:/, "").replace(/\.git$/, "");
+        cloneUrl = `git@github.com:${cleanName}.git`;
+      } else if (cleanName.startsWith("ssh://git@github.com/")) {
+        cleanName = cleanName.replace(/^ssh:\/\/git@github\.com\//, "").replace(/\.git$/, "");
+        cloneUrl = `git@github.com:${cleanName}.git`;
+      } else if (cleanName.startsWith("http://") || cleanName.startsWith("https://")) {
+        cleanName = cleanName.replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "");
+        if (gitAuthMethod === "deploy_key") {
+          cloneUrl = `git@github.com:${cleanName}.git`;
+        }
+      } else if (gitAuthMethod === "deploy_key") {
+        cloneUrl = `git@github.com:${cleanName}.git`;
+      }
+
       await api.connectRepo(currentOrg.id, projectId, {
-        full_name: repoFullName.trim(),
+        full_name: cleanName,
+        clone_url: cloneUrl || undefined,
         default_branch: defaultBranch || "main",
-        token: isPrivate || patToken.trim() ? patToken.trim() : undefined,
+        token: gitAuthMethod === "pat" && (isPrivate || patToken.trim()) ? patToken.trim() : undefined,
+        auth_type: gitAuthMethod,
         installation_id: installations[0]?.installation_id,
       });
-      setSuccess(`Connected ${repoFullName.trim()} to selected project.`);
+      setSuccess(`Connected ${cleanName} to selected project.`);
       setFullName("");
       const repos = await api.listRepos(currentOrg.id, projectId);
       setConnected(repos);
@@ -298,71 +356,210 @@ export default function ConnectGitPage() {
       </div>
 
       {/* 2. Direct Repository Connect */}
-      <div className="jp-card p-5 space-y-4">
-        <div className="border-b border-[var(--border)] pb-3">
-          <h2 className="text-sm font-bold text-[var(--ink)]">Connect GitHub Repository</h2>
-          <p className="text-xs text-[var(--ink-muted)]">
-            Enter your repository URL or shorthand (<code className="font-mono text-slate-700 font-bold">owner/repo</code>) and your GitHub Personal Access Token (PAT).
-          </p>
-        </div>
-
-        <form onSubmit={onManualSubmit} className="space-y-3.5 pt-1">
-          <div className="grid gap-3 sm:grid-cols-3">
-            <div className="sm:col-span-2">
-              <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
-                Repository URL or owner/repo
-              </label>
-              <Input
-                placeholder="e.g. zeeshan-890/financor or https://github.com/..."
-                value={fullName}
-                onChange={(e) => setFullName(e.target.value)}
-                required
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
-                Default Branch
-              </label>
-              <Input
-                placeholder="main"
-                value={branch}
-                onChange={(e) => setBranch(e.target.value)}
-              />
-            </div>
-          </div>
-
+      <div className="jp-card p-5 space-y-5">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] pb-3">
           <div>
-            <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
-              Personal Access Token (PAT)
-            </label>
-            <div className="flex items-center gap-2">
-              <Input
-                type="password"
-                placeholder="ghp_... or github_pat_..."
-                value={patToken}
-                onChange={(e) => setPatToken(e.target.value)}
-              />
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={handleSaveTokenAndFetch}
-                disabled={fetchingRepos || !patToken.trim()}
-                className="text-xs"
-              >
-                {fetchingRepos ? "Loading..." : "Load My Repos"}
-              </Button>
-            </div>
-            <p className="mt-1 text-[11px] text-[var(--ink-muted)]">
-              Generate a classic or fine-grained token with <code className="font-mono font-bold">repo</code> read access. Public repositories can also connect directly if left blank.
+            <h2 className="text-sm font-bold text-[var(--ink)]">Connect GitHub Repository</h2>
+            <p className="text-xs text-[var(--ink-muted)]">
+              Connect private or public repositories using SSH Deploy Keys (recommended) or a GitHub Personal Access Token (PAT).
             </p>
           </div>
 
-          <div className="pt-1">
-            <Button type="submit" disabled={busy || !projectId || !fullName.trim()} className="font-bold text-xs">
-              {busy ? "Connecting..." : "➕ Connect Repository"}
-            </Button>
+          {/* Segmented Auth Method Toggle */}
+          <div className="flex items-center rounded-lg border border-slate-300 bg-slate-100 p-1 text-xs font-bold">
+            <button
+              type="button"
+              onClick={() => setGitAuthMethod("deploy_key")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-all ${
+                gitAuthMethod === "deploy_key"
+                  ? "bg-white text-slate-900 shadow-2xs border border-slate-200"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              <span>🔑</span>
+              <span>SSH Deploy Key</span>
+              <span className="rounded bg-emerald-100 px-1.5 py-0.2 text-[9px] font-bold text-emerald-800">
+                Recommended
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setGitAuthMethod("pat")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-all ${
+                gitAuthMethod === "pat"
+                  ? "bg-white text-slate-900 shadow-2xs border border-slate-200"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              <span>🔒</span>
+              <span>Personal Access Token</span>
+            </button>
           </div>
-        </form>
+        </div>
+
+        {/* Deploy Key Panel */}
+        {gitAuthMethod === "deploy_key" && (
+          <div className="space-y-4">
+            <div className="rounded-xl border border-blue-200 bg-blue-50/50 p-4 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-base">🔑</span>
+                  <span className="text-xs font-bold text-slate-900 uppercase tracking-wider">
+                    Project SSH Public Deploy Key
+                  </span>
+                  <span className="rounded bg-emerald-100 border border-emerald-300 px-2 py-0.5 font-mono text-[10px] font-bold text-emerald-800">
+                    {deployKey?.key_type?.toUpperCase() || "ED25519"}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={handleCopyDeployKey}
+                    disabled={!deployKey?.public_key}
+                    className="bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs shadow-xs"
+                  >
+                    {copiedDeployKey ? "✓ Copied to Clipboard!" : "📋 Copy Public Key"}
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    disabled={generatingDeployKey}
+                    onClick={handleRotateDeployKey}
+                    className="text-xs font-semibold"
+                  >
+                    {generatingDeployKey ? "Rotating..." : "↺ Rotate Key"}
+                  </Button>
+                </div>
+              </div>
+
+              {loadingDeployKey ? (
+                <div className="p-3 bg-white rounded-lg border border-slate-200 text-xs text-slate-400 font-mono animate-pulse">
+                  Generating or retrieving project deploy key...
+                </div>
+              ) : (
+                <div className="relative">
+                  <pre className="p-3 bg-slate-900 text-emerald-400 rounded-lg text-[11px] font-mono break-all whitespace-pre-wrap select-all max-h-24 overflow-y-auto border border-slate-800">
+                    {deployKey?.public_key || "Loading deploy key..."}
+                  </pre>
+                </div>
+              )}
+
+              {/* 3-Step Setup Instructions */}
+              <div className="rounded-lg bg-white/95 border border-blue-200 p-3 space-y-2 text-xs text-slate-700">
+                <p className="font-bold text-slate-900 flex items-center gap-1.5">
+                  <span>📖</span> How to add this Deploy Key in GitHub:
+                </p>
+                <ol className="list-decimal list-inside space-y-1 text-[11px] text-slate-600 font-medium">
+                  <li>Go to your GitHub repository and open <strong>Settings → Deploy keys → Add deploy key</strong>.</li>
+                  <li>Paste the copied public key into the <strong>Key</strong> box and name it (e.g. <code className="font-mono text-slate-800 font-bold">Crezumic Platform</code>).</li>
+                  <li>Leave <em>&ldquo;Allow write access&rdquo;</em> <strong>unchecked</strong> (read-only is safer and all that is needed) and click <strong>Add key</strong>.</li>
+                </ol>
+              </div>
+            </div>
+
+            <form onSubmit={onManualSubmit} className="space-y-3.5 pt-1">
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div className="sm:col-span-2">
+                  <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
+                    Repository (owner/repo or git@github.com:owner/repo.git)
+                  </label>
+                  <Input
+                    placeholder="e.g. owner/repo or git@github.com:owner/repo.git"
+                    value={fullName}
+                    onChange={(e) => setFullName(e.target.value)}
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
+                    Default Branch
+                  </label>
+                  <Input
+                    placeholder="main"
+                    value={branch}
+                    onChange={(e) => setBranch(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              <div className="pt-1 flex items-center gap-3">
+                <Button
+                  type="submit"
+                  disabled={busy || !projectId || !fullName.trim()}
+                  className="font-bold text-xs bg-slate-900 hover:bg-slate-800 text-white"
+                >
+                  {busy ? "Connecting..." : "➕ Connect Repository with Deploy Key"}
+                </Button>
+                <p className="text-[11px] text-[var(--ink-muted)]">
+                  Worker will clone via SSH using this project&apos;s deploy key.
+                </p>
+              </div>
+            </form>
+          </div>
+        )}
+
+        {/* PAT Panel */}
+        {gitAuthMethod === "pat" && (
+          <form onSubmit={onManualSubmit} className="space-y-3.5 pt-1">
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div className="sm:col-span-2">
+                <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
+                  Repository URL or owner/repo
+                </label>
+                <Input
+                  placeholder="e.g. zeeshan-890/financor or https://github.com/..."
+                  value={fullName}
+                  onChange={(e) => setFullName(e.target.value)}
+                  required
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
+                  Default Branch
+                </label>
+                <Input
+                  placeholder="main"
+                  value={branch}
+                  onChange={(e) => setBranch(e.target.value)}
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
+                Personal Access Token (PAT)
+              </label>
+              <div className="flex items-center gap-2">
+                <Input
+                  type="password"
+                  placeholder="ghp_... or github_pat_... (leave blank for public repos)"
+                  value={patToken}
+                  onChange={(e) => setPatToken(e.target.value)}
+                />
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={handleSaveTokenAndFetch}
+                  disabled={fetchingRepos || !patToken.trim()}
+                  className="text-xs"
+                >
+                  {fetchingRepos ? "Loading..." : "Load My Repos"}
+                </Button>
+              </div>
+              <p className="mt-1 text-[11px] text-[var(--ink-muted)]">
+                Classic or fine-grained token with <code className="font-mono font-bold">repo</code> read access.
+              </p>
+            </div>
+
+            <div className="pt-1">
+              <Button type="submit" disabled={busy || !projectId || !fullName.trim()} className="font-bold text-xs">
+                {busy ? "Connecting..." : "➕ Connect Repository with PAT"}
+              </Button>
+            </div>
+          </form>
+        )}
       </div>
 
       {/* 3. Browse Available GitHub Repositories */}

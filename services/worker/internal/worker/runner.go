@@ -124,6 +124,7 @@ func (r *Runner) handle(ctx context.Context, msg redis.XMessage) error {
 			fallbackCmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", cloneURL, dir)
 			fallbackCmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 			fout, ferr := fallbackCmd.CombinedOutput()
+			logs.Write(fout)
 			if ferr == nil {
 				cloned = true
 			} else {

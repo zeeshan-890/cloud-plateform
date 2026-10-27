@@ -56,6 +56,11 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /orgs/{orgId}/projects/{projectId}/repos", auth(http.HandlerFunc(h.ListRepos)))
 	mux.Handle("DELETE /orgs/{orgId}/projects/{projectId}/repos/{repoId}", auth(http.HandlerFunc(h.DisconnectRepo)))
 
+	// Deploy keys
+	mux.Handle("GET /orgs/{orgId}/projects/{projectId}/deploy-key", auth(http.HandlerFunc(h.GetDeployKey)))
+	mux.Handle("POST /orgs/{orgId}/projects/{projectId}/deploy-key/generate", auth(http.HandlerFunc(h.RotateDeployKey)))
+	mux.HandleFunc("GET /internal/projects/{projectId}/deploy-key", h.InternalGetDeployKey)
+
 	// Public webhook (HMAC verified)
 	mux.HandleFunc("POST /webhooks/github", h.GitHubWebhook)
 
@@ -347,6 +352,7 @@ func (h *Handler) ConnectRepo(w http.ResponseWriter, r *http.Request) {
 		DefaultBranch  string `json:"default_branch"`
 		InstallationID string `json:"installation_id"`
 		Token          string `json:"token"`
+		AuthType       string `json:"auth_type"`
 	}
 	if err := httpx.Decode(r, &req); err != nil {
 		httpx.Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
@@ -354,7 +360,22 @@ func (h *Handler) ConnectRepo(w http.ResponseWriter, r *http.Request) {
 	}
 	req.FullName = strings.TrimSpace(req.FullName)
 	req.Token = strings.TrimSpace(req.Token)
-	if strings.HasPrefix(req.FullName, "http://") || strings.HasPrefix(req.FullName, "https://") {
+	req.AuthType = strings.TrimSpace(req.AuthType)
+
+	// Check if user entered an SSH URL (git@github.com:owner/repo.git or ssh://git@github.com/owner/repo.git)
+	if strings.HasPrefix(req.FullName, "git@github.com:") {
+		path := strings.TrimPrefix(req.FullName, "git@github.com:")
+		path = strings.TrimSuffix(path, ".git")
+		req.FullName = path
+		req.CloneURL = "git@github.com:" + path + ".git"
+		req.AuthType = "deploy_key"
+	} else if strings.HasPrefix(req.FullName, "ssh://git@github.com/") {
+		path := strings.TrimPrefix(req.FullName, "ssh://git@github.com/")
+		path = strings.TrimSuffix(path, ".git")
+		req.FullName = path
+		req.CloneURL = "git@github.com:" + path + ".git"
+		req.AuthType = "deploy_key"
+	} else if strings.HasPrefix(req.FullName, "http://") || strings.HasPrefix(req.FullName, "https://") {
 		parsed, err := url.Parse(req.FullName)
 		if err == nil {
 			path := strings.Trim(parsed.Path, "/")
@@ -365,6 +386,7 @@ func (h *Handler) ConnectRepo(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+
 	if req.FullName == "" || !strings.Contains(req.FullName, "/") {
 		httpx.Error(w, http.StatusBadRequest, "validation_error", "full_name required (owner/repo or repository URL)")
 		return
@@ -372,7 +394,9 @@ func (h *Handler) ConnectRepo(w http.ResponseWriter, r *http.Request) {
 	if req.DefaultBranch == "" {
 		req.DefaultBranch = "main"
 	}
-	if req.Token != "" {
+	if req.AuthType == "deploy_key" || (req.Token == "" && strings.HasPrefix(req.CloneURL, "git@")) {
+		req.CloneURL = fmt.Sprintf("git@github.com:%s.git", req.FullName)
+	} else if req.Token != "" {
 		req.CloneURL = fmt.Sprintf("https://x-access-token:%s@github.com/%s.git", req.Token, req.FullName)
 	} else if req.CloneURL == "" {
 		req.CloneURL = "https://github.com/" + req.FullName + ".git"
@@ -736,3 +760,75 @@ func firstNonEmpty(vals ...string) string {
 	}
 	return ""
 }
+
+func (h *Handler) GetDeployKey(w http.ResponseWriter, r *http.Request) {
+	uid := middleware.UserIDFrom(r.Context())
+	orgID := r.PathValue("orgId")
+	projectID := r.PathValue("projectId")
+	if !h.requireMember(w, r, orgID, uid) {
+		return
+	}
+	key, err := h.Store.GetOrCreateDeployKey(r.Context(), orgID, projectID)
+	if err != nil {
+		h.Log.Error("get or create deploy key", "err", err)
+		httpx.Error(w, http.StatusInternalServerError, "internal", "failed to obtain deploy key")
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"deploy_key": map[string]any{
+			"id":         key.ID,
+			"project_id": key.ProjectID,
+			"public_key": key.PublicKey,
+			"key_type":   key.KeyType,
+			"created_at": key.CreatedAt,
+		},
+	})
+}
+
+func (h *Handler) RotateDeployKey(w http.ResponseWriter, r *http.Request) {
+	uid := middleware.UserIDFrom(r.Context())
+	orgID := r.PathValue("orgId")
+	projectID := r.PathValue("projectId")
+	if !h.requireMember(w, r, orgID, uid) {
+		return
+	}
+	key, err := h.Store.RotateDeployKey(r.Context(), orgID, projectID)
+	if err != nil {
+		h.Log.Error("rotate deploy key", "err", err)
+		httpx.Error(w, http.StatusInternalServerError, "internal", "failed to rotate deploy key")
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"deploy_key": map[string]any{
+			"id":         key.ID,
+			"project_id": key.ProjectID,
+			"public_key": key.PublicKey,
+			"key_type":   key.KeyType,
+			"created_at": key.CreatedAt,
+		},
+	})
+}
+
+func (h *Handler) InternalGetDeployKey(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("projectId")
+	if projectID == "" {
+		httpx.Error(w, http.StatusBadRequest, "bad_request", "project_id required")
+		return
+	}
+	key, err := h.Store.GetDeployKeyByProject(r.Context(), projectID)
+	if errors.Is(err, store.ErrNotFound) {
+		httpx.Error(w, http.StatusNotFound, "not_found", "deploy key not found")
+		return
+	}
+	if err != nil {
+		h.Log.Error("internal get deploy key", "err", err)
+		httpx.Error(w, http.StatusInternalServerError, "internal", "failed to fetch deploy key")
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"public_key":  key.PublicKey,
+		"private_key": key.PrivateKey,
+		"key_type":    key.KeyType,
+	})
+}
+

@@ -353,6 +353,7 @@ export const api = {
       default_branch?: string;
       installation_id?: string;
       token?: string;
+      auth_type?: string;
     },
   ) {
     const data = await request<{ repo: import("./types").ConnectedRepo }>(
@@ -360,6 +361,19 @@ export const api = {
       { method: "POST", body: payload },
     );
     return unwrap(data, "repo") as import("./types").ConnectedRepo;
+  },
+  async getDeployKey(orgId: string, projectId: string) {
+    const data = await request<{ deploy_key: import("./types").DeployKey }>(
+      `/orgs/${orgId}/projects/${projectId}/deploy-key`,
+    );
+    return unwrap<import("./types").DeployKey>(data, "deploy_key");
+  },
+  async generateDeployKey(orgId: string, projectId: string) {
+    const data = await request<{ deploy_key: import("./types").DeployKey }>(
+      `/orgs/${orgId}/projects/${projectId}/deploy-key/generate`,
+      { method: "POST", body: {} },
+    );
+    return unwrap<import("./types").DeployKey>(data, "deploy_key");
   },
   async listRepos(orgId: string, projectId: string) {
     const data = await request<{ repos: ConnectedRepo[] }>(
