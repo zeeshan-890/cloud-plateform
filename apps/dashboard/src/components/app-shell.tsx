@@ -352,14 +352,30 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     Projects
                   </Link>
                   <span className="text-slate-400 font-bold">/</span>
-                  <span className="font-extrabold text-slate-900 truncate max-w-[120px] sm:max-w-[200px]">
-                    {projectName}
-                  </span>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="font-extrabold text-slate-900 truncate max-w-[120px] sm:max-w-[180px]">
+                      {projectName}
+                    </span>
+                    <span className="inline-flex items-center gap-1 rounded-full border-2 border-emerald-300 bg-emerald-50 px-2 py-0.2 text-[10px] font-bold text-emerald-800 shrink-0">
+                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                      Live
+                    </span>
+                    <a
+                      href={defaultAppDomain}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="hidden md:inline-flex items-center gap-1 text-[11px] font-mono font-bold text-[#1E3A8A] bg-slate-100 hover:bg-slate-200 border-2 border-slate-300 rounded-lg px-2 py-0.5 transition-colors"
+                      title={defaultAppDomain}
+                    >
+                      <span className="truncate max-w-[160px]">{projectSlug}.{rootDomain.replace(/^panel\./, "")}</span>
+                      <span className="text-[10px]">↗</span>
+                    </a>
+                  </div>
                   {currentTab && currentTab !== "overview" && (
                     <>
                       <span className="text-slate-400 font-bold">/</span>
-                      <span className="capitalize font-bold text-[#1E3A8A]">
-                        {currentTab}
+                      <span className="capitalize font-extrabold text-[#1E3A8A] shrink-0">
+                        {projectNav.find((p) => p.tab === currentTab)?.label || currentTab}
                       </span>
                     </>
                   )}
@@ -374,8 +390,28 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </nav>
           </div>
 
-          {/* Right: Workspace Pill */}
-          <div className="flex items-center gap-2 shrink-0">
+          {/* Right: Quick Project Actions + Workspace Pill */}
+          <div className="flex items-center gap-2.5 shrink-0">
+            {isInsideProject && (
+              <>
+                <Link
+                  href={`/projects/${urlProjectId}?tab=deployments`}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-[#1E3A8A] hover:bg-[#162456] px-3 py-1.5 text-xs font-bold text-white shadow-sm transition-all"
+                >
+                  <span>🚀</span>
+                  <span className="hidden sm:inline">Deploy App</span>
+                </Link>
+                <a
+                  href={defaultAppDomain}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="sm:hidden inline-flex items-center rounded-lg border-2 border-slate-300 bg-white p-1.5 text-xs font-bold text-slate-800"
+                  title="Open Live App"
+                >
+                  ↗
+                </a>
+              </>
+            )}
             <span className="rounded-lg border-2 border-slate-300 bg-white px-3 py-1 text-xs font-bold text-slate-800 shadow-2xs">
               {currentOrg?.name || "Workspace"}
             </span>

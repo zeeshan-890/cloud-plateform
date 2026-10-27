@@ -720,107 +720,6 @@ export default function ProjectDetailClient() {
 
   return (
     <div className="space-y-6">
-      {/* Crezumic-Style Page Header */}
-      <div className="bg-white rounded-xl border-2 border-slate-300 p-6 shadow-sm transition-all">
-        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-          <div className="flex items-start gap-4">
-            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-[#1E3A8A] text-xl font-black text-white shadow-xs shrink-0">
-              {project.name.slice(0, 1).toUpperCase()}
-            </div>
-            <div>
-              <div className="flex flex-wrap items-center gap-2.5">
-                <h1 className="text-2xl md:text-3xl font-extrabold text-[#0F1B3D] tracking-tight">
-                  {project.name}
-                </h1>
-                <span className="inline-flex items-center gap-1.5 rounded-full border-2 border-emerald-300 bg-emerald-50 px-2.5 py-0.5 text-xs font-bold text-emerald-800">
-                  <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-                  Live Operational
-                </span>
-                <span className="rounded-lg border-2 border-slate-300 bg-slate-50 px-2.5 py-0.5 font-mono text-[11px] text-slate-700 font-bold">
-                  Docker Native
-                </span>
-              </div>
-              <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-slate-500 font-medium">
-                <span>Production Environment</span>
-                <span className="text-slate-300">•</span>
-                <a
-                  href={appPublicUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-1 font-mono font-bold text-[#1E3A8A] hover:underline"
-                >
-                  <span>{appPublicUrl}</span>
-                  <span className="text-[10px]">↗</span>
-                </a>
-              </div>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-            <button
-              type="button"
-              onClick={runAiAudit}
-              disabled={aiAuditLoading}
-              className="inline-flex items-center gap-1.5 rounded-lg border-2 border-slate-300 bg-white hover:bg-slate-50 px-3.5 py-2 text-xs font-bold text-slate-800 shadow-sm transition-all"
-            >
-              <span>✨</span>
-              <span>{aiAuditLoading ? "Auditing with Gemini..." : "Gemini 3.5 Audit"}</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={handleTriggerDeployment}
-              disabled={triggeringDeploy}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-[#1E3A8A] hover:bg-[#162456] px-4 py-2 text-xs font-bold text-white shadow-sm transition-all disabled:opacity-50"
-            >
-              <span>🚀</span>
-              <span>{triggeringDeploy ? "Deploying..." : "Deploy App"}</span>
-            </button>
-
-            <a
-              href={appPublicUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1.5 rounded-lg border-2 border-slate-300 bg-white hover:bg-slate-50 px-3.5 py-2 text-xs font-bold text-slate-800 shadow-sm transition-all"
-            >
-              <span>Open Live App</span>
-              <span className="text-slate-400">↗</span>
-            </a>
-          </div>
-        </div>
-
-        {/* Crezumic Segmented Pill Tabs Navigation */}
-        <div className="mt-5 border-t-2 border-slate-100 pt-4">
-          <div className="flex flex-wrap items-center gap-1.5 rounded-xl bg-slate-200/60 p-1.5 border-2 border-slate-300">
-            {tabsList.map((t) => {
-              const isActive =
-                t.id === "overview"
-                  ? currentTab === "overview" && !searchParams.get("tab")
-                  : currentTab === t.id;
-              const targetUrl =
-                t.id === "overview"
-                  ? `/projects/${actualProjectId}`
-                  : `/projects/${actualProjectId}?tab=${t.id}`;
-
-              return (
-                <Link
-                  key={t.id}
-                  href={targetUrl}
-                  className={`inline-flex items-center gap-2 rounded-lg px-3.5 py-1.5 text-xs font-bold transition-all ${
-                    isActive
-                      ? "bg-[#1E3A8A] text-white shadow-sm"
-                      : "text-slate-700 hover:bg-white/80 hover:text-slate-900"
-                  }`}
-                >
-                  <span>{t.icon}</span>
-                  <span>{t.label}</span>
-                </Link>
-              );
-            })}
-          </div>
-        </div>
-      </div>
-
       {error ? <Alert tone="error">{error}</Alert> : null}
       {success ? <Alert tone="success">{success}</Alert> : null}
 
@@ -2167,10 +2066,10 @@ export default function ProjectDetailClient() {
               </Button>
             </div>
 
-            <form onSubmit={handleSaveSecret} className="flex flex-wrap items-center gap-2">
+            <form onSubmit={handleSaveSecret} autoComplete="off" className="flex flex-wrap items-center gap-2.5">
               <div className="w-full sm:w-44">
                 <select
-                  className="w-full rounded-md border border-[var(--border)] bg-white px-2.5 py-2 text-xs font-bold text-[var(--ink)] shadow-2xs"
+                  className="w-full rounded-lg border-2 border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-800 shadow-2xs focus:border-[#1E3A8A] focus:outline-none"
                   value={newSecretEnv}
                   onChange={(e) => setNewSecretEnv(e.target.value)}
                 >
@@ -2182,20 +2081,30 @@ export default function ProjectDetailClient() {
               </div>
 
               <Input
-                placeholder="VARIABLE_NAME"
+                placeholder="KEY (e.g. DATABASE_URL, STRIPE_KEY)"
+                name="app_custom_env_key"
+                id="app_custom_env_key"
+                autoComplete="off"
+                data-lpignore="true"
+                data-1p-ignore="true"
                 value={secretKey}
-                onChange={(e) => setSecretKey(e.target.value)}
-                className="min-w-[180px] flex-1 font-mono uppercase"
+                onChange={(e) => setSecretKey(e.target.value.replace(/[^a-zA-Z0-9_]/g, "_").toUpperCase())}
+                className="min-w-[200px] flex-1 font-mono uppercase text-xs"
                 required
               />
 
               <div className="relative min-w-[220px] flex-2">
                 <Input
-                  placeholder="Secret Value"
+                  placeholder="Value"
+                  name="app_custom_env_val"
+                  id="app_custom_env_val"
                   type={secretValVisible ? "text" : "password"}
+                  autoComplete="new-password"
+                  data-lpignore="true"
+                  data-1p-ignore="true"
                   value={secretVal}
                   onChange={(e) => setSecretVal(e.target.value)}
-                  className="pr-10"
+                  className="pr-10 font-mono text-xs"
                   required
                 />
                 <button
