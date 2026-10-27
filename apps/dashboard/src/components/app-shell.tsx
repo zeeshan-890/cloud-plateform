@@ -69,6 +69,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   ];
 
   const projectName = activeProject?.name || "Application";
+  const projectSlug = projectName.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/^-+|-+$/g, "");
   const defaultAppDomain = getAppPublicUrl(projectName);
 
   const sidebar = (
@@ -129,7 +130,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 className="flex items-center justify-between rounded border border-blue-200 bg-blue-50/70 px-2 py-1 text-[11px] font-mono font-medium text-blue-900 hover:bg-blue-100 transition-colors"
                 title={`Live URL: ${defaultAppDomain}`}
               >
-                <span className="truncate">{projectName.toLowerCase()}.{rootDomain}</span>
+                <span className="truncate">{projectSlug}.{rootDomain.replace(/^panel\./, "")}</span>
                 <span className="text-blue-600 text-[10px]">↗</span>
               </a>
             </div>

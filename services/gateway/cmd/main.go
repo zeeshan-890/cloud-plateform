@@ -205,6 +205,8 @@ func main() {
 	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/runtime/instances/{instanceId}/start", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(runtime, "/api/v1")))))
 	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/runtime/instances/{instanceId}/stop", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(runtime, "/api/v1")))))
 	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/runtime/containers", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(runtime, "/api/v1")))))
+	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/runtime/logs", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(runtime, "/api/v1")))))
+	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/runtime/instances/{instanceId}/logs", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(runtime, "/api/v1")))))
 
 	// Phase 4 — Domains
 	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/domains", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(domain, "/api/v1")))))

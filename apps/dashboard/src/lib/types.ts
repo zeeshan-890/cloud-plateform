@@ -165,6 +165,7 @@ export interface RuntimeInstance {
   slot?: string;
   mode?: string;
   health_status?: string;
+  port?: number;
   error?: string;
   created_at?: string;
   updated_at?: string;
@@ -207,8 +208,8 @@ export interface SecretMeta {
 
 export interface LogEntry {
   id: string;
-  org_id: string;
-  project_id: string;
+  org_id?: string;
+  project_id?: string;
   source: string;
   level: string;
   message: string;

@@ -173,7 +173,8 @@ export default function ProjectDetailClient() {
 
   async function loadRuntimeLogs(orgId: string, projId: string) {
     try {
-      const [logsRes, instRes] = await Promise.all([
+      const [rtRes, logsRes, instRes] = await Promise.all([
+        api.getRuntimeLogs(orgId, projId, 250).catch(() => null),
         api.queryLogs(orgId, projId, {
           source: runtimeSourceFilter || undefined,
           q: runtimeSearchQuery || undefined,
@@ -181,8 +182,44 @@ export default function ProjectDetailClient() {
         }).catch(() => ({ entries: [] as LogEntry[] })),
         api.listRuntimeInstances(orgId, projId).catch(() => ({ instances: [] as RuntimeInstance[], mode: "simulate" })),
       ]);
-      setRuntimeLogs(logsRes.entries || []);
-      setRuntimeInstances(instRes.instances || []);
+
+      let logs: LogEntry[] = [];
+      if (rtRes && Array.isArray(rtRes.entries) && rtRes.entries.length > 0) {
+        let dockerLogs = rtRes.entries;
+        if (runtimeSearchQuery) {
+          const q = runtimeSearchQuery.toLowerCase();
+          dockerLogs = dockerLogs.filter((l) => l.message.toLowerCase().includes(q));
+        }
+        if (runtimeSourceFilter && runtimeSourceFilter !== "app") {
+          dockerLogs = dockerLogs.filter((l) => l.source === runtimeSourceFilter);
+        }
+        logs = dockerLogs;
+      }
+
+      if (logs.length === 0 && logsRes?.entries?.length) {
+        logs = logsRes.entries;
+      } else if (logs.length > 0 && logsRes?.entries?.length && !runtimeSourceFilter) {
+        const seen = new Set(logs.map((l) => `${l.logged_at}-${l.message}`));
+        for (const entry of logsRes.entries) {
+          const key = `${entry.logged_at}-${entry.message}`;
+          if (!seen.has(key)) {
+            logs.push(entry);
+            seen.add(key);
+          }
+        }
+      }
+
+      setRuntimeLogs(logs);
+
+      let instances = instRes?.instances || [];
+      if (instances.length === 0 && rtRes?.instance) {
+        instances = [rtRes.instance];
+      } else if (instances.length > 0 && rtRes?.instance) {
+        instances = instances.map((inst) =>
+          inst.id === rtRes.instance?.id ? { ...inst, ...rtRes.instance } : inst
+        );
+      }
+      setRuntimeInstances(instances);
     } catch {
       // ignore
     }
@@ -291,13 +328,19 @@ export default function ProjectDetailClient() {
   useEffect(() => {
     if (!currentOrg || !actualProjectId || actualProjectId === "default") return;
 
-    if (currentTab === "deployments") {
+    if (currentTab === "overview") {
       loadDeployments(currentOrg.id, actualProjectId);
+      loadBuilds(currentOrg.id, actualProjectId);
+      loadRuntimeLogs(currentOrg.id, actualProjectId);
+    } else if (currentTab === "deployments") {
+      loadDeployments(currentOrg.id, actualProjectId);
+      loadRuntimeLogs(currentOrg.id, actualProjectId);
       const cancelInterval = setVisibilityInterval(() => {
         loadDeployments(currentOrg.id, actualProjectId);
       }, 3000);
       return () => cancelInterval();
     } else if (currentTab === "builds") {
+      loadDeployments(currentOrg.id, actualProjectId);
       loadBuilds(currentOrg.id, actualProjectId);
       loadRuntimeLogs(currentOrg.id, actualProjectId);
       const cancelInterval = setVisibilityInterval(() => {
@@ -650,6 +693,125 @@ export default function ProjectDetailClient() {
           ======================================================== */}
       {currentTab === "overview" && (
         <div className="space-y-6">
+          {/* Latest Deployed Build & Live Instance Banner */}
+          {(() => {
+            const latestDep = deploymentsList[0];
+            const activeInst = runtimeInstances[0];
+            const latestBld = buildsList[0];
+            const isReady = activeInst?.status === "running" || latestDep?.status === "ready";
+            const isFailed = latestDep?.status === "failed";
+            const isBuilding = latestDep?.status === "building" || latestDep?.status === "deploying";
+
+            return (
+              <div className={`jp-card p-4 border transition-all ${
+                isReady
+                  ? "border-emerald-500/30 bg-gradient-to-r from-emerald-50/50 via-white to-slate-50"
+                  : isFailed
+                  ? "border-red-500/30 bg-red-50/40"
+                  : "border-blue-500/30 bg-blue-50/40"
+              }`}>
+                <div className="flex flex-wrap items-center justify-between gap-4">
+                  <div className="space-y-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-xl">🚀</span>
+                      <h4 className="text-xs font-bold uppercase tracking-wider text-slate-900">
+                        Latest Deployed Build
+                      </h4>
+
+                      <span
+                        className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-bold uppercase ${
+                          isReady
+                            ? "bg-emerald-100 text-emerald-800 border border-emerald-300"
+                            : isFailed
+                            ? "bg-red-100 text-red-800 border border-red-300"
+                            : isBuilding
+                            ? "bg-blue-100 text-blue-800 border border-blue-300"
+                            : "bg-slate-200 text-slate-800"
+                        }`}
+                      >
+                        <span
+                          className={`h-1.5 w-1.5 rounded-full ${
+                            isReady
+                              ? "bg-emerald-600 animate-pulse"
+                              : isFailed
+                              ? "bg-red-600"
+                              : "bg-blue-600 animate-pulse"
+                          }`}
+                        />
+                        {isReady ? "LIVE / READY" : latestDep?.status?.toUpperCase() || "ACTIVE"}
+                      </span>
+
+                      <span className="rounded bg-slate-900 text-white font-mono font-bold px-2 py-0.5 text-[10px] flex items-center gap-1">
+                        <span>🌱</span>
+                        {latestDep?.git_branch || "main"}
+                        {latestDep?.git_sha && (
+                          <span className="text-slate-400">
+                            @{latestDep.git_sha === "HEAD" ? "HEAD" : latestDep.git_sha.slice(0, 7)}
+                          </span>
+                        )}
+                      </span>
+
+                      {latestDep?.message && (
+                        <span className="rounded border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-medium text-slate-600 max-w-xs truncate" title={latestDep.message}>
+                          🏷️ {latestDep.message}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] font-mono text-slate-600">
+                      <span className="flex items-center gap-1">
+                        <strong className="text-slate-800">Container:</strong>
+                        <code className="bg-slate-100 px-1.5 py-0.5 rounded text-slate-900 border border-slate-200">
+                          {activeInst?.container_name || activeInst?.container_id?.slice(0, 12) || "jp-active"}
+                        </code>
+                      </span>
+                      <span className="text-slate-300">•</span>
+                      <span className="flex items-center gap-1">
+                        <strong className="text-slate-800">Port:</strong>
+                        <span className="text-emerald-700 font-bold">
+                          {activeInst?.port || 8080}
+                        </span>
+                      </span>
+                      <span className="text-slate-300">•</span>
+                      <span className="flex items-center gap-1">
+                        <strong className="text-slate-800">Image:</strong>
+                        <code className="bg-slate-100 px-1.5 py-0.5 rounded text-slate-900 border border-slate-200">
+                          {activeInst?.image_ref || latestDep?.image_ref || "latest"}
+                        </code>
+                      </span>
+                      {latestBld && (
+                        <>
+                          <span className="text-slate-300">•</span>
+                          <span className="flex items-center gap-1">
+                            <strong className="text-slate-800">Build:</strong>
+                            <span>{latestBld.id.slice(0, 8)}</span>
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    <Link
+                      href={`/projects/${actualProjectId}?tab=builds`}
+                      className="text-xs font-semibold px-3 py-1.5 rounded-md border border-[var(--border)] bg-white hover:bg-slate-50 text-[var(--ink)] shadow-2xs"
+                    >
+                      🛠️ Builds & Logs
+                    </Link>
+                    <a
+                      href={appPublicUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="flex items-center gap-1 text-xs font-bold px-3 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white shadow-2xs transition-colors"
+                    >
+                      <span>Open Live App</span>
+                      <span>↗</span>
+                    </a>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
           <div className="grid gap-4 md:grid-cols-3">
             <div className="jp-card p-4 space-y-1">
               <p className="text-[11px] font-bold uppercase tracking-wider text-[var(--ink-muted)]">
@@ -1197,44 +1359,125 @@ export default function ProjectDetailClient() {
           {/* Subview 2: Running App Container Logs */}
           {logsTab === "runtime" && (
             <div className="space-y-4">
-              {/* Container Status Banner */}
-              <div className="jp-card p-4 flex flex-wrap items-center justify-between gap-3 border-emerald-500/30 bg-emerald-50/40">
-                <div className="flex items-center gap-2.5">
-                  <span className="text-xl">🐳</span>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h4 className="text-xs font-bold uppercase tracking-wider text-emerald-950">
-                        Running Container Instance
-                      </h4>
-                      {runtimeInstances.length > 0 ? (
-                        <span className="rounded bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 text-[10px] uppercase">
-                          {runtimeInstances[0].status || "Running"}
-                        </span>
-                      ) : (
-                        <span className="rounded bg-slate-200 text-slate-700 font-bold px-2 py-0.5 text-[10px] uppercase">
-                          Simulated / Standby
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-[11px] text-emerald-700 font-mono mt-0.5">
-                      {runtimeInstances.length > 0
-                        ? `Container: ${runtimeInstances[0].container_name || runtimeInstances[0].id.slice(0, 12)} • Image: ${runtimeInstances[0].image_ref || "latest"}`
-                        : `App runtime service for ${project.name} on ${appPublicUrl}`}
-                    </p>
-                  </div>
-                </div>
+              {/* Container & Latest Deployment Status Banner */}
+              {(() => {
+                const latestDep = deploymentsList[0];
+                const activeInst = runtimeInstances[0];
+                const latestBld = buildsList[0];
+                const isReady = activeInst?.status === "running" || latestDep?.status === "ready";
+                const isFailed = latestDep?.status === "failed";
+                const isBuilding = latestDep?.status === "building" || latestDep?.status === "deploying";
 
-                <div className="flex items-center gap-2">
-                  <a
-                    href={appPublicUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-xs font-bold px-3 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white transition-colors"
-                  >
-                    Open Live App ↗
-                  </a>
-                </div>
-              </div>
+                return (
+                  <div className={`jp-card p-4 border transition-all ${
+                    isReady 
+                      ? "border-emerald-500/30 bg-gradient-to-r from-emerald-50/60 to-white" 
+                      : isFailed 
+                      ? "border-red-500/30 bg-red-50/40" 
+                      : "border-blue-500/30 bg-blue-50/40"
+                  }`}>
+                    <div className="flex flex-wrap items-center justify-between gap-4">
+                      {/* Left: Instance and Deployment Tag Badges */}
+                      <div className="space-y-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-xl">🐳</span>
+                          <h4 className="text-xs font-bold uppercase tracking-wider text-slate-900">
+                            Live Container Instance & Latest Deployment
+                          </h4>
+                          
+                          {/* Live Status Badge */}
+                          <span
+                            className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-bold uppercase ${
+                              isReady
+                                ? "bg-emerald-100 text-emerald-800 border border-emerald-300"
+                                : isFailed
+                                ? "bg-red-100 text-red-800 border border-red-300"
+                                : isBuilding
+                                ? "bg-blue-100 text-blue-800 border border-blue-300"
+                                : "bg-slate-200 text-slate-800"
+                            }`}
+                          >
+                            <span
+                              className={`h-1.5 w-1.5 rounded-full ${
+                                isReady
+                                  ? "bg-emerald-600 animate-pulse"
+                                  : isFailed
+                                  ? "bg-red-600"
+                                  : "bg-blue-600 animate-pulse"
+                              }`}
+                            />
+                            {isReady ? "LIVE / RUNNING" : latestDep?.status?.toUpperCase() || "ACTIVE"}
+                          </span>
+
+                          {/* Git Branch & Tag Badge */}
+                          <span className="rounded bg-slate-900 text-white font-mono font-bold px-2 py-0.5 text-[10px] flex items-center gap-1">
+                            <span>🌱</span>
+                            {latestDep?.git_branch || "main"}
+                            {latestDep?.git_sha && (
+                              <span className="text-slate-400">
+                                @{latestDep.git_sha === "HEAD" ? "HEAD" : latestDep.git_sha.slice(0, 7)}
+                              </span>
+                            )}
+                          </span>
+
+                          {/* Deployment Tag / Commit Message Badge */}
+                          {latestDep?.message && (
+                            <span className="rounded border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-medium text-slate-600 max-w-xs truncate" title={latestDep.message}>
+                              🏷️ {latestDep.message}
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Detailed Container and Network Tags */}
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] font-mono text-slate-600">
+                          <span className="flex items-center gap-1">
+                            <strong className="text-slate-800">Container:</strong>
+                            <code className="bg-slate-100 px-1.5 py-0.5 rounded text-slate-900 border border-slate-200">
+                              {activeInst?.container_name || activeInst?.container_id?.slice(0, 12) || "jp-active"}
+                            </code>
+                          </span>
+                          <span className="text-slate-300">•</span>
+                          <span className="flex items-center gap-1">
+                            <strong className="text-slate-800">Image:</strong>
+                            <code className="bg-slate-100 px-1.5 py-0.5 rounded text-slate-900 border border-slate-200">
+                              {activeInst?.image_ref || latestDep?.image_ref || "latest"}
+                            </code>
+                          </span>
+                          <span className="text-slate-300">•</span>
+                          <span className="flex items-center gap-1">
+                            <strong className="text-slate-800">Port:</strong>
+                            <span className="text-emerald-700 font-bold">
+                              {activeInst?.port || 8080} (HTTP/HTTPS)
+                            </span>
+                          </span>
+                          {latestBld && (
+                            <>
+                              <span className="text-slate-300">•</span>
+                              <span className="flex items-center gap-1">
+                                <strong className="text-slate-800">Build:</strong>
+                                <span>{latestBld.id.slice(0, 8)} ({latestBld.framework || "docker"})</span>
+                              </span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Right Action: Open Live App */}
+                      <div className="flex items-center gap-2 shrink-0">
+                        <a
+                          href={appPublicUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="flex items-center gap-1.5 text-xs font-bold px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white shadow-2xs transition-colors"
+                        >
+                          <span>Open Live App</span>
+                          <span>↗</span>
+                        </a>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* Filter and Search Bar */}
               <div className="jp-card p-4 flex flex-wrap items-center justify-between gap-3">
@@ -1297,11 +1540,11 @@ export default function ProjectDetailClient() {
                   </div>
                 ) : (
                   <div className="h-96 overflow-auto bg-slate-950 p-4 font-mono text-xs text-slate-200 leading-relaxed space-y-1">
-                    {runtimeLogs.map((log) => {
+                    {runtimeLogs.map((log, idx) => {
                       const isErr = log.level === "error" || log.message.toLowerCase().includes("error");
                       const isWarn = log.level === "warn" || log.message.toLowerCase().includes("warn");
                       return (
-                        <div key={log.id} className="flex items-start gap-2 hover:bg-slate-900/60 py-0.5 rounded px-1">
+                        <div key={log.id ? `${log.id}-${idx}` : `${log.logged_at}-${idx}`} className="flex items-start gap-2 hover:bg-slate-900/60 py-0.5 rounded px-1">
                           <span className="text-slate-500 shrink-0 select-none text-[10px]">
                             {log.logged_at ? new Date(log.logged_at).toLocaleTimeString() : "--:--:--"}
                           </span>

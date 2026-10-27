@@ -3,6 +3,7 @@ package dockerx
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -308,4 +309,101 @@ func (e *Engine) List(ctx context.Context) ([]ContainerInfo, string, error) {
 
 func urlQuery(s string) string {
 	return strings.ReplaceAll(s, " ", "%20")
+}
+
+// LogEvent represents an emitted log entry from a container.
+type LogEvent struct {
+	ID       string `json:"id"`
+	Source   string `json:"source"`
+	Level    string `json:"level"`
+	Message  string `json:"message"`
+	LoggedAt string `json:"logged_at"`
+}
+
+// ContainerLogs streams and decodes Docker multiplexed logs from stdout and stderr.
+func (e *Engine) ContainerLogs(ctx context.Context, containerID string, tail int) ([]LogEvent, error) {
+	if tail <= 0 {
+		tail = 200
+	}
+	mode := e.EffectiveMode(ctx)
+	if mode == "simulate" || strings.HasPrefix(containerID, "sim-") {
+		return []LogEvent{
+			{
+				ID:       "sim-log-1",
+				Source:   "runtime",
+				Level:    "info",
+				Message:  "Simulated runtime container: " + containerID,
+				LoggedAt: time.Now().UTC().Format(time.RFC3339),
+			},
+		}, nil
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		fmt.Sprintf("http://localhost/containers/%s/logs?stdout=1&stderr=1&tail=%d&timestamps=1", containerID, tail), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := e.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("docker logs %d: %s", resp.StatusCode, string(b))
+	}
+
+	var entries []LogEvent
+	headerBuf := make([]byte, 8)
+	for {
+		// Docker multiplexed format has an 8-byte header per frame
+		_, err := io.ReadFull(resp.Body, headerBuf)
+		if err != nil {
+			break
+		}
+		streamType := headerBuf[0] // 1 = stdout, 2 = stderr
+		size := binary.BigEndian.Uint32(headerBuf[4:8])
+		payload := make([]byte, size)
+		_, err = io.ReadFull(resp.Body, payload)
+		if err != nil {
+			break
+		}
+
+		rawLine := strings.TrimRight(string(payload), "\r\n")
+		if rawLine == "" {
+			continue
+		}
+
+		level := "info"
+		if streamType == 2 {
+			level = "warn"
+			low := strings.ToLower(rawLine)
+			if strings.Contains(low, "error") || strings.Contains(low, "failed") || strings.Contains(low, "exception") {
+				level = "error"
+			}
+		}
+
+		loggedAt := time.Now().UTC().Format(time.RFC3339)
+		msg := rawLine
+		if idx := strings.Index(rawLine, " "); idx > 0 {
+			tsCandidate := rawLine[:idx]
+			if _, err := time.Parse(time.RFC3339Nano, tsCandidate); err == nil {
+				loggedAt = tsCandidate
+				msg = rawLine[idx+1:]
+			}
+		}
+
+		entries = append(entries, LogEvent{
+			ID:       fmt.Sprintf("log-%d", len(entries)+1),
+			Source:   "app",
+			Level:    level,
+			Message:  msg,
+			LoggedAt: loggedAt,
+		})
+	}
+
+	if entries == nil {
+		entries = []LogEvent{}
+	}
+	return entries, nil
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,9 +32,11 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /orgs/{orgId}/projects/{projectId}/runtime/instances", auth(http.HandlerFunc(h.List)))
 	mux.Handle("POST /orgs/{orgId}/projects/{projectId}/runtime/instances", auth(http.HandlerFunc(h.Create)))
 	mux.Handle("GET /orgs/{orgId}/projects/{projectId}/runtime/instances/{instanceId}", auth(http.HandlerFunc(h.Get)))
+	mux.Handle("GET /orgs/{orgId}/projects/{projectId}/runtime/instances/{instanceId}/logs", auth(http.HandlerFunc(h.InstanceLogs)))
 	mux.Handle("POST /orgs/{orgId}/projects/{projectId}/runtime/instances/{instanceId}/start", auth(http.HandlerFunc(h.Start)))
 	mux.Handle("POST /orgs/{orgId}/projects/{projectId}/runtime/instances/{instanceId}/stop", auth(http.HandlerFunc(h.Stop)))
 	mux.Handle("GET /orgs/{orgId}/projects/{projectId}/runtime/containers", auth(http.HandlerFunc(h.ListContainers)))
+	mux.Handle("GET /orgs/{orgId}/projects/{projectId}/runtime/logs", auth(http.HandlerFunc(h.ProjectLogs)))
 
 	mux.HandleFunc("POST /internal/runtime/start", h.InternalStart)
 	mux.HandleFunc("POST /internal/runtime/stop-by-deployment", h.InternalStopByDeployment)
@@ -496,4 +499,95 @@ func short(s string) string {
 		return s[:8]
 	}
 	return s
+}
+
+// ProjectLogs retrieves live container logs for the active project instance.
+func (h *Handler) ProjectLogs(w http.ResponseWriter, r *http.Request) {
+	uid := middleware.UserIDFrom(r.Context())
+	orgID := r.PathValue("orgId")
+	projectID := r.PathValue("projectId")
+	if !h.requireMember(w, r, orgID, uid) {
+		return
+	}
+	tail := 150
+	if t := r.URL.Query().Get("tail"); t != "" {
+		if n, err := strconv.Atoi(t); err == nil && n > 0 {
+			tail = n
+		}
+	}
+	in, err := h.Store.FindActiveByProject(r.Context(), orgID, projectID)
+	if err != nil || in == nil {
+		list, _ := h.Store.List(r.Context(), orgID, projectID)
+		if len(list) > 0 {
+			in = &list[0]
+		}
+	}
+	if in == nil {
+		httpx.JSON(w, http.StatusOK, map[string]any{
+			"instance":       nil,
+			"container_id":   "",
+			"container_name": "",
+			"status":         "stopped",
+			"entries":        []dockerx.LogEvent{},
+		})
+		return
+	}
+	targetID := in.ContainerID
+	if targetID == "" {
+		targetID = in.ContainerName
+	}
+	entries, err := h.Engine.ContainerLogs(r.Context(), targetID, tail)
+	if err != nil && in.ContainerName != "" && in.ContainerName != targetID {
+		entries, _ = h.Engine.ContainerLogs(r.Context(), in.ContainerName, tail)
+	}
+	if entries == nil {
+		entries = []dockerx.LogEvent{}
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"instance":       in,
+		"container_id":   in.ContainerID,
+		"container_name": in.ContainerName,
+		"status":         in.Status,
+		"entries":        entries,
+	})
+}
+
+// InstanceLogs retrieves live container logs for a specific instance.
+func (h *Handler) InstanceLogs(w http.ResponseWriter, r *http.Request) {
+	uid := middleware.UserIDFrom(r.Context())
+	orgID := r.PathValue("orgId")
+	projectID := r.PathValue("projectId")
+	instanceID := r.PathValue("instanceId")
+	if !h.requireMember(w, r, orgID, uid) {
+		return
+	}
+	in, err := h.Store.Get(r.Context(), orgID, projectID, instanceID)
+	if err != nil || in == nil {
+		httpx.Error(w, http.StatusNotFound, "not_found", "instance not found")
+		return
+	}
+	tail := 150
+	if t := r.URL.Query().Get("tail"); t != "" {
+		if n, err := strconv.Atoi(t); err == nil && n > 0 {
+			tail = n
+		}
+	}
+	targetID := in.ContainerID
+	if targetID == "" {
+		targetID = in.ContainerName
+	}
+	entries, err := h.Engine.ContainerLogs(r.Context(), targetID, tail)
+	if err != nil && in.ContainerName != "" && in.ContainerName != targetID {
+		entries, _ = h.Engine.ContainerLogs(r.Context(), in.ContainerName, tail)
+	}
+	if entries == nil {
+		entries = []dockerx.LogEvent{}
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"instance":       in,
+		"container_id":   in.ContainerID,
+		"container_name": in.ContainerName,
+		"status":         in.Status,
+		"entries":        entries,
+	})
 }

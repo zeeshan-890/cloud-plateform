@@ -477,6 +477,26 @@ export const api = {
     );
     return unwrap(data, "instance") as RuntimeInstance;
   },
+  async getRuntimeLogs(orgId: string, projectId: string, tail?: number) {
+    const qs = tail ? `?tail=${tail}` : "";
+    return request<{
+      instance: RuntimeInstance | null;
+      container_id: string;
+      container_name: string;
+      status: string;
+      entries: LogEntry[];
+    }>(`/orgs/${orgId}/projects/${projectId}/runtime/logs${qs}`);
+  },
+  async getInstanceLogs(orgId: string, projectId: string, instanceId: string, tail?: number) {
+    const qs = tail ? `?tail=${tail}` : "";
+    return request<{
+      instance: RuntimeInstance | null;
+      container_id: string;
+      container_name: string;
+      status: string;
+      entries: LogEntry[];
+    }>(`/orgs/${orgId}/projects/${projectId}/runtime/instances/${instanceId}/logs${qs}`);
+  },
 
   // Certificates
   async listCertificates(orgId: string, projectId: string) {
