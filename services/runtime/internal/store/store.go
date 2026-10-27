@@ -343,6 +343,9 @@ func (s *Store) GetContainerEnvs(ctx context.Context, projectID, env string) ([]
 						if _, ok := envMap["MONGO_URL"]; !ok || strings.Contains(envMap["MONGO_URL"], "localhost") {
 							envMap["MONGO_URL"] = intUrl
 						}
+						if _, ok := envMap["MONGOURL"]; !ok || strings.Contains(envMap["MONGOURL"], "localhost") {
+							envMap["MONGOURL"] = intUrl
+						}
 					case "rabbitmq":
 						if _, ok := envMap["RABBITMQ_URL"]; !ok || strings.Contains(envMap["RABBITMQ_URL"], "localhost") {
 							envMap["RABBITMQ_URL"] = intUrl
@@ -350,6 +353,40 @@ func (s *Store) GetContainerEnvs(ctx context.Context, projectID, env string) ([]
 					}
 				}
 			}
+		}
+	}
+
+	// Guarantee ubiquitous aliases for databases
+	if val, ok := envMap["DATABASE_URL"]; ok {
+		if _, exists := envMap["POSTGRES_URL"]; !exists {
+			envMap["POSTGRES_URL"] = val
+		}
+	} else if val, ok := envMap["POSTGRES_URL"]; ok {
+		if _, exists := envMap["DATABASE_URL"]; !exists {
+			envMap["DATABASE_URL"] = val
+		}
+	}
+
+	if val, ok := envMap["MONGO_URL"]; ok {
+		if _, exists := envMap["MONGOURL"]; !exists {
+			envMap["MONGOURL"] = val
+		}
+		if _, exists := envMap["MONGODB_URI"]; !exists {
+			envMap["MONGODB_URI"] = val
+		}
+	} else if val, ok := envMap["MONGODB_URI"]; ok {
+		if _, exists := envMap["MONGOURL"]; !exists {
+			envMap["MONGOURL"] = val
+		}
+		if _, exists := envMap["MONGO_URL"]; !exists {
+			envMap["MONGO_URL"] = val
+		}
+	} else if val, ok := envMap["MONGOURL"]; ok {
+		if _, exists := envMap["MONGO_URL"]; !exists {
+			envMap["MONGO_URL"] = val
+		}
+		if _, exists := envMap["MONGODB_URI"]; !exists {
+			envMap["MONGODB_URI"] = val
 		}
 	}
 

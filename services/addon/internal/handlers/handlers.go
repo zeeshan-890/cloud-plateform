@@ -196,6 +196,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		case "mongodb", "mongo":
 			ref := h.storeSecret(r, orgID, projectID, targetEnv, "MONGODB_URI", res.ConnectionURL)
 			h.storeSecret(r, orgID, projectID, targetEnv, "MONGO_URL", res.ConnectionURL)
+			h.storeSecret(r, orgID, projectID, targetEnv, "MONGOURL", res.ConnectionURL)
 			if secretRef == "" {
 				secretRef = ref
 			}
