@@ -145,15 +145,20 @@ func (e *Engine) StartWithConfig(ctx context.Context, name, image string, port i
 	}
 
 	// Build Traefik routing rules including all project subdomains and custom domains
-	var rules []string
+	var publicRules []string
 	for _, h := range hostnames {
 		h = strings.TrimSpace(h)
-		if h != "" {
-			rules = append(rules, fmt.Sprintf("Host(`%s`)", h))
+		if h != "" && !strings.HasSuffix(h, ".localhost") && !strings.HasSuffix(h, ".local") {
+			publicRules = append(publicRules, fmt.Sprintf("Host(`%s`)", h))
 		}
 	}
-	rules = append(rules, fmt.Sprintf("Host(`%s.localhost`)", name))
+
+	var rules []string
+	rules = append(rules, publicRules...)
 	rules = append(rules, fmt.Sprintf("PathPrefix(`/app/%s`)", name))
+	if len(publicRules) == 0 {
+		rules = append(rules, fmt.Sprintf("Host(`%s.localhost`)", name))
+	}
 	rule := strings.Join(rules, " || ")
 
 	containerEnvs := []string{
@@ -162,6 +167,21 @@ func (e *Engine) StartWithConfig(ctx context.Context, name, image string, port i
 		"HOST=0.0.0.0",
 	}
 	containerEnvs = append(containerEnvs, envs...)
+
+	labels := map[string]string{
+		"jp.managed":                                                 "true",
+		"jp.name":                                                    name,
+		"traefik.enable":                                             "true",
+		"traefik.docker.network":                                     "jp_jp",
+		"traefik.http.routers." + name + ".rule":                     rule,
+		"traefik.http.routers." + name + ".entrypoints":              "web,websecure",
+		"traefik.http.routers." + name + ".tls":                      "true",
+		"traefik.http.routers." + name + ".priority":                 "80",
+		"traefik.http.services." + name + ".loadbalancer.server.port": fmt.Sprintf("%d", detectedPort),
+	}
+	if len(publicRules) > 0 {
+		labels["traefik.http.routers."+name+".tls.certresolver"] = "letsencrypt"
+	}
 
 	body := map[string]any{
 		"Image": image,
@@ -174,18 +194,7 @@ func (e *Engine) StartWithConfig(ctx context.Context, name, image string, port i
 			"Memory":        256 * 1024 * 1024,
 			"NetworkMode":   "jp_jp",
 		},
-		"Labels": map[string]string{
-			"jp.managed":                                                 "true",
-			"jp.name":                                                    name,
-			"traefik.enable":                                             "true",
-			"traefik.docker.network":                                     "jp_jp",
-			"traefik.http.routers." + name + ".rule":                     rule,
-			"traefik.http.routers." + name + ".entrypoints":              "web,websecure",
-			"traefik.http.routers." + name + ".tls":                      "true",
-			"traefik.http.routers." + name + ".tls.certresolver":         "letsencrypt",
-			"traefik.http.routers." + name + ".priority":                 "80",
-			"traefik.http.services." + name + ".loadbalancer.server.port": fmt.Sprintf("%d", detectedPort),
-		},
+		"Labels": labels,
 	}
 	raw, _ := json.Marshal(body)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://localhost/containers/create?name="+name, bytes.NewReader(raw))
