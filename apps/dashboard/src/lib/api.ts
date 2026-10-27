@@ -342,6 +342,7 @@ export const api = {
       clone_url?: string;
       default_branch?: string;
       installation_id?: string;
+      token?: string;
     },
   ) {
     const data = await request<{ repo: import("./types").ConnectedRepo }>(
@@ -356,9 +357,10 @@ export const api = {
     );
     return (unwrap(data, "repos") as ConnectedRepo[]) || [];
   },
-  async listAvailableRepos(orgId: string) {
+  async listAvailableRepos(orgId: string, token?: string) {
+    const q = token ? `?token=${encodeURIComponent(token)}` : "";
     const data = await request<{ repos: AvailableRepo[]; mode?: string }>(
-      `/orgs/${orgId}/github/repos`,
+      `/orgs/${orgId}/github/repos${q}`,
     );
     return {
       repos: (unwrap(data, "repos") as AvailableRepo[]) || [],

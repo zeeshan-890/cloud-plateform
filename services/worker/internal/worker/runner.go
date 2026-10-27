@@ -114,19 +114,27 @@ func (r *Runner) handle(ctx context.Context, msg redis.XMessage) error {
 	fmt.Fprintf(logs, "work dir: %s\n", dir)
 
 	cloned := false
-	if cloneURL != "" && gitSHA != "HEAD" {
+	if cloneURL != "" {
 		fmt.Fprintf(logs, "cloning %s ...\n", cloneURL)
 		cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", "--branch", firstNonEmpty(gitBranch, "main"), cloneURL, dir)
+		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 		out, err := cmd.CombinedOutput()
 		logs.Write(out)
 		if err != nil {
-			fmt.Fprintf(logs, "clone failed (%v); falling back to mock workspace\n", err)
-			_ = writeMockProject(dir, fullName)
+			fallbackCmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", cloneURL, dir)
+			fallbackCmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+			fout, ferr := fallbackCmd.CombinedOutput()
+			if ferr == nil {
+				cloned = true
+			} else {
+				fmt.Fprintf(logs, "clone failed (%v); falling back to mock workspace\n", err)
+				_ = writeMockProject(dir, fullName)
+			}
 		} else {
 			cloned = true
 		}
 	} else {
-		fmt.Fprintf(logs, "no clone URL / SHA=HEAD — using mock workspace\n")
+		fmt.Fprintf(logs, "no clone URL — using mock workspace\n")
 		_ = writeMockProject(dir, fullName)
 	}
 	_ = r.patchBuild(buildID, map[string]any{"logs": logs.String()})

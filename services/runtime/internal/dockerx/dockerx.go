@@ -87,6 +87,16 @@ func (e *Engine) Start(ctx context.Context, name, image string, port int) (conta
 		}
 		return id, mode, nil
 	}
+	if port <= 0 {
+		port = 3000
+	}
+
+	// Remove any existing container with the same name to prevent 409 Conflict
+	rmReq, _ := http.NewRequestWithContext(ctx, http.MethodDelete, "http://localhost/containers/"+name+"?force=true", nil)
+	if rmResp, err := e.HTTP.Do(rmReq); err == nil {
+		_ = rmResp.Body.Close()
+	}
+
 	body := map[string]any{
 		"Image": image,
 		"ExposedPorts": map[string]any{
@@ -94,11 +104,17 @@ func (e *Engine) Start(ctx context.Context, name, image string, port int) (conta
 		},
 		"HostConfig": map[string]any{
 			"RestartPolicy": map[string]any{"Name": "on-failure", "MaximumRetryCount": 3},
-			"Memory":        128 * 1024 * 1024,
+			"Memory":        256 * 1024 * 1024,
+			"NetworkMode":   "jp_jp",
 		},
 		"Labels": map[string]string{
-			"jp.managed": "true",
-			"jp.name":    name,
+			"jp.managed":                                                 "true",
+			"jp.name":                                                    name,
+			"traefik.enable":                                             "true",
+			"traefik.docker.network":                                     "jp_jp",
+			"traefik.http.routers." + name + ".rule":                     fmt.Sprintf("Host(`%s.localhost`) || PathPrefix(`/app/%s`)", name, name),
+			"traefik.http.routers." + name + ".entrypoints":              "web,websecure",
+			"traefik.http.services." + name + ".loadbalancer.server.port": fmt.Sprintf("%d", port),
 		},
 	}
 	raw, _ := json.Marshal(body)
@@ -114,7 +130,6 @@ func (e *Engine) Start(ctx context.Context, name, image string, port int) (conta
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
-		// If image missing, still record simulate-style failure path for caller.
 		return "", mode, fmt.Errorf("docker create %d: %s", resp.StatusCode, string(b))
 	}
 	var created struct {

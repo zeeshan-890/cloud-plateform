@@ -97,6 +97,36 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	if req.GitSHA == "" {
 		req.GitSHA = "HEAD"
 	}
+
+	if req.CloneURL == "" && h.RepositoryURL != "" && h.HTTP != nil {
+		repURL := fmt.Sprintf("%s/orgs/%s/projects/%s/repos", strings.TrimRight(h.RepositoryURL, "/"), orgID, projectID)
+		if repReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, repURL, nil); err == nil {
+			repReq.Header.Set("Authorization", r.Header.Get("Authorization"))
+			if resp, err := h.HTTP.Do(repReq); err == nil {
+				if resp.StatusCode == http.StatusOK {
+					var out struct {
+						Repos []struct {
+							ID            string `json:"id"`
+							FullName      string `json:"full_name"`
+							CloneURL      string `json:"clone_url"`
+							DefaultBranch string `json:"default_branch"`
+						} `json:"repos"`
+					}
+					if json.NewDecoder(resp.Body).Decode(&out) == nil && len(out.Repos) > 0 {
+						first := out.Repos[0]
+						req.CloneURL = first.CloneURL
+						req.FullName = first.FullName
+						if req.GitBranch == "" || req.GitBranch == "main" {
+							req.GitBranch = first.DefaultBranch
+						}
+						req.RepoID = first.ID
+					}
+				}
+				_ = resp.Body.Close()
+			}
+		}
+	}
+
 	strategy := normalizeStrategy(req.Strategy)
 	d := &store.Deployment{
 		OrgID: orgID, ProjectID: projectID, Status: "queued", Source: "api",

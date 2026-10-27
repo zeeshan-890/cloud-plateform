@@ -136,6 +136,15 @@ func (w *Worker) process(ctx context.Context, env events.Envelope) {
 	cloneURL, _ := env.Payload["clone_url"].(string)
 	fullName, _ := env.Payload["full_name"].(string)
 
+	token, _ := env.Payload["token"].(string)
+	if token == "" {
+		token = os.Getenv("GITHUB_TOKEN")
+	}
+	actualCloneURL := cloneURL
+	if token != "" && strings.HasPrefix(actualCloneURL, "https://github.com/") && !strings.Contains(actualCloneURL, "@") {
+		actualCloneURL = strings.Replace(actualCloneURL, "https://github.com/", "https://x-access-token:"+token+"@github.com/", 1)
+	}
+
 	w.Log.Info("claimed build", "build_id", buildID, "repo", fullName)
 	w.patchBuild(ctx, buildID, "running", "", "", "worker claimed job\n", "")
 
@@ -158,7 +167,7 @@ func (w *Worker) process(ctx context.Context, env events.Envelope) {
 	} else {
 		logs.WriteString("cloning " + cloneURL + "\n")
 		w.patchBuild(ctx, buildID, "running", "", "", logs.String(), "")
-		if err := gitClone(ctx, cloneURL, gitBranch, workDir); err != nil {
+		if err := gitClone(ctx, actualCloneURL, gitBranch, gitSHA, workDir); err != nil {
 			logs.WriteString("clone failed: " + err.Error() + " — falling back to simulated tree\n")
 			framework = detectFromName(fullName)
 			writeSimulatedTree(workDir, framework)
@@ -178,6 +187,7 @@ func (w *Worker) process(ctx context.Context, env events.Envelope) {
 
 	logs.WriteString("building image (simulate=" + fmt.Sprintf("%v", w.Simulate) + ")\n")
 	if !w.Simulate && dockerAvailable(ctx) {
+		ensureDockerfile(workDir, framework, &logs)
 		logs.WriteString("BuildKit build starting\n")
 		w.patchBuild(ctx, buildID, "running", framework, "", logs.String(), "")
 		if err := dockerBuild(ctx, workDir, imageRef, &logs); err != nil {
@@ -278,18 +288,80 @@ func (w *Worker) patchDeploy(ctx context.Context, id, status, commitStatus, imag
 	_ = resp.Body.Close()
 }
 
-func gitClone(ctx context.Context, url, branch, dir string) error {
+func gitClone(ctx context.Context, url, branch, sha, dir string) error {
 	args := []string{"clone", "--depth", "1"}
 	if branch != "" && branch != "HEAD" {
 		args = append(args, "--branch", branch)
 	}
 	args = append(args, url, dir)
 	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		if branch != "" && branch != "HEAD" {
+			fallbackCmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", url, dir)
+			fallbackCmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+			fout, ferr := fallbackCmd.CombinedOutput()
+			if ferr == nil {
+				return checkoutSHA(ctx, sha, dir)
+			}
+			return fmt.Errorf("%w: %s (fallback: %s)", err, string(out), string(fout))
+		}
 		return fmt.Errorf("%w: %s", err, string(out))
 	}
+	return checkoutSHA(ctx, sha, dir)
+}
+
+func checkoutSHA(ctx context.Context, sha, dir string) error {
+	if sha == "" || sha == "HEAD" || sha == "latest" {
+		return nil
+	}
+	cmd := exec.CommandContext(ctx, "git", "checkout", sha)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	_ = cmd.Run()
 	return nil
+}
+
+func ensureDockerfile(dir, framework string, logs *strings.Builder) {
+	dockerfilePath := filepath.Join(dir, "Dockerfile")
+	if _, err := os.Stat(dockerfilePath); err == nil {
+		logs.WriteString("using Dockerfile from repository\n")
+		return
+	}
+	for _, sub := range []string{"docker/Dockerfile", "deploy/Dockerfile", "Dockerfile.prod"} {
+		if _, err := os.Stat(filepath.Join(dir, sub)); err == nil {
+			logs.WriteString("using " + sub + "\n")
+			b, _ := os.ReadFile(filepath.Join(dir, sub))
+			_ = os.WriteFile(dockerfilePath, b, 0o644)
+			return
+		}
+	}
+	logs.WriteString("no Dockerfile found in repo; auto-generating build configuration for framework: " + framework + "\n")
+	var content string
+	switch framework {
+	case "next":
+		content = "FROM node:20-alpine AS builder\nWORKDIR /app\nCOPY package*.json ./\nRUN npm install --legacy-peer-deps || npm install\nCOPY . .\nRUN npm run build || true\nEXPOSE 3000\nENV PORT=3000\nCMD [\"npm\", \"start\"]\n"
+	case "react", "vue":
+		content = "FROM node:20-alpine AS builder\nWORKDIR /app\nCOPY package*.json ./\nRUN npm install --legacy-peer-deps || npm install\nCOPY . .\nRUN npm run build || true\nFROM nginx:alpine\nCOPY --from=builder /app/dist /usr/share/nginx/html\nCOPY --from=builder /app/build /usr/share/nginx/html\nEXPOSE 80\nCMD [\"nginx\", \"-g\", \"daemon off;\"]\n"
+	case "express", "node":
+		content = "FROM node:20-alpine\nWORKDIR /app\nCOPY package*.json ./\nRUN npm install || true\nCOPY . .\nEXPOSE 3000\nENV PORT=3000\nCMD [\"npm\", \"start\"]\n"
+	case "go":
+		content = "FROM golang:1.22-alpine AS builder\nWORKDIR /app\nCOPY . .\nRUN go mod download || true\nRUN CGO_ENABLED=0 go build -o /app/server . || CGO_ENABLED=0 go build -o /app/server ./cmd/...\nFROM alpine:3.20\nWORKDIR /app\nCOPY --from=builder /app/server /app/server\nEXPOSE 8080\nENV PORT=8080\nCMD [\"/app/server\"]\n"
+	case "fastapi", "python":
+		content = "FROM python:3.11-slim\nWORKDIR /app\nCOPY requirements*.txt ./\nRUN pip install --no-cache-dir -r requirements.txt || true\nCOPY . .\nEXPOSE 8000\nENV PORT=8000\nCMD [\"python\", \"-m\", \"http.server\", \"8000\"]\n"
+	default:
+		if _, err := os.Stat(filepath.Join(dir, "index.html")); err == nil {
+			content = "FROM nginx:alpine\nCOPY . /usr/share/nginx/html\nEXPOSE 80\nCMD [\"nginx\", \"-g\", \"daemon off;\"]\n"
+		} else {
+			content = "FROM alpine:3.20\nWORKDIR /app\nCOPY . .\nEXPOSE 8080\nCMD [\"sh\", \"-c\", \"echo 'App container running' && sleep infinity\"]\n"
+		}
+	}
+	_ = os.WriteFile(dockerfilePath, []byte(content), 0o644)
+	ignorePath := filepath.Join(dir, ".dockerignore")
+	if _, err := os.Stat(ignorePath); os.IsNotExist(err) {
+		_ = os.WriteFile(ignorePath, []byte(".git\nnode_modules\n.next\n"), 0o644)
+	}
 }
 
 func detectFramework(dir string) string {

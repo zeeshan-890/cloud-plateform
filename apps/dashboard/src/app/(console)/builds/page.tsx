@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Alert, EmptyState, PageHeader } from "@/components/ui/page";
 import { api, ApiError } from "@/lib/api";
@@ -16,6 +17,7 @@ export default function BuildsPage() {
   const [logs, setLogs] = useState("");
   const [selected, setSelected] = useState<string>("");
   const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
   const [explainText, setExplainText] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -43,7 +45,12 @@ export default function BuildsPage() {
 
   async function loadBuilds(pid: string) {
     if (!currentOrg || !pid) return;
-    setBuilds(await api.listBuilds(currentOrg.id, pid));
+    const list = await api.listBuilds(currentOrg.id, pid);
+    setBuilds(list);
+    if (!selected && list.length > 0) {
+      setSelected(list[0].id);
+      showLogs(list[0].id).catch(() => undefined);
+    }
   }
 
   useEffect(() => {
@@ -62,13 +69,20 @@ export default function BuildsPage() {
     })();
     const cancelInterval = setVisibilityInterval(() => {
       loadBuilds(projectId).catch(() => undefined);
-    }, 4000);
+      if (currentOrg && selected) {
+        api.getBuildLogs(currentOrg.id, projectId, selected)
+          .then((res) => {
+            if (res && res.logs) setLogs(res.logs);
+          })
+          .catch(() => undefined);
+      }
+    }, 2500);
     return () => {
       mounted = false;
       cancelInterval();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentOrg, projectId]);
+  }, [currentOrg, projectId, selected]);
 
   async function showLogs(buildId: string) {
     if (!currentOrg || !projectId) return;
@@ -79,6 +93,31 @@ export default function BuildsPage() {
       setLogs(res.logs || "");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Failed to load logs");
+    }
+  }
+
+  async function onTriggerBuild() {
+    if (!currentOrg || !projectId) return;
+    setBusy(true);
+    setError("");
+    setSuccess("");
+    try {
+      const repos = await api.listRepos(currentOrg.id, projectId);
+      const repo = repos[0];
+      await api.createDeployment(currentOrg.id, projectId, {
+        git_branch: repo?.default_branch || "main",
+        git_sha: "HEAD",
+        clone_url: repo?.clone_url,
+        full_name: repo?.full_name,
+        repo_id: repo?.id,
+        message: "Triggered from builds console",
+      });
+      setSuccess("New build queued. Compilation starting momentarily.");
+      await loadBuilds(projectId);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to trigger build");
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -118,12 +157,36 @@ export default function BuildsPage() {
     <div className="animate-fade-up">
       <PageHeader
         title="Builds"
-        description="View build pipeline execution, compiler outputs, and image compilation logs."
+        description="View real-time build pipeline execution, compiler outputs, and Docker container packaging."
+        actions={
+          <div className="flex items-center gap-2">
+            <Link
+              href="/git"
+              className="inline-flex items-center justify-center rounded-md border border-[var(--border)] bg-white px-3 py-1.5 text-xs font-bold text-[var(--ink)] hover:bg-slate-50 transition-colors shadow-2xs"
+            >
+              Git Settings
+            </Link>
+            <Button
+              type="button"
+              disabled={busy || !projectId}
+              onClick={onTriggerBuild}
+              className="font-bold"
+            >
+              {busy ? "Queuing..." : "⚡ Trigger Build"}
+            </Button>
+          </div>
+        }
       />
 
       {error ? (
         <div className="mb-4">
-          <Alert>{error}</Alert>
+          <Alert tone="error">{error}</Alert>
+        </div>
+      ) : null}
+
+      {success ? (
+        <div className="mb-4">
+          <Alert tone="success">{success}</Alert>
         </div>
       ) : null}
 
@@ -152,8 +215,8 @@ export default function BuildsPage() {
 
       {builds.length === 0 ? (
         <EmptyState
-          title="No builds yet"
-          description="Trigger a deployment to enqueue a build job."
+          title="No builds recorded"
+          description="Connect a repository in Git Settings or click Trigger Build to start a build job."
         />
       ) : (
         <div className="grid gap-6 lg:grid-cols-2">
@@ -163,7 +226,7 @@ export default function BuildsPage() {
                 Build Queue ({builds.length})
               </h4>
             </div>
-            <ul className="divide-y divide-[var(--border)]">
+            <ul className="divide-y divide-[var(--border)] max-h-[500px] overflow-y-auto">
               {builds.map((b) => {
                 const isSuccess = b.status === "succeeded" || b.status === "ready";
                 const isFailed = b.status === "failed";
@@ -171,9 +234,10 @@ export default function BuildsPage() {
                 return (
                   <li
                     key={b.id}
-                    className={`flex items-center justify-between gap-3 p-3.5 transition-colors ${
+                    className={`flex items-center justify-between gap-3 p-3.5 transition-colors cursor-pointer ${
                       selected === b.id ? "bg-blue-50/70" : "hover:bg-slate-50/50"
                     }`}
+                    onClick={() => showLogs(b.id)}
                   >
                     <div>
                       <div className="flex items-center gap-2">
@@ -207,7 +271,10 @@ export default function BuildsPage() {
                         type="button"
                         size="sm"
                         variant={selected === b.id ? "primary" : "secondary"}
-                        onClick={() => showLogs(b.id)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          showLogs(b.id);
+                        }}
                       >
                         Logs
                       </Button>
@@ -217,7 +284,10 @@ export default function BuildsPage() {
                           size="sm"
                           variant="secondary"
                           disabled={busy}
-                          onClick={() => onExplain(b.id)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onExplain(b.id);
+                          }}
                         >
                           {busy && selected === b.id ? "Analyzing…" : "Explain"}
                         </Button>
@@ -232,12 +302,12 @@ export default function BuildsPage() {
           <div className="jp-card overflow-hidden flex flex-col">
             <div className="border-b border-slate-700 bg-slate-900 px-4 py-3 flex items-center justify-between">
               <span className="font-mono text-xs font-bold text-slate-200">Build Output Terminal</span>
-              <span className="rounded bg-slate-800 px-2 py-0.5 font-mono text-[10px] text-slate-400">
+              <span className="rounded bg-slate-800 px-2 py-0.5 font-mono text-[10px] text-emerald-400">
                 {selected ? `Build ${selected.slice(0, 8)}` : "Live Stream"}
               </span>
             </div>
             <pre className="h-[460px] overflow-auto bg-slate-950 p-4 font-mono text-xs text-emerald-400/90 whitespace-pre-wrap leading-relaxed shadow-inner">
-              {logs || "// Select a build from the queue to view real-time compilation logs."}
+              {logs || "// Select a build from the queue to stream real-time compilation logs."}
             </pre>
           </div>
         </div>

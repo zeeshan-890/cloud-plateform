@@ -512,8 +512,8 @@ services:
       JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
       DOCKER_HOST: ${DOCKER_HOST:-unix:///var/run/docker.sock}
       # Host Docker daemon must reach the published registry port
-      REGISTRY_PUSH_URL: ${REGISTRY_PUSH_URL:-host.docker.internal:5000}
-      REGISTRY_HOST: ${REGISTRY_HOST:-host.docker.internal:5000}
+      REGISTRY_PUSH_URL: ${REGISTRY_PUSH_URL:-127.0.0.1:5000}
+      REGISTRY_HOST: ${REGISTRY_HOST:-127.0.0.1:5000}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - worker_build_cache:/tmp/jp-builds

@@ -291,11 +291,17 @@ func (h *Handler) ListAvailableRepos(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) fetchGitHubRepos(r *http.Request) ([]map[string]any, bool) {
-	token := strings.TrimSpace(os.Getenv("GITHUB_TOKEN"))
+	token := strings.TrimSpace(r.URL.Query().Get("token"))
+	if token == "" {
+		token = strings.TrimSpace(r.Header.Get("X-GitHub-Token"))
+	}
+	if token == "" {
+		token = strings.TrimSpace(os.Getenv("GITHUB_TOKEN"))
+	}
 	if token == "" || h.HTTP == nil {
 		return nil, false
 	}
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, "https://api.github.com/user/repos?per_page=30&sort=updated", nil)
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, "https://api.github.com/user/repos?per_page=100&sort=updated", nil)
 	if err != nil {
 		return nil, false
 	}
@@ -340,20 +346,35 @@ func (h *Handler) ConnectRepo(w http.ResponseWriter, r *http.Request) {
 		CloneURL       string `json:"clone_url"`
 		DefaultBranch  string `json:"default_branch"`
 		InstallationID string `json:"installation_id"`
+		Token          string `json:"token"`
 	}
 	if err := httpx.Decode(r, &req); err != nil {
 		httpx.Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
 	req.FullName = strings.TrimSpace(req.FullName)
+	req.Token = strings.TrimSpace(req.Token)
+	if strings.HasPrefix(req.FullName, "http://") || strings.HasPrefix(req.FullName, "https://") {
+		parsed, err := url.Parse(req.FullName)
+		if err == nil {
+			path := strings.Trim(parsed.Path, "/")
+			path = strings.TrimSuffix(path, ".git")
+			if strings.Contains(path, "/") {
+				req.CloneURL = req.FullName
+				req.FullName = path
+			}
+		}
+	}
 	if req.FullName == "" || !strings.Contains(req.FullName, "/") {
-		httpx.Error(w, http.StatusBadRequest, "validation_error", "full_name required (owner/repo)")
+		httpx.Error(w, http.StatusBadRequest, "validation_error", "full_name required (owner/repo or repository URL)")
 		return
 	}
 	if req.DefaultBranch == "" {
 		req.DefaultBranch = "main"
 	}
-	if req.CloneURL == "" {
+	if req.Token != "" {
+		req.CloneURL = fmt.Sprintf("https://x-access-token:%s@github.com/%s.git", req.Token, req.FullName)
+	} else if req.CloneURL == "" {
 		req.CloneURL = "https://github.com/" + req.FullName + ".git"
 	}
 	// Prefer GitHub installation_id from org if caller omitted it

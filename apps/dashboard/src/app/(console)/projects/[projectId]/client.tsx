@@ -30,8 +30,10 @@ export default function ProjectDetailClient() {
   // Sub-tab states for Git connect
   const [gitUrl, setGitUrl] = useState("");
   const [gitBranch, setGitBranch] = useState("main");
+  const [gitToken, setGitToken] = useState("");
   const [connectingGit, setConnectingGit] = useState(false);
   const [connectedRepos, setConnectedRepos] = useState<Array<{ id: string; full_name: string }>>([]);
+  const [buildLogs, setBuildLogs] = useState("");
 
   // Sub-tab states for Domains
   const [domainInput, setDomainInput] = useState("");
@@ -108,6 +110,18 @@ export default function ProjectDetailClient() {
       api.listDatabases(currentOrg.id, actualProjectId)
         .then((res) => setDbList(res.databases || []))
         .catch(() => setDbList([]));
+    } else if (currentTab === "builds") {
+      api.listBuilds(currentOrg.id, actualProjectId)
+        .then((builds) => {
+          if (builds.length > 0) {
+            api.getBuildLogs(currentOrg.id, actualProjectId, builds[0].id)
+              .then((res) => setBuildLogs(res.logs || ""))
+              .catch(() => setBuildLogs("// No logs recorded"));
+          } else {
+            setBuildLogs("// No builds recorded yet. Trigger a deployment to view compiler output.");
+          }
+        })
+        .catch(() => setBuildLogs("// Failed to load builds"));
     }
   }, [currentOrg, actualProjectId, currentTab, secretEnv]);
 
@@ -164,9 +178,11 @@ export default function ProjectDetailClient() {
         full_name: repoName,
         clone_url: cleanUrl,
         default_branch: gitBranch.trim() || "main",
+        token: gitToken.trim() || undefined,
       });
       setSuccess(`Connected repository "${repoName}".`);
       setGitUrl("");
+      setGitToken("");
       const updated = await api.listRepos(currentOrg.id, project.id);
       setConnectedRepos(updated);
     } catch (err) {
@@ -441,6 +457,17 @@ export default function ProjectDetailClient() {
                   />
                 </div>
               </div>
+              <div>
+                <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
+                  Personal Access Token (For Private Repositories)
+                </label>
+                <Input
+                  type="password"
+                  placeholder="ghp_... or github_pat_... (leave empty for public repos)"
+                  value={gitToken}
+                  onChange={(e) => setGitToken(e.target.value)}
+                />
+              </div>
               <Button type="submit" disabled={connectingGit || !gitUrl.trim()}>
                 {connectingGit ? "Connecting..." : "Connect Git Repository"}
               </Button>
@@ -511,12 +538,12 @@ export default function ProjectDetailClient() {
               <span className="font-mono text-xs font-bold text-slate-200">
                 Compiler Terminal & Live Build Stream
               </span>
-              <span className="rounded bg-slate-800 px-2 py-0.5 font-mono text-[10px] text-slate-400">
+              <span className="rounded bg-slate-800 px-2 py-0.5 font-mono text-[10px] text-emerald-400">
                 App: {project.name}
               </span>
             </div>
-            <pre className="h-80 overflow-auto bg-slate-950 p-4 font-mono text-xs text-emerald-400 leading-relaxed shadow-inner">
-              // Live build stream for {project.name}. Connect a repository and trigger a deployment to view compilation steps.
+            <pre className="h-80 overflow-auto bg-slate-950 p-4 font-mono text-xs text-emerald-400 leading-relaxed shadow-inner whitespace-pre-wrap">
+              {buildLogs || `// Live build stream for ${project.name}. Connect a repository and trigger a deployment to view compilation steps.`}
             </pre>
           </div>
         </div>

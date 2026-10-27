@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Alert, EmptyState, PageHeader } from "@/components/ui/page";
 import { api, ApiError } from "@/lib/api";
@@ -100,6 +101,11 @@ export default function DeploymentsPage() {
     setError("");
     try {
       const repos = await api.listRepos(currentOrg.id, projectId);
+      if (repos.length === 0) {
+        setError("No repository is connected to this project yet. Go to Git Settings to connect a public or private repository.");
+        setBusy(false);
+        return;
+      }
       const repo = repos[0];
       await api.createDeployment(currentOrg.id, projectId, {
         git_branch: repo?.default_branch || "main",
@@ -107,7 +113,7 @@ export default function DeploymentsPage() {
         clone_url: repo?.clone_url,
         full_name: repo?.full_name,
         repo_id: repo?.id,
-        message: "manual deploy from dashboard",
+        message: `Deploy from ${repo.full_name}@${repo.default_branch || "main"}`,
       });
       await loadDeploys(projectId);
     } catch (err) {
@@ -166,8 +172,19 @@ export default function DeploymentsPage() {
         description="Create deploys, watch status, and roll back to a previous ready image."
         actions={
           <div className="flex flex-wrap gap-2">
-            <Button type="button" onClick={onDeploy} disabled={busy || !projectId}>
-              {busy ? "Working…" : "Deploy"}
+            <Link
+              href="/git"
+              className="inline-flex items-center justify-center rounded-md border border-[var(--border)] bg-white px-3 py-1.5 text-xs font-bold text-[var(--ink)] hover:bg-slate-50 transition-colors shadow-2xs"
+            >
+              Git Settings
+            </Link>
+            <Button
+              type="button"
+              onClick={onDeploy}
+              disabled={busy || !projectId}
+              className="font-bold"
+            >
+              {busy ? "Deploying…" : "⚡ Deploy Now"}
             </Button>
             <Button
               type="button"
@@ -175,7 +192,7 @@ export default function DeploymentsPage() {
               onClick={() => onRollback()}
               disabled={busy || !projectId}
             >
-              Rollback latest
+              Rollback
             </Button>
           </div>
         }
@@ -303,7 +320,13 @@ export default function DeploymentsPage() {
                         {d.created_at ? new Date(d.created_at).toLocaleString() : "—"}
                       </td>
                       <td className="px-4 py-3 text-right">
-                        <div className="flex justify-end gap-2">
+                        <div className="flex items-center justify-end gap-2">
+                          <Link
+                            href="/builds"
+                            className="inline-flex items-center rounded-md border border-[var(--border)] bg-white px-2.5 py-1 text-xs font-bold text-[var(--ink)] hover:bg-slate-50 transition-colors shadow-2xs"
+                          >
+                            Logs
+                          </Link>
                           {d.status === "failed" ? (
                             <Button
                               type="button"
