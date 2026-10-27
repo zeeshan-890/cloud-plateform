@@ -297,41 +297,13 @@ export default function ConnectGitPage() {
         </div>
       </div>
 
-      {/* 2. Direct Repository Connect (Tokenless for Public Repos, Optional PAT) */}
+      {/* 2. Direct Repository Connect */}
       <div className="jp-card p-5 space-y-4">
         <div className="border-b border-[var(--border)] pb-3">
-          <h2 className="text-sm font-bold text-[var(--ink)]">Connect Any GitHub Repository (No PAT Required)</h2>
+          <h2 className="text-sm font-bold text-[var(--ink)]">Connect GitHub Repository</h2>
           <p className="text-xs text-[var(--ink-muted)]">
-            Paste any GitHub repository URL or shorthand (<code className="font-mono text-slate-700 font-bold">owner/repo</code>). Public repositories connect instantly without any credentials.
+            Enter your repository URL or shorthand (<code className="font-mono text-slate-700 font-bold">owner/repo</code>) and your GitHub Personal Access Token (PAT).
           </p>
-        </div>
-
-        {/* 1-Click Starter Quick Picks */}
-        <div className="space-y-2">
-          <span className="text-[11px] font-bold uppercase tracking-wider text-[var(--ink-secondary)] block">
-            Quick-Connect Starter Templates:
-          </span>
-          <div className="flex flex-wrap gap-2">
-            {[
-              { name: "Financer App", url: "https://github.com/zeeshan-890/financor", branch: "main", icon: "💰" },
-              { name: "Next.js Starter", url: "https://github.com/vercel/next-learn-starter", branch: "main", icon: "▲" },
-              { name: "FastAPI Python", url: "https://github.com/tiangolo/fastapi", branch: "master", icon: "⚡" },
-              { name: "Express Node API", url: "https://github.com/expressjs/express", branch: "master", icon: "🟢" },
-            ].map((tpl) => (
-              <button
-                key={tpl.name}
-                type="button"
-                onClick={() => {
-                  setFullName(tpl.url);
-                  setBranch(tpl.branch);
-                }}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white hover:bg-blue-50/70 hover:border-blue-400 px-3 py-1.5 text-xs font-semibold text-slate-800 transition-all shadow-2xs"
-              >
-                <span>{tpl.icon}</span>
-                <span>{tpl.name}</span>
-              </button>
-            ))}
-          </div>
         </div>
 
         <form onSubmit={onManualSubmit} className="space-y-3.5 pt-1">
@@ -359,19 +331,14 @@ export default function ConnectGitPage() {
             </div>
           </div>
 
-          <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3 space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-xs text-slate-700 font-medium">
-                Is this a private repository on GitHub?
-              </span>
-              <span className="text-[11px] text-slate-500">
-                (Public repositories connect directly without any token)
-              </span>
-            </div>
+          <div>
+            <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
+              Personal Access Token (PAT)
+            </label>
             <div className="flex items-center gap-2">
               <Input
                 type="password"
-                placeholder="Optional: ghp_... or github_pat_..."
+                placeholder="ghp_... or github_pat_..."
                 value={patToken}
                 onChange={(e) => setPatToken(e.target.value)}
               />
@@ -385,6 +352,9 @@ export default function ConnectGitPage() {
                 {fetchingRepos ? "Loading..." : "Load My Repos"}
               </Button>
             </div>
+            <p className="mt-1 text-[11px] text-[var(--ink-muted)]">
+              Generate a classic or fine-grained token with <code className="font-mono font-bold">repo</code> read access. Public repositories can also connect directly if left blank.
+            </p>
           </div>
 
           <div className="pt-1">

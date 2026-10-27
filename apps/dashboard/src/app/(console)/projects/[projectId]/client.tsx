@@ -1542,43 +1542,15 @@ export default function ProjectDetailClient() {
             )}
           </div>
 
-          {/* Quick Connect Repository Card (Tokenless for Public Repos) */}
+          {/* Direct Repository Connect */}
           <div className="jp-card p-5 space-y-4">
             <div className="border-b border-[var(--border)] pb-3">
               <h2 className="text-sm font-bold text-[var(--ink)]">
-                Connect GitHub Repository (No PAT Required)
+                Connect GitHub Repository
               </h2>
               <p className="text-xs text-[var(--ink-muted)]">
-                Paste any GitHub repository URL or shorthand (<code className="font-mono text-slate-700 font-bold">owner/repo</code>). Public repositories connect instantly without any credentials.
+                Enter your repository URL or shorthand (<code className="font-mono text-slate-700 font-bold">owner/repo</code>) and your GitHub Personal Access Token (PAT).
               </p>
-            </div>
-
-            {/* 1-Click Starter Quick Picks */}
-            <div className="space-y-2">
-              <span className="text-[11px] font-bold uppercase tracking-wider text-[var(--ink-secondary)] block">
-                Quick-Connect Templates:
-              </span>
-              <div className="flex flex-wrap gap-2">
-                {[
-                  { name: "Financer App", url: "https://github.com/zeeshan-890/financor", branch: "main", icon: "💰" },
-                  { name: "Next.js Starter", url: "https://github.com/vercel/next-learn-starter", branch: "main", icon: "▲" },
-                  { name: "FastAPI Python", url: "https://github.com/tiangolo/fastapi", branch: "master", icon: "⚡" },
-                  { name: "Express Node API", url: "https://github.com/expressjs/express", branch: "master", icon: "🟢" },
-                ].map((tpl) => (
-                  <button
-                    key={tpl.name}
-                    type="button"
-                    onClick={() => {
-                      setGitUrl(tpl.url);
-                      setGitBranch(tpl.branch);
-                    }}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white hover:bg-blue-50/70 hover:border-blue-400 px-3 py-1.5 text-xs font-semibold text-slate-800 transition-all shadow-2xs"
-                  >
-                    <span>{tpl.icon}</span>
-                    <span>{tpl.name}</span>
-                  </button>
-                ))}
-              </div>
             </div>
 
             <form onSubmit={handleConnectGit} className="space-y-3.5 pt-1">
@@ -1606,37 +1578,19 @@ export default function ProjectDetailClient() {
                 </div>
               </div>
 
-              {/* Collapsible Token Input for Private Repos Only */}
-              <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3 space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-slate-700 font-medium">
-                    Is this a private repository on GitHub?
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setPrivateTokenOpen(!privateTokenOpen)}
-                    className="text-xs font-bold text-blue-700 hover:underline"
-                  >
-                    {privateTokenOpen ? "Hide Token Field" : "+ Add Private Access Token (Optional)"}
-                  </button>
-                </div>
-
-                {privateTokenOpen && (
-                  <div className="pt-2 border-t border-slate-200/80 space-y-1 animate-fade-in">
-                    <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-700">
-                      GitHub Personal Access Token (PAT)
-                    </label>
-                    <Input
-                      type="password"
-                      placeholder="ghp_... or github_pat_..."
-                      value={gitToken}
-                      onChange={(e) => setGitToken(e.target.value)}
-                    />
-                    <p className="text-[11px] text-slate-500">
-                      Only needed if your repository is private. Public repositories do NOT require a token.
-                    </p>
-                  </div>
-                )}
+              <div>
+                <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
+                  Personal Access Token (PAT)
+                </label>
+                <Input
+                  type="password"
+                  placeholder="ghp_... or github_pat_..."
+                  value={gitToken}
+                  onChange={(e) => setGitToken(e.target.value)}
+                />
+                <p className="mt-1 text-[11px] text-[var(--ink-muted)]">
+                  Generate a classic or fine-grained token with <code className="font-mono font-bold">repo</code> read access. Public repositories can also connect directly if left blank.
+                </p>
               </div>
 
               <div className="pt-1">
