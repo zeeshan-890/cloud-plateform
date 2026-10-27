@@ -368,13 +368,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           {/* Right: Primary Page Action Button (Replaces static workspace pill) */}
           <div className="flex items-center gap-2.5 shrink-0">
             {isInsideProject ? (
-              <Link
-                href={`/projects/${urlProjectId}?tab=deployments`}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-[#1E3A8A] hover:bg-[#162456] px-3.5 py-1.5 text-xs font-bold text-white shadow-sm transition-all"
-              >
-                <span>🚀</span>
-                <span>Deploy App</span>
-              </Link>
+              currentTab === "deployments" ? (
+                <Link
+                  href={`/projects/${urlProjectId}?tab=deployments`}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-[#1E3A8A] hover:bg-[#162456] px-3.5 py-1.5 text-xs font-bold text-white shadow-sm transition-all"
+                >
+                  <span>🚀</span>
+                  <span>Deploy App</span>
+                </Link>
+              ) : null
             ) : normalizedPath === "/projects" ? (
               <Link
                 href="/projects/new"

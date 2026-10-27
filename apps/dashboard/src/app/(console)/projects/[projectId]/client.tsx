@@ -163,10 +163,26 @@ export default function ProjectDetailClient() {
 
   async function loadBuilds(orgId: string, projId: string) {
     try {
-      const list = await api.listBuilds(orgId, projId);
+      const [list, deps] = await Promise.all([
+        api.listBuilds(orgId, projId),
+        api.listDeployments(orgId, projId).catch(() => [] as Deployment[]),
+      ]);
       setBuildsList(list);
+      if (deps.length > 0) {
+        setDeploymentsList(deps);
+      }
       if (list.length > 0) {
-        const targetId = selectedBuildId && list.some((b) => b.id === selectedBuildId) ? selectedBuildId : list[0].id;
+        // Priority 1: Match the currently active deployed build
+        const activeDep = deps.find((d) => d.status === "ready");
+        let targetId = "";
+        if (selectedBuildId && list.some((b) => b.id === selectedBuildId)) {
+          targetId = selectedBuildId;
+        } else if (activeDep?.build_id && list.some((b) => b.id === activeDep.build_id)) {
+          targetId = activeDep.build_id;
+        } else {
+          targetId = list[0].id;
+        }
+
         if (targetId !== selectedBuildId) {
           setSelectedBuildId(targetId);
         }
@@ -1183,40 +1199,62 @@ export default function ProjectDetailClient() {
 
               <div className="divide-y divide-[var(--border)]">
                 {deploymentsList.map((d) => {
+                  const activeDeployment = deploymentsList.find((dep) => dep.status === "ready");
+                  const isCurrentLive = activeDeployment?.id === d.id;
                   const isReady = d.status === "ready";
                   const isFailed = d.status === "failed";
                   const isBuilding = d.status === "building" || d.status === "deploying";
                   const targetUrl = d.preview_url || appPublicUrl;
 
                   return (
-                    <div key={d.id} className="p-4 hover:bg-slate-50/50 transition-colors space-y-3">
+                    <div
+                      key={d.id}
+                      className={`p-4.5 transition-all space-y-3.5 ${
+                        isCurrentLive
+                          ? "bg-emerald-50/60 border-2 border-emerald-400 rounded-xl shadow-xs my-2"
+                          : "hover:bg-slate-50/50"
+                      }`}
+                    >
                       <div className="flex flex-wrap items-center justify-between gap-3">
                         {/* Status + Source */}
-                        <div className="flex items-center gap-2.5">
-                          <span
-                            className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-bold ${
-                              isReady
-                                ? "border-emerald-300 bg-emerald-50 text-emerald-800"
-                                : isFailed
-                                ? "border-red-300 bg-red-50 text-red-800"
-                                : isBuilding
-                                ? "border-blue-300 bg-blue-50 text-blue-800"
-                                : "border-slate-300 bg-slate-100 text-slate-800"
-                            }`}
-                          >
+                        <div className="flex flex-wrap items-center gap-2.5">
+                          {isCurrentLive ? (
+                            <span className="inline-flex items-center gap-1.5 rounded-full border-2 border-emerald-500 bg-emerald-100 px-3 py-1 text-xs font-black text-emerald-950 shadow-2xs">
+                              <span className="h-2 w-2 rounded-full bg-emerald-600 animate-pulse" />
+                              CURRENTLY LIVE & DEPLOYED
+                            </span>
+                          ) : (
                             <span
-                              className={`h-1.5 w-1.5 rounded-full ${
+                              className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-bold ${
                                 isReady
-                                  ? "bg-emerald-600"
+                                  ? "border-slate-300 bg-slate-100 text-slate-700"
                                   : isFailed
-                                  ? "bg-red-600"
+                                  ? "border-red-300 bg-red-50 text-red-800"
                                   : isBuilding
-                                  ? "bg-blue-600 animate-pulse"
-                                  : "bg-slate-500"
+                                  ? "border-blue-300 bg-blue-50 text-blue-800"
+                                  : "border-slate-300 bg-slate-100 text-slate-800"
                               }`}
-                            />
-                            {d.status.toUpperCase()}
-                          </span>
+                            >
+                              <span
+                                className={`h-1.5 w-1.5 rounded-full ${
+                                  isReady
+                                    ? "bg-slate-400"
+                                    : isFailed
+                                    ? "bg-red-600"
+                                    : isBuilding
+                                    ? "bg-blue-600 animate-pulse"
+                                    : "bg-slate-500"
+                                }`}
+                              />
+                              {isReady ? "PREVIOUS BUILD" : d.status.toUpperCase()}
+                            </span>
+                          )}
+
+                          {d.build_id && (
+                            <span className="rounded bg-slate-900 text-white font-mono font-bold px-2 py-0.5 text-[10px]">
+                              Build #{d.build_id.slice(0, 8)}
+                            </span>
+                          )}
 
                           <span className="rounded bg-slate-100 border border-slate-200 px-2 py-0.5 text-[10px] font-bold uppercase text-slate-700 font-mono">
                             {d.source || "manual"}
@@ -1252,7 +1290,7 @@ export default function ProjectDetailClient() {
                             </Button>
                           )}
 
-                          {isReady && d.image_ref && (
+                          {isReady && !isCurrentLive && (
                             <Button
                               type="button"
                               variant="secondary"
@@ -1260,8 +1298,14 @@ export default function ProjectDetailClient() {
                               onClick={() => handleRollback(d.id)}
                               className="text-xs font-semibold"
                             >
-                              Rollback
+                              ↺ Rollback to this
                             </Button>
+                          )}
+
+                          {isCurrentLive && (
+                            <span className="inline-flex items-center gap-1 text-xs font-bold text-emerald-800 bg-emerald-100 border border-emerald-300 rounded-md px-2.5 py-1">
+                              ✓ Serving Live Traffic
+                            </span>
                           )}
                         </div>
                       </div>
@@ -1414,25 +1458,48 @@ export default function ProjectDetailClient() {
           {logsTab === "builds" && (
             <div className="space-y-4">
               <div className="jp-card p-4 flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2.5">
                   <label className="text-xs font-bold uppercase tracking-wider text-[var(--ink-muted)]">
                     Select Build:
                   </label>
                   <select
-                    className="rounded-md border border-[var(--border)] bg-white px-3 py-1.5 text-xs font-semibold text-[var(--ink)] shadow-2xs focus:border-[var(--accent)] focus:outline-none"
+                    className="rounded-md border border-[var(--border)] bg-white px-3 py-1.5 text-xs font-semibold text-[var(--ink)] shadow-2xs focus:border-[var(--accent)] focus:outline-none max-w-md"
                     value={selectedBuildId}
                     onChange={(e) => {
                       setSelectedBuildId(e.target.value);
                       if (currentOrg) loadBuildLogs(currentOrg.id, actualProjectId, e.target.value);
                     }}
                   >
-                    {buildsList.map((b) => (
-                      <option key={b.id} value={b.id}>
-                        [{b.status.toUpperCase()}] {b.framework ? `(${b.framework})` : ""} {b.created_at ? new Date(b.created_at).toLocaleTimeString() : b.id.slice(0, 8)} {b.git_sha ? `@${b.git_sha.slice(0, 7)}` : ""}
-                      </option>
-                    ))}
+                    {buildsList.map((b) => {
+                      const activeDep = deploymentsList.find((d) => d.status === "ready");
+                      const isActiveLive = activeDep?.build_id === b.id;
+                      return (
+                        <option key={b.id} value={b.id}>
+                          {isActiveLive ? "🟢 [ACTIVE LIVE BUILD] " : `[${b.status.toUpperCase()}] `}
+                          #{b.id.slice(0, 8)}
+                          {b.framework ? ` (${b.framework})` : ""}
+                          {b.git_sha ? ` @${b.git_sha.slice(0, 7)}` : ""}
+                          {b.created_at ? ` - ${new Date(b.created_at).toLocaleTimeString()}` : ""}
+                          {isActiveLive ? " (Currently Deployed)" : ""}
+                        </option>
+                      );
+                    })}
                     {buildsList.length === 0 && <option value="">No builds recorded</option>}
                   </select>
+
+                  {(() => {
+                    const activeDep = deploymentsList.find((d) => d.status === "ready");
+                    const isViewingActive = activeDep?.build_id === selectedBuildId;
+                    if (isViewingActive) {
+                      return (
+                        <span className="inline-flex items-center gap-1.5 rounded-full border-2 border-emerald-400 bg-emerald-50 px-2.5 py-0.5 text-[11px] font-bold text-emerald-800">
+                          <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+                          Default: Active Deployed Build
+                        </span>
+                      );
+                    }
+                    return null;
+                  })()}
                 </div>
 
                 {selectedBuildId && (
