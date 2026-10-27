@@ -40,6 +40,7 @@ func main() {
 		BuildURL:        cfg.BuildURL,
 		LoggingURL:      cfg.LoggingURL,
 		DeploymentURL:   cfg.DeploymentURL,
+		RuntimeURL:      cfg.RuntimeURL,
 		LLM:             client,
 		Redis:           rdb,
 		HTTP:            &http.Client{Timeout: 45 * time.Second},

@@ -4,11 +4,13 @@ export function BrandMark({
   size = "md",
   href = "/projects",
   showBadge = true,
+  dark = false,
   onClick,
 }: {
   size?: "sm" | "md" | "lg" | "hero";
   href?: string | null;
   showBadge?: boolean;
+  dark?: boolean;
   onClick?: () => void;
 }) {
   const iconSizes = {
@@ -60,12 +62,12 @@ export function BrandMark({
       {logoIcon}
       <div className="flex items-baseline gap-1.5">
         <span
-          className={`font-[family-name:var(--font-display)] font-extrabold text-[var(--ink)] ${textSizes[size]}`}
+          className={`font-[family-name:var(--font-display)] font-extrabold ${dark ? "text-white" : "text-[var(--ink)]"} ${textSizes[size]}`}
         >
           JP<span className="text-[var(--accent)]">.</span>CLOUD
         </span>
         {showBadge && size !== "sm" ? (
-          <span className="hidden sm:inline-block rounded-full bg-slate-100 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-slate-600 ring-1 ring-slate-200">
+          <span className={`hidden sm:inline-block rounded-full px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wider ${dark ? "bg-white/10 text-white/80 ring-1 ring-white/15" : "bg-slate-100 text-slate-600 ring-1 ring-slate-200"}`}>
             Self-Hosted
           </span>
         ) : null}

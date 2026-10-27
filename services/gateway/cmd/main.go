@@ -274,8 +274,12 @@ func main() {
 
 	// Phase 7 — AI ops
 	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/ai/explain", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(aiSvc, "/api/v1")))))
+	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/ai/analyze-logs", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(aiSvc, "/api/v1")))))
+	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/ai/overview-suggestions", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(aiSvc, "/api/v1")))))
 	mux.Handle("POST /api/v1/orgs/{orgId}/ai/ask", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(aiSvc, "/api/v1")))))
 	mux.Handle("GET /api/v1/orgs/{orgId}/ai/status", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(aiSvc, "/api/v1")))))
+	mux.Handle("GET /api/v1/orgs/{orgId}/ai/config", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(aiSvc, "/api/v1")))))
+	mux.Handle("POST /api/v1/orgs/{orgId}/ai/config", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(aiSvc, "/api/v1")))))
 
 	// Phase 7 — Billing
 	mux.Handle("GET /api/v1/billing/plans", auth(http.HandlerFunc(injectUser(stripAndProxy(billingSvc, "/api/v1")))))

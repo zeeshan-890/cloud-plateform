@@ -758,6 +758,66 @@ export const api = {
       `/orgs/${orgId}/ai/status`,
     );
   },
+  async analyzeLogs(
+    orgId: string,
+    projectId: string,
+    payload?: { logs?: string; source?: string; build_id?: string; limit?: number },
+  ) {
+    return request<{
+      analysis: string;
+      mode: string;
+      model: string;
+      summary?: string;
+      recommendations?: string[];
+      severity?: string;
+    }>(
+      `/orgs/${orgId}/projects/${projectId}/ai/analyze-logs`,
+      { method: "POST", body: payload || {} },
+    );
+  },
+  async getOverviewSuggestions(orgId: string, projectId: string) {
+    const res = await request<{
+      suggestions: string | string[];
+      mode: string;
+      model: string;
+      overview?: string;
+      risk_level?: string;
+    }>(
+      `/orgs/${orgId}/projects/${projectId}/ai/overview-suggestions`,
+      { method: "POST", body: {} },
+    );
+    let sugList: string[] = [];
+    if (Array.isArray(res.suggestions)) {
+      sugList = res.suggestions;
+    } else if (typeof res.suggestions === "string") {
+      sugList = res.suggestions
+        .split("\n")
+        .map((s) => s.replace(/^[-*•\d.]+\s*/, "").trim())
+        .filter(Boolean);
+    }
+    return {
+      overview: res.overview,
+      suggestions: sugList,
+      risk_level: res.risk_level,
+      mode: res.mode,
+      model: res.model,
+    };
+  },
+  async getAIConfig(orgId: string) {
+    return request<{
+      mode: string;
+      model: string;
+      has_key: boolean;
+      masked_key: string;
+      provider: string;
+    }>(`/orgs/${orgId}/ai/config`);
+  },
+  async setAIConfig(orgId: string, payload: { gemini_key: string; model?: string }) {
+    return request<{ status: string; mode: string; model: string }>(
+      `/orgs/${orgId}/ai/config`,
+      { method: "POST", body: payload },
+    );
+  },
   async billingPlans(orgId: string) {
     const data = await request<{ plans: BillingPlan[] }>(`/orgs/${orgId}/billing/plans`);
     return (unwrap(data, "plans") as BillingPlan[]) || [];

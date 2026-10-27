@@ -1040,9 +1040,13 @@ services:
       BUILD_URL: http://build:8007
       LOGGING_URL: http://logging:8015
       DEPLOYMENT_URL: http://deployment:8006
+      RUNTIME_URL: http://runtime:8010
+      GEMINI_API_KEYS: ${GEMINI_API_KEYS:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.5-flash-lite}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       AI_BASE_URL: ${AI_BASE_URL:-https://api.openai.com/v1}
-      AI_MODEL: ${AI_MODEL:-gpt-4o-mini}
+      AI_MODEL: ${AI_MODEL:-gemini-3.5-flash-lite}
       JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
     depends_on:
       redis:

@@ -98,6 +98,25 @@ export default function ProjectDetailClient() {
   // Active tab from URL
   const currentTab = searchParams.get("tab") || "overview";
 
+  // AI Ops State (Powered by Gemini 3.5 Flash Lite)
+  const [aiAuditLoading, setAiAuditLoading] = useState(false);
+  const [aiAuditResult, setAiAuditResult] = useState<{
+    overview?: string;
+    suggestions: string[];
+    risk_level?: string;
+    model?: string;
+  } | null>(null);
+
+  const [aiLogAnalysisLoading, setAiLogAnalysisLoading] = useState(false);
+  const [aiLogAnalysisResult, setAiLogAnalysisResult] = useState<{
+    summary?: string;
+    analysis: string;
+    recommendations?: string[];
+    severity?: string;
+    model?: string;
+  } | null>(null);
+  const [aiLogPanelOpen, setAiLogPanelOpen] = useState(false);
+
   // Resolve actual projectId
   const rawId = params?.projectId;
   const actualProjectId =
@@ -321,6 +340,37 @@ export default function ProjectDetailClient() {
       await loadDeployments(currentOrg.id, actualProjectId);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Rollback failed");
+    }
+  }
+
+  async function runAiAudit() {
+    if (!currentOrg || !actualProjectId) return;
+    setAiAuditLoading(true);
+    try {
+      const res = await api.getOverviewSuggestions(currentOrg.id, actualProjectId);
+      setAiAuditResult(res);
+    } catch (err) {
+      console.error("AI audit error:", err);
+    } finally {
+      setAiAuditLoading(false);
+    }
+  }
+
+  async function runAiLogAnalysis(source: "runtime" | "build", buildId?: string) {
+    if (!currentOrg || !actualProjectId) return;
+    setAiLogAnalysisLoading(true);
+    setAiLogPanelOpen(true);
+    try {
+      const res = await api.analyzeLogs(currentOrg.id, actualProjectId, {
+        source,
+        build_id: buildId || selectedBuildId || undefined,
+        limit: 100,
+      });
+      setAiLogAnalysisResult(res);
+    } catch (err) {
+      console.error("AI log analysis error:", err);
+    } finally {
+      setAiLogAnalysisLoading(false);
     }
   }
 
@@ -657,31 +707,117 @@ export default function ProjectDetailClient() {
 
   const appPublicUrl = getAppPublicUrl(project.name);
 
+  const tabsList = [
+    { id: "overview", label: "Overview", icon: "📊" },
+    { id: "deployments", label: "Deployments", icon: "🚀" },
+    { id: "builds", label: "Builds & Logs", icon: "🛠️" },
+    { id: "git", label: "Git Repository", icon: "🐙" },
+    { id: "domains", label: "Custom Domains", icon: "🌐" },
+    { id: "secrets", label: "Secrets & Env", icon: "🔐" },
+    { id: "addons", label: "Add-ons & DBs", icon: "🧩" },
+    { id: "settings", label: "Settings", icon: "⚙️" },
+  ];
+
   return (
     <div className="space-y-6">
-      {/* Top Breadcrumb & Quick Actions Header */}
-      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-[var(--border)] pb-4">
-        <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-black text-[var(--ink)] tracking-tight">
-              {project.name}
-            </h1>
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-300 bg-emerald-50 px-2.5 py-0.5 text-xs font-bold text-emerald-800">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-600 animate-pulse" />
-              Active
-            </span>
+      {/* Crezumic-Style Page Header */}
+      <div className="bg-white rounded-xl border border-slate-200/90 p-5 shadow-xs transition-all">
+        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+          <div className="flex items-start gap-3.5">
+            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-br from-blue-600 to-indigo-700 text-xl font-black text-white shadow-xs shrink-0">
+              {project.name.slice(0, 1).toUpperCase()}
+            </div>
+            <div>
+              <div className="flex flex-wrap items-center gap-2.5">
+                <h1 className="text-2xl md:text-3xl font-extrabold text-slate-900 tracking-tight">
+                  {project.name}
+                </h1>
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-0.5 text-xs font-bold text-emerald-800">
+                  <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+                  Live Operational
+                </span>
+                <span className="rounded-md border border-slate-200 bg-slate-50 px-2 py-0.5 font-mono text-[11px] text-slate-600 font-semibold">
+                  Docker Native
+                </span>
+              </div>
+              <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-slate-500">
+                <span>Production Environment</span>
+                <span className="text-slate-300">•</span>
+                <a
+                  href={appPublicUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 font-mono font-semibold text-blue-600 hover:text-blue-800 hover:underline"
+                >
+                  <span>{appPublicUrl}</span>
+                  <span className="text-[10px]">↗</span>
+                </a>
+              </div>
+            </div>
           </div>
-          <p className="mt-1 text-xs text-[var(--ink-muted)]">
-            Default App Domain:{" "}
+
+          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+            <button
+              type="button"
+              onClick={runAiAudit}
+              disabled={aiAuditLoading}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-gradient-to-r from-blue-50 to-indigo-50 px-3.5 py-2 text-xs font-bold text-indigo-700 shadow-2xs hover:from-blue-100 hover:to-indigo-100 transition-all"
+            >
+              <span>✨</span>
+              <span>{aiAuditLoading ? "Auditing with Gemini..." : "Gemini 3.5 Audit"}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleTriggerDeployment}
+              disabled={triggeringDeploy}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-xs font-bold text-white shadow-xs hover:bg-blue-700 transition-all disabled:opacity-50"
+            >
+              <span>🚀</span>
+              <span>{triggeringDeploy ? "Deploying..." : "Deploy App"}</span>
+            </button>
+
             <a
               href={appPublicUrl}
               target="_blank"
               rel="noreferrer"
-              className="font-mono font-bold text-[var(--accent)] hover:underline"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-xs font-bold text-slate-800 shadow-2xs hover:bg-slate-50 transition-all"
             >
-              {appPublicUrl} ↗
+              <span>Open Live App</span>
+              <span className="text-slate-400">↗</span>
             </a>
-          </p>
+          </div>
+        </div>
+
+        {/* Crezumic Segmented Pill Tabs Navigation */}
+        <div className="mt-5 border-t border-slate-100 pt-4">
+          <div className="flex flex-wrap items-center gap-1.5 rounded-xl bg-slate-100/80 p-1 border border-slate-200/60">
+            {tabsList.map((t) => {
+              const isActive =
+                t.id === "overview"
+                  ? currentTab === "overview" && !searchParams.get("tab")
+                  : currentTab === t.id;
+              const targetUrl =
+                t.id === "overview"
+                  ? `/projects/${actualProjectId}`
+                  : `/projects/${actualProjectId}?tab=${t.id}`;
+
+              return (
+                <Link
+                  key={t.id}
+                  href={targetUrl}
+                  className={`inline-flex items-center gap-2 rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-all ${
+                    isActive
+                      ? "bg-white text-slate-900 font-bold shadow-xs border border-slate-200/80"
+                      : "text-slate-600 hover:bg-white/60 hover:text-slate-900"
+                  }`}
+                >
+                  <span>{t.icon}</span>
+                  <span>{t.label}</span>
+                </Link>
+              );
+            })}
+          </div>
         </div>
       </div>
 
@@ -693,6 +829,88 @@ export default function ProjectDetailClient() {
           ======================================================== */}
       {currentTab === "overview" && (
         <div className="space-y-6">
+          {/* ✨ Google Gemini 3.5 Flash Lite Live Ops & Security Diagnostic Card */}
+          <div className="bg-white rounded-xl border border-indigo-100 p-5 shadow-xs relative overflow-hidden transition-all">
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2.5">
+                <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-blue-600 text-white text-sm shadow-xs">
+                  ✨
+                </span>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-bold text-slate-900">
+                      Google Gemini 3.5 Flash Lite Live Audit & Suggestions
+                    </h3>
+                    <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-bold text-blue-700 border border-blue-200">
+                      Free Tier Model Active
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500">
+                    Real-time container architecture, database links, and security recommendations.
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={runAiAudit}
+                disabled={aiAuditLoading}
+                className="inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 px-3.5 py-1.5 text-xs font-bold text-white shadow-xs hover:from-blue-700 hover:to-indigo-700 transition-all shrink-0 disabled:opacity-50"
+              >
+                <span>{aiAuditLoading ? "Auditing..." : "Run AI Audit"}</span>
+                <span>↻</span>
+              </button>
+            </div>
+
+            {aiAuditResult ? (
+              <div className="mt-4 space-y-3.5 animate-fade-up">
+                <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-50 p-3 rounded-lg border border-slate-200/80">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-slate-700">Audit Status:</span>
+                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2.5 py-0.5 text-[11px] font-bold text-emerald-800">
+                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-600" />
+                      {aiAuditResult.risk_level?.toUpperCase() || "LOW RISK / PRODUCTION READY"}
+                    </span>
+                  </div>
+                  <span className="font-mono text-[10px] text-slate-500">
+                    Engine: {aiAuditResult.model || "gemini-3.5-flash-lite"}
+                  </span>
+                </div>
+
+                {aiAuditResult.overview && (
+                  <p className="text-xs text-slate-700 leading-relaxed font-medium bg-blue-50/50 border border-blue-100 p-3 rounded-lg">
+                    {aiAuditResult.overview}
+                  </p>
+                )}
+
+                {aiAuditResult.suggestions && aiAuditResult.suggestions.length > 0 && (
+                  <div className="space-y-2">
+                    <p className="text-xs font-bold text-slate-800 uppercase tracking-wider text-[11px]">
+                      Recommended Actions & Fixes:
+                    </p>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {aiAuditResult.suggestions.map((sug, idx) => (
+                        <div
+                          key={idx}
+                          className="flex items-start gap-2 rounded-lg border border-slate-200/80 bg-white p-3 text-xs text-slate-700 shadow-2xs hover:border-blue-300 transition-all"
+                        >
+                          <span className="text-emerald-600 font-bold shrink-0">✓</span>
+                          <span className="leading-snug">{sug}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="mt-4 flex items-center justify-between p-3.5 rounded-lg bg-slate-50 border border-slate-200/60 text-xs text-slate-600">
+                <p>
+                  Click <strong>&quot;Run AI Audit&quot;</strong> to analyze this application with Gemini 3.5 Flash Lite for performance, network stability, and database connectivity.
+                </p>
+              </div>
+            )}
+          </div>
+
           {/* Latest Deployed Build & Live Instance Banner */}
           {(() => {
             const latestDep = deploymentsList[0];
@@ -703,7 +921,7 @@ export default function ProjectDetailClient() {
             const isBuilding = latestDep?.status === "building" || latestDep?.status === "deploying";
 
             return (
-              <div className={`jp-card p-4 border transition-all ${
+              <div className={`jp-card p-5 border transition-all ${
                 isReady
                   ? "border-emerald-500/30 bg-gradient-to-r from-emerald-50/50 via-white to-slate-50"
                   : isFailed
@@ -1328,6 +1546,15 @@ export default function ProjectDetailClient() {
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
+                      onClick={() => runAiLogAnalysis("build", selectedBuildId)}
+                      disabled={aiLogAnalysisLoading}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-gradient-to-r from-blue-50 to-indigo-50 px-3 py-1 text-xs font-bold text-indigo-700 shadow-2xs hover:from-blue-100 hover:to-indigo-100 transition-all"
+                    >
+                      <span>✨</span>
+                      <span>{aiLogAnalysisLoading ? "Analyzing..." : "AI Analyze Build"}</span>
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => copyToClipboard(buildLogsText, "build-logs")}
                       className="text-xs font-semibold px-2.5 py-1 rounded border border-[var(--border)] bg-white hover:bg-slate-50 text-[var(--ink)]"
                     >
@@ -1336,6 +1563,69 @@ export default function ProjectDetailClient() {
                   </div>
                 )}
               </div>
+
+              {/* ✨ Google Gemini 3.5 Flash Lite Build Diagnostic Panel */}
+              {aiLogPanelOpen && aiLogAnalysisResult && (
+                <div className="rounded-xl border border-indigo-200 bg-white p-5 shadow-sm space-y-3.5 animate-fade-up">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
+                    <div className="flex items-center gap-2">
+                      <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-blue-600 text-white text-xs shadow-xs">
+                        ✨
+                      </span>
+                      <h4 className="text-sm font-bold text-slate-900">
+                        Google Gemini 3.5 Flash Lite — Build & Error Analysis
+                      </h4>
+                      <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[10px] font-bold ${
+                        aiLogAnalysisResult.severity === "critical"
+                          ? "bg-rose-100 text-rose-800 border border-rose-200"
+                          : aiLogAnalysisResult.severity === "warning"
+                          ? "bg-amber-100 text-amber-800 border border-amber-200"
+                          : "bg-emerald-100 text-emerald-800 border border-emerald-200"
+                      }`}>
+                        {aiLogAnalysisResult.severity?.toUpperCase() || "ANALYSIS COMPLETE"}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setAiLogPanelOpen(false)}
+                      className="rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700 text-xs"
+                    >
+                      ✕ Close Panel
+                    </button>
+                  </div>
+
+                  {aiLogAnalysisResult.summary && (
+                    <div className="bg-slate-50 border border-slate-200/80 rounded-lg p-3 text-xs text-slate-800 font-semibold">
+                      {aiLogAnalysisResult.summary}
+                    </div>
+                  )}
+
+                  <div className="text-xs text-slate-700 leading-relaxed whitespace-pre-line bg-blue-50/40 border border-blue-100 rounded-lg p-3.5 font-medium">
+                    {aiLogAnalysisResult.analysis}
+                  </div>
+
+                  {aiLogAnalysisResult.recommendations && aiLogAnalysisResult.recommendations.length > 0 && (
+                    <div className="space-y-2 pt-1">
+                      <p className="text-[11px] font-bold uppercase tracking-wider text-slate-700">
+                        Recommended Fixes:
+                      </p>
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        {aiLogAnalysisResult.recommendations.map((rec, idx) => (
+                          <div
+                            key={idx}
+                            className="flex items-start gap-2 rounded-lg border border-slate-200/90 bg-white p-3 text-xs text-slate-800 shadow-2xs hover:border-blue-300 transition-all"
+                          >
+                            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-blue-100 text-blue-700 font-bold text-[10px] shrink-0">
+                              {idx + 1}
+                            </span>
+                            <span className="leading-snug">{rec}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div className="jp-card overflow-hidden">
                 <div className="border-b border-slate-800 bg-slate-900 px-4 py-3 flex items-center justify-between">
@@ -1507,6 +1797,15 @@ export default function ProjectDetailClient() {
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
+                    onClick={() => runAiLogAnalysis("runtime")}
+                    disabled={aiLogAnalysisLoading}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-gradient-to-r from-blue-50 to-indigo-50 px-3 py-1 text-xs font-bold text-indigo-700 shadow-2xs hover:from-blue-100 hover:to-indigo-100 transition-all"
+                  >
+                    <span>✨</span>
+                    <span>{aiLogAnalysisLoading ? "Analyzing Logs..." : "AI Analyze Logs (Gemini 3.5)"}</span>
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => {
                       const allText = runtimeLogs.map((l) => `[${l.logged_at}] [${l.source}/${l.level}] ${l.message}`).join("\n");
                       copyToClipboard(allText, "app-logs");
@@ -1517,6 +1816,69 @@ export default function ProjectDetailClient() {
                   </button>
                 </div>
               </div>
+
+              {/* ✨ Google Gemini 3.5 Flash Lite Runtime Diagnostic Panel */}
+              {aiLogPanelOpen && aiLogAnalysisResult && (
+                <div className="rounded-xl border border-indigo-200 bg-white p-5 shadow-sm space-y-3.5 animate-fade-up">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
+                    <div className="flex items-center gap-2">
+                      <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-blue-600 text-white text-xs shadow-xs">
+                        ✨
+                      </span>
+                      <h4 className="text-sm font-bold text-slate-900">
+                        Google Gemini 3.5 Flash Lite — Container Log Diagnostics
+                      </h4>
+                      <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[10px] font-bold ${
+                        aiLogAnalysisResult.severity === "critical"
+                          ? "bg-rose-100 text-rose-800 border border-rose-200"
+                          : aiLogAnalysisResult.severity === "warning"
+                          ? "bg-amber-100 text-amber-800 border border-amber-200"
+                          : "bg-emerald-100 text-emerald-800 border border-emerald-200"
+                      }`}>
+                        {aiLogAnalysisResult.severity?.toUpperCase() || "LOG ANALYSIS READY"}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setAiLogPanelOpen(false)}
+                      className="rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700 text-xs"
+                    >
+                      ✕ Close Panel
+                    </button>
+                  </div>
+
+                  {aiLogAnalysisResult.summary && (
+                    <div className="bg-slate-50 border border-slate-200/80 rounded-lg p-3 text-xs text-slate-800 font-semibold">
+                      {aiLogAnalysisResult.summary}
+                    </div>
+                  )}
+
+                  <div className="text-xs text-slate-700 leading-relaxed whitespace-pre-line bg-blue-50/40 border border-blue-100 rounded-lg p-3.5 font-medium">
+                    {aiLogAnalysisResult.analysis}
+                  </div>
+
+                  {aiLogAnalysisResult.recommendations && aiLogAnalysisResult.recommendations.length > 0 && (
+                    <div className="space-y-2 pt-1">
+                      <p className="text-[11px] font-bold uppercase tracking-wider text-slate-700">
+                        Diagnostic Steps & Container Recommendations:
+                      </p>
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        {aiLogAnalysisResult.recommendations.map((rec, idx) => (
+                          <div
+                            key={idx}
+                            className="flex items-start gap-2 rounded-lg border border-slate-200/90 bg-white p-3 text-xs text-slate-800 shadow-2xs hover:border-blue-300 transition-all"
+                          >
+                            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-blue-100 text-blue-700 font-bold text-[10px] shrink-0">
+                              {idx + 1}
+                            </span>
+                            <span className="leading-snug">{rec}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Terminal Logs View */}
               <div className="jp-card overflow-hidden">

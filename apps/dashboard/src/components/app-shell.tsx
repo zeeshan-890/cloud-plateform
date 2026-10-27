@@ -12,6 +12,7 @@ import { useProject } from "@/lib/project-context";
 // Main Platform-Level Navigation (Global System View)
 const platformNav = [
   { label: "Projects & Apps", href: "/projects", icon: "📦" },
+  { label: "AI Ops & Engine", href: "/ai", icon: "✨" },
   { label: "Add-ons Marketplace", href: "/addons", icon: "🧩" },
   { label: "Cluster & Health", href: "/cluster", icon: "⚡" },
   { label: "Team & Access", href: "/team", icon: "👥" },
@@ -72,14 +73,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const projectSlug = projectName.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/^-+|-+$/g, "");
   const defaultAppDomain = getAppPublicUrl(projectName);
 
+  const getInitials = (text: string) => {
+    return text
+      .split(/[\s@._-]+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((w) => w[0].toUpperCase())
+      .join("");
+  };
+
   const sidebar = (
-    <aside className="flex h-full w-64 flex-col border-r border-[var(--border)] bg-white shadow-xs">
+    <aside className="flex h-full w-64 flex-col border-r border-white/10 bg-[#0F1B3D] text-slate-100 shadow-xl select-none">
       {/* Brand Header */}
-      <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3.5">
-        <BrandMark size="md" href="/projects" onClick={() => setActiveProject(null)} />
+      <div className="flex items-center justify-between border-b border-white/10 px-4 py-4">
+        <BrandMark size="md" href="/projects" dark={true} onClick={() => setActiveProject(null)} />
         <button
           type="button"
-          className="lg:hidden rounded-md p-1.5 text-[var(--ink-muted)] hover:bg-slate-100"
+          className="lg:hidden rounded-lg p-1.5 text-slate-400 hover:bg-white/10 hover:text-white transition-colors"
           onClick={() => setMobileOpen(false)}
           aria-label="Close menu"
         >
@@ -89,56 +99,56 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       {isInsideProject ? (
         /* ========================================================
-           PROJECT-SPECIFIC SIDEBAR (App Workspace View)
+           PROJECT-SPECIFIC SIDEBAR (App Workspace View - Crezumic Style)
            ======================================================== */
         <div className="flex flex-1 flex-col overflow-y-auto">
           {/* Back to Projects Button */}
-          <div className="border-b border-[var(--border)] p-3">
+          <div className="border-b border-white/10 p-3">
             <Link
               href="/projects"
               onClick={() => setActiveProject(null)}
-              className="flex items-center gap-2 rounded-md border border-[var(--border)] bg-slate-50 px-3 py-2 text-xs font-bold text-[var(--ink)] shadow-2xs hover:bg-slate-100 hover:border-[var(--border-strong)] transition-all"
+              className="flex items-center gap-2 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-white/10 hover:text-white hover:border-white/25 transition-all"
             >
-              <span className="text-base leading-none text-[var(--accent)]">←</span>
+              <span className="text-base leading-none text-blue-400">←</span>
               <span>Back to All Projects</span>
             </Link>
           </div>
 
           {/* Active Project Identification Card */}
-          <div className="border-b border-[var(--border)] bg-slate-50/70 p-3.5 space-y-1.5">
+          <div className="border-b border-white/10 bg-white/5 p-3.5 space-y-2">
             <div className="flex items-center gap-2.5">
-              <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-[var(--accent)] text-xs font-bold text-white shadow-xs shrink-0">
+              <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-600 text-xs font-bold text-white shadow-sm shrink-0">
                 {projectName.slice(0, 1).toUpperCase()}
               </span>
               <div className="min-w-0 flex-1">
-                <p className="truncate text-xs font-bold text-[var(--ink)]">
+                <p className="truncate text-xs font-bold text-white">
                   {projectName}
                 </p>
                 <div className="flex items-center gap-1.5">
-                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                  <span className="text-[10px] font-semibold text-emerald-700">Live Active</span>
+                  <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+                  <span className="text-[10px] font-semibold text-emerald-300">Live Active</span>
                 </div>
               </div>
             </div>
 
             {/* Default Public App Subdomain */}
-            <div className="pt-1">
+            <div className="pt-0.5">
               <a
                 href={defaultAppDomain}
                 target="_blank"
                 rel="noreferrer"
-                className="flex items-center justify-between rounded border border-blue-200 bg-blue-50/70 px-2 py-1 text-[11px] font-mono font-medium text-blue-900 hover:bg-blue-100 transition-colors"
+                className="flex items-center justify-between rounded-lg border border-blue-400/30 bg-blue-950/60 px-2.5 py-1.5 text-[11px] font-mono font-medium text-blue-200 hover:bg-blue-900/60 transition-colors"
                 title={`Live URL: ${defaultAppDomain}`}
               >
                 <span className="truncate">{projectSlug}.{rootDomain.replace(/^panel\./, "")}</span>
-                <span className="text-blue-600 text-[10px]">↗</span>
+                <span className="text-blue-300 text-[10px]">↗</span>
               </a>
             </div>
           </div>
 
           {/* Project Management Navigation */}
           <div className="flex-1 px-3 py-3 space-y-1">
-            <p className="px-2.5 pb-1.5 text-[10px] font-bold uppercase tracking-wider text-[var(--ink-muted)]">
+            <p className="px-2 pb-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">
               App Management
             </p>
             {projectNav.map((item) => {
@@ -155,17 +165,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <Link
                   key={item.tab}
                   href={targetUrl}
-                  className={`flex items-center justify-between rounded-md px-3 py-2 text-xs font-semibold transition-all ${
+                  className={`relative flex items-center justify-between rounded-lg px-3 py-2 text-xs transition-all ${
                     active
-                      ? "bg-[var(--accent)] text-white shadow-xs font-bold"
-                      : "text-[var(--ink-secondary)] hover:bg-slate-100 hover:text-[var(--ink)]"
+                      ? "bg-white/15 text-white font-bold shadow-xs before:absolute before:left-0 before:top-2 before:bottom-2 before:w-1 before:rounded-r before:bg-blue-400"
+                      : "text-slate-300 hover:bg-white/10 hover:text-white font-medium"
                   }`}
                 >
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs">{item.icon}</span>
+                  <div className="flex items-center gap-2.5">
+                    <span className="text-sm">{item.icon}</span>
                     <span>{item.label}</span>
                   </div>
-                  {active && <span className="h-1.5 w-1.5 rounded-full bg-white animate-pulse" />}
+                  {active && <span className="h-1.5 w-1.5 rounded-full bg-blue-400 animate-pulse" />}
                 </Link>
               );
             })}
@@ -173,30 +183,30 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       ) : (
         /* ========================================================
-           MAIN PLATFORM SIDEBAR (Global System View)
+           MAIN PLATFORM SIDEBAR (Global System View - Crezumic Style)
            ======================================================== */
         <div className="flex flex-1 flex-col overflow-y-auto">
           {/* Organization Switcher */}
-          <div className="relative border-b border-[var(--border)] p-3">
+          <div className="relative border-b border-white/10 p-3">
             <button
               type="button"
               onClick={() => setOrgMenuOpen((v) => !v)}
-              className="flex w-full items-center justify-between rounded-md border border-[var(--border)] bg-slate-50 px-3 py-2 text-left text-xs font-bold text-[var(--ink)] shadow-2xs hover:bg-slate-100 transition-all"
+              className="flex w-full items-center justify-between rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-left text-xs font-bold text-white shadow-xs hover:bg-white/10 transition-all"
             >
-              <div className="flex items-center gap-1.5 truncate">
-                <span className="h-2 w-2 rounded-full bg-[var(--accent)] shrink-0" />
+              <div className="flex items-center gap-2 truncate">
+                <span className="h-2 w-2 rounded-full bg-blue-400 shrink-0" />
                 <span className="truncate">{currentOrg?.name || "Select Workspace"}</span>
               </div>
-              <span className="text-[10px] text-[var(--ink-muted)]">▼</span>
+              <span className="text-[10px] text-slate-400">▼</span>
             </button>
             {orgMenuOpen && (
-              <div className="absolute left-3 right-3 top-full z-40 mt-1 rounded-md border border-[var(--border)] bg-white p-1 shadow-lg">
+              <div className="absolute left-3 right-3 top-full z-40 mt-1 rounded-xl border border-white/20 bg-[#0F1B3D] p-1 shadow-2xl backdrop-blur-md">
                 {orgs.map((org) => (
                   <button
                     key={org.id}
                     type="button"
-                    className={`block w-full rounded px-2.5 py-1.5 text-left text-xs ${
-                      org.id === currentOrg?.id ? "bg-slate-100 font-bold" : "hover:bg-slate-50"
+                    className={`block w-full rounded-lg px-2.5 py-1.5 text-left text-xs ${
+                      org.id === currentOrg?.id ? "bg-white/15 font-bold text-white" : "text-slate-300 hover:bg-white/10 hover:text-white"
                     }`}
                     onClick={() => {
                       setOrg(org.id);
@@ -208,7 +218,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 ))}
                 <Link
                   href="/orgs/new"
-                  className="block border-t border-[var(--border)] mt-1 pt-1.5 px-2.5 py-1 text-xs font-bold text-[var(--accent)]"
+                  className="block border-t border-white/10 mt-1 pt-1.5 px-2.5 py-1 text-xs font-bold text-blue-400 hover:text-blue-300"
                   onClick={() => setOrgMenuOpen(false)}
                 >
                   + New Organization
@@ -217,9 +227,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             )}
           </div>
 
+          {/* AI Status Chip in Sidebar */}
+          <div className="px-3 pt-3">
+            <div className="flex items-center justify-between rounded-lg border border-indigo-400/30 bg-gradient-to-r from-blue-900/40 to-indigo-900/40 px-3 py-1.5 text-[11px] text-blue-200">
+              <span className="flex items-center gap-1.5 font-semibold">
+                <span>✨</span> Gemini 3.5 Active
+              </span>
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            </div>
+          </div>
+
           {/* Main System Navigation */}
           <div className="flex-1 px-3 py-3 space-y-1">
-            <p className="px-2.5 pb-1.5 text-[10px] font-bold uppercase tracking-wider text-[var(--ink-muted)]">
+            <p className="px-2 pb-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">
               Platform & System
             </p>
             {platformNav.map((item) => {
@@ -231,17 +251,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <Link
                   key={item.href}
                   href={item.href}
-                  className={`flex items-center justify-between rounded-md px-3 py-2 text-xs font-semibold transition-all ${
+                  className={`relative flex items-center justify-between rounded-lg px-3 py-2 text-xs transition-all ${
                     active
-                      ? "bg-[var(--accent)] text-white shadow-xs font-bold"
-                      : "text-[var(--ink-secondary)] hover:bg-slate-100 hover:text-[var(--ink)]"
+                      ? "bg-white/15 text-white font-bold shadow-xs before:absolute before:left-0 before:top-2 before:bottom-2 before:w-1 before:rounded-r before:bg-blue-400"
+                      : "text-slate-300 hover:bg-white/10 hover:text-white font-medium"
                   }`}
                 >
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs">{item.icon}</span>
+                  <div className="flex items-center gap-2.5">
+                    <span className="text-sm">{item.icon}</span>
                     <span>{item.label}</span>
                   </div>
-                  {active && <span className="h-1.5 w-1.5 rounded-full bg-white animate-pulse" />}
+                  {active && <span className="h-1.5 w-1.5 rounded-full bg-blue-400 animate-pulse" />}
                 </Link>
               );
             })}
@@ -249,26 +269,30 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       )}
 
-      {/* Footer Profile & Logout */}
-      <div className="border-t border-[var(--border)] bg-slate-50/80 p-3">
-        <div className="flex items-center justify-between gap-2">
-          <div className="truncate">
-            <p className="truncate text-xs font-bold text-[var(--ink)]">
-              {user?.email || "Admin User"}
-            </p>
-            <p className="text-[10px] text-[var(--ink-muted)] font-mono">
-              JP Self-Hosted
-            </p>
+      {/* Footer Profile & Logout - Crezumic Style */}
+      <div className="border-t border-white/10 bg-black/15 p-3">
+        <div className="flex items-center justify-between gap-2.5">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-600/80 ring-2 ring-white/20 text-xs font-bold text-white shrink-0">
+              {getInitials(user?.email || "Admin")}
+            </div>
+            <div className="truncate">
+              <p className="truncate text-xs font-bold text-white">
+                {user?.email || "Admin User"}
+              </p>
+              <p className="text-[10px] text-slate-400 font-mono">
+                JP Self-Hosted
+              </p>
+            </div>
           </div>
-          <Button
+          <button
             type="button"
-            variant="ghost"
-            size="sm"
             onClick={handleLogout}
-            className="text-xs text-[var(--ink-muted)] hover:text-red-600 shrink-0"
+            className="rounded-lg p-1.5 text-xs text-slate-400 hover:bg-rose-500/20 hover:text-rose-300 transition-colors shrink-0"
+            title="Log out"
           >
-            Logout
-          </Button>
+            Sign out
+          </button>
         </div>
       </div>
     </aside>
