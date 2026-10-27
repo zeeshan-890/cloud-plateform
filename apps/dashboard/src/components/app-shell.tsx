@@ -330,32 +330,31 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               ☰
             </button>
 
-            {/* Breadcrumb Path */}
+            {/* Breadcrumb Path & Prominent Page Title */}
             <nav aria-label="Breadcrumb" className="flex items-center gap-2 text-xs font-semibold text-slate-500 truncate">
               <Link
                 href="/projects"
                 onClick={() => setActiveProject(null)}
-                className="flex items-center gap-1.5 font-bold text-slate-900 hover:text-[#1E3A8A] transition-colors shrink-0"
+                className="font-bold text-slate-500 hover:text-[#1E3A8A] transition-colors shrink-0 hidden sm:inline"
               >
-                <span>🏠</span>
-                <span>Console</span>
+                Console
               </Link>
-              <span className="text-slate-400 font-bold">/</span>
+              <span className="text-slate-300 font-bold hidden sm:inline">/</span>
 
               {isInsideProject ? (
                 <>
                   <Link
                     href="/projects"
                     onClick={() => setActiveProject(null)}
-                    className="hover:text-slate-900 transition-colors shrink-0 text-slate-600"
+                    className="hover:text-slate-900 transition-colors shrink-0 text-slate-500 font-bold hidden md:inline"
                   >
                     Projects
                   </Link>
-                  <span className="text-slate-400 font-bold">/</span>
+                  <span className="text-slate-300 font-bold hidden md:inline">/</span>
                   <div className="flex items-center gap-2 shrink-0">
-                    <span className="font-extrabold text-slate-900 truncate max-w-[120px] sm:max-w-[180px]">
+                    <h1 className="text-sm sm:text-base md:text-lg font-black text-[#0F1B3D] tracking-tight truncate max-w-[140px] sm:max-w-[220px]">
                       {projectName}
-                    </span>
+                    </h1>
                     <span className="inline-flex items-center gap-1 rounded-full border-2 border-emerald-300 bg-emerald-50 px-2 py-0.2 text-[10px] font-bold text-emerald-800 shrink-0">
                       <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
                       Live
@@ -364,7 +363,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                       href={defaultAppDomain}
                       target="_blank"
                       rel="noreferrer"
-                      className="hidden md:inline-flex items-center gap-1 text-[11px] font-mono font-bold text-[#1E3A8A] bg-slate-100 hover:bg-slate-200 border-2 border-slate-300 rounded-lg px-2 py-0.5 transition-colors"
+                      className="hidden lg:inline-flex items-center gap-1 text-[11px] font-mono font-bold text-[#1E3A8A] bg-slate-100 hover:bg-slate-200 border-2 border-slate-300 rounded-lg px-2 py-0.5 transition-colors"
                       title={defaultAppDomain}
                     >
                       <span className="truncate max-w-[160px]">{projectSlug}.{rootDomain.replace(/^panel\./, "")}</span>
@@ -373,48 +372,89 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   </div>
                   {currentTab && currentTab !== "overview" && (
                     <>
-                      <span className="text-slate-400 font-bold">/</span>
-                      <span className="capitalize font-extrabold text-[#1E3A8A] shrink-0">
+                      <span className="text-slate-300 font-bold text-xs">/</span>
+                      <span className="capitalize font-black text-[#1E3A8A] text-sm sm:text-base shrink-0">
                         {projectNav.find((p) => p.tab === currentTab)?.label || currentTab}
                       </span>
                     </>
                   )}
                 </>
-              ) : normalizedPath === "/projects" ? (
-                <span className="font-extrabold text-slate-900">Projects & Apps</span>
               ) : (
-                <span className="font-extrabold text-slate-900 truncate">
-                  {platformNav.find((p) => p.href === normalizedPath)?.label || normalizedPath.replace("/", "")}
-                </span>
+                <h1 className="text-sm sm:text-base md:text-lg font-black text-[#0F1B3D] tracking-tight truncate">
+                  {normalizedPath === "/projects"
+                    ? "Projects & Applications"
+                    : platformNav.find((p) => p.href === normalizedPath)?.label || normalizedPath.replace("/", "")}
+                </h1>
               )}
             </nav>
           </div>
 
-          {/* Right: Quick Project Actions + Workspace Pill */}
+          {/* Right: Primary Page Action Button (Replaces static workspace pill) */}
           <div className="flex items-center gap-2.5 shrink-0">
-            {isInsideProject && (
+            {isInsideProject ? (
               <>
                 <Link
                   href={`/projects/${urlProjectId}?tab=deployments`}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-[#1E3A8A] hover:bg-[#162456] px-3 py-1.5 text-xs font-bold text-white shadow-sm transition-all"
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-[#1E3A8A] hover:bg-[#162456] px-3.5 py-1.5 text-xs font-bold text-white shadow-sm transition-all"
                 >
                   <span>🚀</span>
-                  <span className="hidden sm:inline">Deploy App</span>
+                  <span>Deploy App</span>
                 </Link>
                 <a
                   href={defaultAppDomain}
                   target="_blank"
                   rel="noreferrer"
-                  className="sm:hidden inline-flex items-center rounded-lg border-2 border-slate-300 bg-white p-1.5 text-xs font-bold text-slate-800"
+                  className="hidden sm:inline-flex items-center gap-1 rounded-lg border-2 border-slate-300 bg-white hover:bg-slate-50 px-3 py-1.5 text-xs font-bold text-slate-800 shadow-2xs transition-all"
                   title="Open Live App"
                 >
-                  ↗
+                  <span>Open App</span>
+                  <span className="text-[10px]">↗</span>
                 </a>
               </>
-            )}
-            <span className="rounded-lg border-2 border-slate-300 bg-white px-3 py-1 text-xs font-bold text-slate-800 shadow-2xs">
-              {currentOrg?.name || "Workspace"}
-            </span>
+            ) : normalizedPath === "/projects" ? (
+              <Link
+                href="/projects/new"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-[#1E3A8A] hover:bg-[#162456] px-3.5 py-1.5 text-xs font-bold text-white shadow-sm transition-all"
+              >
+                <span>+</span>
+                <span>New Project</span>
+              </Link>
+            ) : normalizedPath === "/keys" ? (
+              <Link
+                href="/keys"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-[#1E3A8A] hover:bg-[#162456] px-3.5 py-1.5 text-xs font-bold text-white shadow-sm transition-all"
+              >
+                <span>+ Create API Key</span>
+              </Link>
+            ) : normalizedPath === "/domains" ? (
+              <Link
+                href="/domains"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-[#1E3A8A] hover:bg-[#162456] px-3.5 py-1.5 text-xs font-bold text-white shadow-sm transition-all"
+              >
+                <span>+ Add Domain</span>
+              </Link>
+            ) : normalizedPath === "/team" ? (
+              <Link
+                href="/team"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-[#1E3A8A] hover:bg-[#162456] px-3.5 py-1.5 text-xs font-bold text-white shadow-sm transition-all"
+              >
+                <span>+ Invite Member</span>
+              </Link>
+            ) : normalizedPath === "/addons" ? (
+              <span className="inline-flex items-center gap-1.5 rounded-lg border-2 border-slate-300 bg-white px-3 py-1.5 text-xs font-bold text-slate-800 shadow-2xs">
+                <span>🧩 Add-ons Marketplace</span>
+              </span>
+            ) : normalizedPath === "/cluster" ? (
+              <span className="inline-flex items-center gap-1.5 rounded-full border-2 border-emerald-300 bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-800">
+                <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+                Cluster Healthy
+              </span>
+            ) : normalizedPath === "/ai" ? (
+              <span className="inline-flex items-center gap-1.5 rounded-full border-2 border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-bold text-[#1E3A8A]">
+                <span className="h-1.5 w-1.5 rounded-full bg-blue-600 animate-pulse" />
+                Gemini 3.5 Active
+              </span>
+            ) : null}
           </div>
         </header>
 

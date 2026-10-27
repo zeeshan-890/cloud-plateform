@@ -1,27 +1,16 @@
 import React from "react";
 
 export function PageHeader({
-  title,
-  description,
   actions,
 }: {
-  title: string;
+  title?: string;
   description?: string;
   actions?: React.ReactNode;
 }) {
+  if (!actions) return null;
   return (
-    <div className="bg-white border-2 border-slate-300 rounded-xl shadow-sm px-6 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
-      <div className="min-w-0">
-        <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight text-[#0F1B3D]">
-          {title}
-        </h1>
-        {description ? (
-          <p className="mt-1 text-xs text-slate-500 font-medium leading-relaxed">
-            {description}
-          </p>
-        ) : null}
-      </div>
-      {actions ? <div className="flex flex-wrap items-center gap-2.5 shrink-0">{actions}</div> : null}
+    <div className="flex items-center justify-end gap-2.5 mb-4 shrink-0">
+      {actions}
     </div>
   );
 }

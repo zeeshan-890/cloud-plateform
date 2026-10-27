@@ -59,34 +59,6 @@ export default function ProjectsPage() {
 
   return (
     <div className="space-y-6 animate-fade-up">
-      {/* Crezumic-Style Projects Header */}
-      <div className="bg-white rounded-xl border-2 border-slate-300 p-6 shadow-sm flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2.5">
-            <h1 className="text-xl md:text-2xl font-extrabold text-[#0F1B3D] tracking-tight">
-              Projects & Applications
-            </h1>
-            <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-bold text-slate-700 border border-slate-300">
-              {projects.length}
-            </span>
-          </div>
-          <p className="text-xs text-slate-500 mt-1 font-medium">
-            Active workspace for <strong className="text-slate-800">{currentOrg?.name || "your organization"}</strong>.
-          </p>
-        </div>
-
-        <div className="flex items-center gap-2.5 shrink-0">
-          <Link href="/projects/new">
-            <button
-              type="button"
-              className="h-9 px-4 rounded-lg bg-[#1E3A8A] text-white font-bold text-xs inline-flex items-center gap-1.5 shadow-sm hover:bg-[#162456] transition-colors"
-            >
-              <span>+</span>
-              <span>New Project</span>
-            </button>
-          </Link>
-        </div>
-      </div>
 
       {error ? (
         <Alert tone="error">{error}</Alert>
