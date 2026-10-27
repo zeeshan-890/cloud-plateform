@@ -192,7 +192,15 @@ func (h *Handler) Verify(w http.ResponseWriter, r *http.Request) {
 	d.Status = "verified"
 	d.VerifiedAt = &now
 	d.ForceVerified = req.Force
-	if path, err := h.Traefik.WriteDomain(d.Hostname, projectID, true); err == nil {
+	hostname := d.Hostname
+	if !strings.Contains(hostname, ".") {
+		rootDomain := os.Getenv("ROOT_DOMAIN")
+		if rootDomain == "" {
+			rootDomain = "zeeshanabbaskhan.me"
+		}
+		hostname = fmt.Sprintf("%s.%s", hostname, rootDomain)
+	}
+	if path, err := h.Traefik.WriteDomain(hostname, projectID, true); err == nil {
 		d.TraefikFile = path
 	}
 

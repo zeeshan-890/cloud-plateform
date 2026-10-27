@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -422,8 +423,18 @@ func (h *Handler) startInstance(r *http.Request, in *store.Instance) error {
 		name = fmt.Sprintf("jp-%s-%s", short(in.ProjectID), short(in.ID))
 	}
 	in.ContainerName = name
-	cid, mode, err := h.Engine.Start(r.Context(), name, in.ImageRef, in.Port)
+
+	rootDomain := os.Getenv("ROOT_DOMAIN")
+	if rootDomain == "" {
+		rootDomain = "zeeshanabbaskhan.me"
+	}
+	hostnames, _ := h.Store.GetProjectHostnames(r.Context(), in.ProjectID, rootDomain)
+
+	cid, mode, detectedPort, err := h.Engine.StartWithConfig(r.Context(), name, in.ImageRef, in.Port, nil, hostnames)
 	in.Mode = mode
+	if detectedPort > 0 {
+		in.Port = detectedPort
+	}
 	if err != nil {
 		in.Status = "failed"
 		in.Error = err.Error()

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -77,18 +78,63 @@ func (e *Engine) EffectiveMode(ctx context.Context) string {
 	return "simulate"
 }
 
-// Start creates and starts a container, or simulates one.
+// Start creates and starts a container with defaults.
 func (e *Engine) Start(ctx context.Context, name, image string, port int) (containerID string, mode string, err error) {
+	cid, m, _, err := e.StartWithConfig(ctx, name, image, port, nil, nil)
+	return cid, m, err
+}
+
+// StartWithConfig creates and starts a container with discovered port, environment variables, and Traefik SSL router labels.
+func (e *Engine) StartWithConfig(ctx context.Context, name, image string, port int, envs []string, hostnames []string) (containerID string, mode string, detectedPort int, err error) {
 	mode = e.EffectiveMode(ctx)
+	detectedPort = port
 	if mode == "simulate" {
 		id := "sim-" + strings.ReplaceAll(name, "/", "-")
 		if len(id) > 64 {
 			id = id[:64]
 		}
-		return id, mode, nil
+		if detectedPort <= 0 {
+			detectedPort = 3000
+		}
+		return id, mode, detectedPort, nil
 	}
-	if port <= 0 {
-		port = 3000
+
+	// Auto-detect listening port if unspecified
+	if detectedPort <= 0 && mode == "docker" && e.HTTP != nil {
+		inspectReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://localhost/images/"+image+"/json", nil)
+		if inspectResp, err := e.HTTP.Do(inspectReq); err == nil && inspectResp.StatusCode == http.StatusOK {
+			defer inspectResp.Body.Close()
+			var imgData struct {
+				Config struct {
+					ExposedPorts map[string]any `json:"ExposedPorts"`
+					Env          []string       `json:"Env"`
+				} `json:"Config"`
+			}
+			if err := json.NewDecoder(inspectResp.Body).Decode(&imgData); err == nil {
+				for pStr := range imgData.Config.ExposedPorts {
+					parts := strings.Split(pStr, "/")
+					if len(parts) > 0 {
+						if pNum, err := strconv.Atoi(parts[0]); err == nil && pNum > 0 {
+							detectedPort = pNum
+							break
+						}
+					}
+				}
+				if detectedPort <= 0 {
+					for _, envItem := range imgData.Config.Env {
+						if strings.HasPrefix(envItem, "PORT=") {
+							if pNum, err := strconv.Atoi(strings.TrimPrefix(envItem, "PORT=")); err == nil && pNum > 0 {
+								detectedPort = pNum
+								break
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	if detectedPort <= 0 {
+		detectedPort = 3000
 	}
 
 	// Remove any existing container with the same name to prevent 409 Conflict
@@ -97,10 +143,30 @@ func (e *Engine) Start(ctx context.Context, name, image string, port int) (conta
 		_ = rmResp.Body.Close()
 	}
 
+	// Build Traefik routing rules including all project subdomains and custom domains
+	var rules []string
+	for _, h := range hostnames {
+		h = strings.TrimSpace(h)
+		if h != "" {
+			rules = append(rules, fmt.Sprintf("Host(`%s`)", h))
+		}
+	}
+	rules = append(rules, fmt.Sprintf("Host(`%s.localhost`)", name))
+	rules = append(rules, fmt.Sprintf("PathPrefix(`/app/%s`)", name))
+	rule := strings.Join(rules, " || ")
+
+	containerEnvs := []string{
+		fmt.Sprintf("PORT=%d", detectedPort),
+		"NODE_ENV=production",
+		"HOST=0.0.0.0",
+	}
+	containerEnvs = append(containerEnvs, envs...)
+
 	body := map[string]any{
 		"Image": image,
+		"Env":   containerEnvs,
 		"ExposedPorts": map[string]any{
-			fmt.Sprintf("%d/tcp", port): map[string]any{},
+			fmt.Sprintf("%d/tcp", detectedPort): map[string]any{},
 		},
 		"HostConfig": map[string]any{
 			"RestartPolicy": map[string]any{"Name": "on-failure", "MaximumRetryCount": 3},
@@ -112,25 +178,28 @@ func (e *Engine) Start(ctx context.Context, name, image string, port int) (conta
 			"jp.name":                                                    name,
 			"traefik.enable":                                             "true",
 			"traefik.docker.network":                                     "jp_jp",
-			"traefik.http.routers." + name + ".rule":                     fmt.Sprintf("Host(`%s.localhost`) || PathPrefix(`/app/%s`)", name, name),
+			"traefik.http.routers." + name + ".rule":                     rule,
 			"traefik.http.routers." + name + ".entrypoints":              "web,websecure",
-			"traefik.http.services." + name + ".loadbalancer.server.port": fmt.Sprintf("%d", port),
+			"traefik.http.routers." + name + ".tls":                      "true",
+			"traefik.http.routers." + name + ".tls.certresolver":         "letsencrypt",
+			"traefik.http.routers." + name + ".priority":                 "80",
+			"traefik.http.services." + name + ".loadbalancer.server.port": fmt.Sprintf("%d", detectedPort),
 		},
 	}
 	raw, _ := json.Marshal(body)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://localhost/containers/create?name="+name, bytes.NewReader(raw))
 	if err != nil {
-		return "", mode, err
+		return "", mode, detectedPort, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := e.HTTP.Do(req)
 	if err != nil {
-		return "", mode, err
+		return "", mode, detectedPort, err
 	}
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
-		return "", mode, fmt.Errorf("docker create %d: %s", resp.StatusCode, string(b))
+		return "", mode, detectedPort, fmt.Errorf("docker create %d: %s", resp.StatusCode, string(b))
 	}
 	var created struct {
 		ID string `json:"Id"`
@@ -138,18 +207,18 @@ func (e *Engine) Start(ctx context.Context, name, image string, port int) (conta
 	_ = json.Unmarshal(b, &created)
 	startReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://localhost/containers/"+created.ID+"/start", nil)
 	if err != nil {
-		return created.ID, mode, err
+		return created.ID, mode, detectedPort, err
 	}
 	startResp, err := e.HTTP.Do(startReq)
 	if err != nil {
-		return created.ID, mode, err
+		return created.ID, mode, detectedPort, err
 	}
 	defer startResp.Body.Close()
 	if startResp.StatusCode >= 300 && startResp.StatusCode != 304 {
 		sb, _ := io.ReadAll(startResp.Body)
-		return created.ID, mode, fmt.Errorf("docker start %d: %s", startResp.StatusCode, string(sb))
+		return created.ID, mode, detectedPort, fmt.Errorf("docker start %d: %s", startResp.StatusCode, string(sb))
 	}
-	return created.ID, mode, nil
+	return created.ID, mode, detectedPort, nil
 }
 
 func (e *Engine) Stop(ctx context.Context, containerID string) (mode string, err error) {

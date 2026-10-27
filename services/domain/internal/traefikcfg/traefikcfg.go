@@ -64,6 +64,9 @@ func New(dir, backendURL, certResolver string) *Writer {
 	if certResolver == "" {
 		certResolver = os.Getenv("TRAEFIK_CERT_RESOLVER")
 	}
+	if certResolver == "" {
+		certResolver = "letsencrypt"
+	}
 	return &Writer{Dir: dir, BackendURL: backendURL, CertResolver: certResolver}
 }
 
@@ -76,12 +79,15 @@ func (w *Writer) WriteDomain(hostname, projectID string, enableTLS bool) (filena
 	name := "jp-" + safe
 	r := router{
 		Rule:        fmt.Sprintf("Host(`%s`)", hostname),
-		EntryPoints: []string{"web"},
+		EntryPoints: []string{"web", "websecure"},
 		Service:     name,
 	}
-	if enableTLS && w.CertResolver != "" {
-		r.EntryPoints = []string{"web", "websecure"}
-		r.TLS = &tlsCfg{CertResolver: w.CertResolver}
+	resolver := w.CertResolver
+	if resolver == "" {
+		resolver = "letsencrypt"
+	}
+	if enableTLS {
+		r.TLS = &tlsCfg{CertResolver: resolver}
 	}
 	doc := dynamicFile{
 		HTTP: httpBlock{

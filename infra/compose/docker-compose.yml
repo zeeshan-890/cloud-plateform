@@ -43,6 +43,8 @@ services:
       - --providers.file.directory=/etc/traefik/dynamic
       - --providers.file.watch=true
       - --entrypoints.web.address=:80
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
       - --entrypoints.websecure.address=:443
       - --certificatesresolvers.letsencrypt.acme.httpchallenge=true
       - --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web
@@ -575,6 +577,7 @@ services:
 
   runtime:
     <<: *service-defaults
+    user: root
     profiles: ["platform"]
     build:
       <<: *go-build
@@ -587,6 +590,7 @@ services:
       ORGANIZATION_URL: http://organization:8002
       RUNTIME_MODE: ${RUNTIME_MODE:-docker}
       DOCKER_HOST: ${DOCKER_HOST:-unix:///var/run/docker.sock}
+      ROOT_DOMAIN: ${ROOT_DOMAIN:-zeeshanabbaskhan.me}
       MIGRATIONS_DIR: /app/migrations
       JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
     volumes:
@@ -638,6 +642,7 @@ services:
 
   domain:
     <<: *service-defaults
+    user: root
     profiles: ["platform"]
     build:
       <<: *go-build
@@ -652,9 +657,10 @@ services:
       CERTIFICATE_URL: http://certificate:8013
       DOMAIN_DNS_STUB: ${DOMAIN_DNS_STUB:-false}
       DOMAIN_CNAME_TARGET: ${DOMAIN_CNAME_TARGET:-cname.jp.localhost}
+      ROOT_DOMAIN: ${ROOT_DOMAIN:-zeeshanabbaskhan.me}
       TRAEFIK_DYNAMIC_DIR: /etc/traefik/dynamic
       TRAEFIK_BACKEND_URL: ${TRAEFIK_BACKEND_URL:-http://gateway:8000}
-      TRAEFIK_CERT_RESOLVER: ${TRAEFIK_CERT_RESOLVER:-}
+      TRAEFIK_CERT_RESOLVER: ${TRAEFIK_CERT_RESOLVER:-letsencrypt}
       MIGRATIONS_DIR: /app/migrations
       JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
     volumes:
@@ -686,7 +692,7 @@ services:
       JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
       ORGANIZATION_URL: http://organization:8002
       CERT_SIMULATE: ${CERT_SIMULATE:-false}
-      TRAEFIK_CERT_RESOLVER: ${TRAEFIK_CERT_RESOLVER:-}
+      TRAEFIK_CERT_RESOLVER: ${TRAEFIK_CERT_RESOLVER:-letsencrypt}
       MIGRATIONS_DIR: /app/migrations
       JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
     depends_on:

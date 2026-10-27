@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -181,4 +183,52 @@ func (s *Store) Update(ctx context.Context, in *Instance) error {
 		in.DeploymentID, in.Error, in.HealthStatus, in.LastHealthAt, in.Mode,
 		in.RestartPolicy, in.Slot, in.Port, in.IsPreview, in.UpdatedAt)
 	return err
+}
+
+// GetProjectHostnames returns the public hostnames for a project based on slug, name, and registered domains.
+func (s *Store) GetProjectHostnames(ctx context.Context, projectID string, rootDomain string) ([]string, error) {
+	var hostnames []string
+	seen := make(map[string]bool)
+
+	var slug, name string
+	if err := s.pool.QueryRow(ctx, `SELECT slug, name FROM projects WHERE id = $1`, projectID).Scan(&slug, &name); err == nil {
+		if rootDomain != "" {
+			if slug != "" {
+				h := fmt.Sprintf("%s.%s", strings.ToLower(slug), rootDomain)
+				if !seen[h] {
+					seen[h] = true
+					hostnames = append(hostnames, h)
+				}
+			}
+			cleanName := strings.ToLower(name)
+			cleanName = strings.ReplaceAll(cleanName, " ", "-")
+			cleanName = strings.ReplaceAll(cleanName, "_", "-")
+			if cleanName != "" && cleanName != slug {
+				h := fmt.Sprintf("%s.%s", cleanName, rootDomain)
+				if !seen[h] {
+					seen[h] = true
+					hostnames = append(hostnames, h)
+				}
+			}
+		}
+	}
+
+	if rows, err := s.pool.Query(ctx, `SELECT hostname FROM domains WHERE project_id = $1`, projectID); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var h string
+			if err := rows.Scan(&h); err == nil && h != "" {
+				h = strings.ToLower(strings.TrimSpace(h))
+				if !strings.Contains(h, ".") && rootDomain != "" {
+					h = fmt.Sprintf("%s.%s", h, rootDomain)
+				}
+				if !seen[h] {
+					seen[h] = true
+					hostnames = append(hostnames, h)
+				}
+			}
+		}
+	}
+
+	return hostnames, nil
 }

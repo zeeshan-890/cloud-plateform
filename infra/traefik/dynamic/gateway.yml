@@ -33,6 +33,17 @@ http:
       service: dashboard
       tls: {}
 
+    # 4. App Subdomains with Let's Encrypt SSL:
+    app-subdomains-live:
+      rule: Host(`zeeshan-abbas.zeeshanabbaskhan.me`) || Host(`zeeshan.zeeshanabbaskhan.me`)
+      priority: 45
+      entryPoints:
+        - web
+        - websecure
+      service: dashboard
+      tls:
+        certResolver: letsencrypt
+
     # 3. Universal Fallback: matches any direct IP or host root traffic to Web Dashboard
     dashboard-fallback:
       rule: PathPrefix(`/`)
