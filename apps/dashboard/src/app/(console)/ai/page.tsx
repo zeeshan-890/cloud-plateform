@@ -167,33 +167,6 @@ ${res.recommendations?.map((r, i) => `${i + 1}. ${r}`).join("\n") || "No action 
 
   return (
     <div className="space-y-6 animate-fade-up">
-      {/* Crezumic-Style Page Header */}
-      <div className="bg-white rounded-xl border-2 border-slate-300 p-6 shadow-sm">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-          <div className="space-y-1">
-            <div className="flex items-center gap-3">
-              <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br from-blue-700 to-indigo-800 text-white text-lg shadow-sm">
-                ✨
-              </span>
-              <div>
-                <h1 className="text-xl md:text-2xl font-extrabold text-[#0F1B3D] tracking-tight">
-                  AI Ops & Diagnostic Intelligence
-                </h1>
-                <p className="text-xs text-slate-500 font-medium">
-                  Automated root-cause analysis, container log diagnostics, and architectural optimization.
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2 shrink-0">
-            <span className="inline-flex items-center gap-1.5 rounded-full border-2 border-blue-200 bg-blue-50 px-3 py-1 text-xs font-bold text-[#1E3A8A] shadow-2xs">
-              <span className="h-2 w-2 rounded-full bg-blue-600 animate-pulse" />
-              Gemini 3.5 Flash Lite Active
-            </span>
-          </div>
-        </div>
-      </div>
 
       {sessionExpired ? (
         <div className="bg-amber-50 border-2 border-amber-300 rounded-xl p-5 shadow-sm flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
