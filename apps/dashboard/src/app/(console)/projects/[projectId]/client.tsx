@@ -724,28 +724,239 @@ export default function ProjectDetailClient() {
       {success ? <Alert tone="success">{success}</Alert> : null}
 
       {/* ========================================================
-          TAB 1: OVERVIEW (Default Dashboard)
+          TAB 1: OVERVIEW (Clean & Compact Dashboard)
           ======================================================== */}
       {currentTab === "overview" && (
-        <div className="space-y-6">
-          {/* ✨ Google Gemini 3.5 Flash Lite Live Ops & Security Diagnostic Card */}
-          <div className="bg-white rounded-xl border-2 border-slate-300 p-6 shadow-sm relative overflow-hidden transition-all">
-            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 pb-4 border-b-2 border-slate-100">
+        <div className="space-y-5 animate-fade-up">
+          {/* Card 1: Runtime & Deployment Status */}
+          {(() => {
+            const latestDep = deploymentsList[0];
+            const activeInst = runtimeInstances[0];
+            const isReady = activeInst?.status === "running" || latestDep?.status === "ready";
+            const isFailed = latestDep?.status === "failed";
+            const isBuilding = latestDep?.status === "building" || latestDep?.status === "deploying";
+
+            return (
+              <div className="bg-white rounded-xl border-2 border-slate-300 p-5 shadow-sm space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-slate-100 pb-3.5">
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    <span
+                      className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-bold uppercase ${
+                        isReady
+                          ? "bg-emerald-50 text-emerald-800 border-2 border-emerald-300"
+                          : isFailed
+                          ? "bg-red-50 text-red-800 border-2 border-red-300"
+                          : isBuilding
+                          ? "bg-blue-50 text-blue-800 border-2 border-blue-300"
+                          : "bg-slate-100 text-slate-800 border-2 border-slate-300"
+                      }`}
+                    >
+                      <span
+                        className={`h-2 w-2 rounded-full ${
+                          isReady
+                            ? "bg-emerald-500 animate-pulse"
+                            : isFailed
+                            ? "bg-red-500"
+                            : "bg-blue-500 animate-pulse"
+                        }`}
+                      />
+                      {isReady ? "Live Active" : latestDep?.status?.toUpperCase() || "Active"}
+                    </span>
+
+                    <span className="rounded-lg bg-slate-900 text-white font-mono font-bold px-2.5 py-1 text-xs flex items-center gap-1.5">
+                      <span>🌱</span>
+                      {latestDep?.git_branch || "main"}
+                      {latestDep?.git_sha && (
+                        <span className="text-slate-400">
+                          @{latestDep.git_sha === "HEAD" ? "HEAD" : latestDep.git_sha.slice(0, 7)}
+                        </span>
+                      )}
+                    </span>
+
+                    {latestDep?.message && (
+                      <span className="rounded-lg border-2 border-slate-200 bg-slate-50 px-2.5 py-0.5 text-xs font-medium text-slate-700 max-w-sm truncate" title={latestDep.message}>
+                        🏷️ {latestDep.message}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    <Link
+                      href={`/projects/${actualProjectId}?tab=builds`}
+                      className="text-xs font-bold px-3 py-1.5 rounded-lg border-2 border-slate-300 bg-white hover:bg-slate-50 text-slate-700 shadow-2xs transition-all"
+                    >
+                      Build Logs
+                    </Link>
+                    <button
+                      type="button"
+                      onClick={handleTriggerDeployment}
+                      disabled={triggeringDeploy}
+                      className="text-xs font-bold px-3.5 py-1.5 rounded-lg bg-[#1E3A8A] hover:bg-[#162456] text-white shadow-2xs transition-all disabled:opacity-50"
+                    >
+                      {triggeringDeploy ? "Deploying..." : "Trigger Deploy"}
+                    </button>
+                  </div>
+                </div>
+
+                {/* 4-Stat Metric Row */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <div className="rounded-lg border-2 border-slate-200 bg-slate-50/70 p-3">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Container</p>
+                    <p className="font-mono text-xs font-bold text-slate-900 truncate mt-0.5">
+                      {activeInst?.container_name || activeInst?.container_id?.slice(0, 12) || "jp-active"}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border-2 border-slate-200 bg-slate-50/70 p-3">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Internal Port</p>
+                    <p className="font-mono text-xs font-bold text-emerald-700 mt-0.5">
+                      {activeInst?.port || 8080}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border-2 border-slate-200 bg-slate-50/70 p-3">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Docker Image</p>
+                    <p className="font-mono text-xs font-bold text-slate-900 truncate mt-0.5">
+                      {activeInst?.image_ref || latestDep?.image_ref || "latest"}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border-2 border-slate-200 bg-slate-50/70 p-3">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Public Endpoint</p>
+                    <div className="flex items-center justify-between gap-1 mt-0.5">
+                      <span className="font-mono text-xs font-bold text-[#1E3A8A] truncate">
+                        {appPublicUrl.replace(/^https?:\/\//, "")}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => copyToClipboard(appPublicUrl, "overview-url")}
+                        className="text-slate-400 hover:text-slate-700 text-xs shrink-0 font-bold"
+                        title="Copy URL"
+                      >
+                        {copiedKey === "overview-url" ? "✓" : "📋"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* Section 2: App & Environment Configuration (2-Column Grid) */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+            {/* Left Card: Application Specifications */}
+            <div className="bg-white rounded-xl border-2 border-slate-300 p-5 shadow-sm space-y-3.5">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
+                <h3 className="text-sm font-extrabold text-[#0F1B3D]">Application Specifications</h3>
+                <Link
+                  href={`/projects/${actualProjectId}?tab=settings`}
+                  className="text-xs font-bold text-[#1E3A8A] hover:underline"
+                >
+                  Edit Settings
+                </Link>
+              </div>
+
+              <div className="space-y-2.5 text-xs">
+                <div className="flex items-center justify-between py-1 border-b border-slate-100">
+                  <span className="text-slate-500 font-medium">Project ID</span>
+                  <div className="flex items-center gap-1.5 font-mono text-[11px] font-bold text-slate-800">
+                    <span>{project.id.slice(0, 16)}...</span>
+                    <button
+                      type="button"
+                      onClick={() => copyToClipboard(project.id, "overview-pid")}
+                      className="text-slate-400 hover:text-slate-700"
+                      title="Copy Project ID"
+                    >
+                      {copiedKey === "overview-pid" ? "✓" : "📋"}
+                    </button>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between py-1 border-b border-slate-100">
+                  <span className="text-slate-500 font-medium">Deployment Strategy</span>
+                  <span className="font-bold text-slate-800">Rolling Zero-Downtime</span>
+                </div>
+                <div className="flex items-center justify-between py-1 border-b border-slate-100">
+                  <span className="text-slate-500 font-medium">Isolation Scope</span>
+                  <span className="font-bold text-slate-800">Private Docker Network Bridge</span>
+                </div>
+                <div className="flex items-center justify-between py-1">
+                  <span className="text-slate-500 font-medium">SSL / TLS Protection</span>
+                  <span className="font-bold text-emerald-700">Automatic Wildcard Let&apos;s Encrypt</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Right Card: Connected Resources Overview */}
+            <div className="bg-white rounded-xl border-2 border-slate-300 p-5 shadow-sm space-y-3.5">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
+                <h3 className="text-sm font-extrabold text-[#0F1B3D]">Connected Resources</h3>
+              </div>
+
+              <div className="space-y-2.5 text-xs">
+                <div className="flex items-center justify-between py-1 border-b border-slate-100">
+                  <span className="text-slate-500 font-medium">Git Repository</span>
+                  {connectedRepos[0] ? (
+                    <Link
+                      href={`/projects/${actualProjectId}?tab=git`}
+                      className="font-mono text-xs font-bold text-[#1E3A8A] hover:underline"
+                    >
+                      {connectedRepos[0].full_name}
+                    </Link>
+                  ) : (
+                    <Link
+                      href={`/projects/${actualProjectId}?tab=git`}
+                      className="text-xs font-bold text-slate-400 hover:text-[#1E3A8A]"
+                    >
+                      + Connect Git
+                    </Link>
+                  )}
+                </div>
+                <div className="flex items-center justify-between py-1 border-b border-slate-100">
+                  <span className="text-slate-500 font-medium">Custom Domains</span>
+                  <Link
+                    href={`/projects/${actualProjectId}?tab=domains`}
+                    className="font-bold text-slate-800 hover:text-[#1E3A8A]"
+                  >
+                    {domainsList.length > 0 ? `${domainsList.length} Active` : "Default Subdomain Active"}
+                  </Link>
+                </div>
+                <div className="flex items-center justify-between py-1 border-b border-slate-100">
+                  <span className="text-slate-500 font-medium">Environment Secrets</span>
+                  <Link
+                    href={`/projects/${actualProjectId}?tab=secrets`}
+                    className="font-bold text-slate-800 hover:text-[#1E3A8A]"
+                  >
+                    {secretsList.length > 0 ? `${secretsList.length} Variables Configured` : "None configured"}
+                  </Link>
+                </div>
+                <div className="flex items-center justify-between py-1">
+                  <span className="text-slate-500 font-medium">Add-ons & Databases</span>
+                  <Link
+                    href={`/projects/${actualProjectId}?tab=addons`}
+                    className="font-bold text-slate-800 hover:text-[#1E3A8A]"
+                  >
+                    {addonsList.length > 0 ? `${addonsList.length} Connected Services` : "None attached"}
+                  </Link>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Section 3: Google Gemini 3.5 Flash Lite Live Diagnostics */}
+          <div className="bg-white rounded-xl border-2 border-slate-300 p-5 shadow-sm relative overflow-hidden transition-all space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
               <div className="flex items-center gap-3">
-                <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#1E3A8A] text-white text-base shadow-xs">
+                <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#1E3A8A] text-white text-base shadow-xs shrink-0">
                   ✨
                 </span>
                 <div>
                   <div className="flex items-center gap-2">
                     <h3 className="text-sm font-extrabold text-[#0F1B3D]">
-                      Google Gemini 3.5 Flash Lite Live Audit & Suggestions
+                      Google Gemini 3.5 Flash Lite Diagnostics
                     </h3>
                     <span className="rounded-full bg-blue-50 px-2.5 py-0.5 text-[10px] font-bold text-[#1E3A8A] border-2 border-blue-200">
-                      Free Tier Model Active
+                      Active
                     </span>
                   </div>
                   <p className="text-xs text-slate-500 font-medium">
-                    Real-time container architecture, database links, and security recommendations.
+                    Automated architecture, security, and database connectivity audit.
                   </p>
                 </div>
               </div>
@@ -761,37 +972,37 @@ export default function ProjectDetailClient() {
               </button>
             </div>
 
-            {aiAuditResult ? (
-              <div className="mt-4 space-y-3.5 animate-fade-up">
-                <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-50 p-3.5 rounded-xl border-2 border-slate-300">
+            {aiAuditResult && (
+              <div className="space-y-3 animate-fade-up pt-3 border-t border-slate-100">
+                <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-50 p-3 rounded-lg border-2 border-slate-200">
                   <div className="flex items-center gap-2">
                     <span className="text-xs font-extrabold text-[#0F1B3D]">Audit Status:</span>
-                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2.5 py-0.5 text-[11px] font-bold text-emerald-800 border-2 border-emerald-300">
+                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2.5 py-0.5 text-[10px] font-bold text-emerald-800 border border-emerald-300">
                       <span className="h-1.5 w-1.5 rounded-full bg-emerald-600" />
                       {aiAuditResult.risk_level?.toUpperCase() || "LOW RISK / PRODUCTION READY"}
                     </span>
                   </div>
                   <span className="font-mono text-[10px] text-slate-500 font-bold">
-                    Engine: {aiAuditResult.model || "gemini-3.5-flash-lite"}
+                    Model: {aiAuditResult.model || "gemini-3.5-flash-lite"}
                   </span>
                 </div>
 
                 {aiAuditResult.overview && (
-                  <p className="text-xs text-slate-800 leading-relaxed font-medium bg-blue-50/70 border-2 border-blue-200 p-3.5 rounded-xl">
+                  <p className="text-xs text-slate-800 leading-relaxed font-medium bg-blue-50/70 border-2 border-blue-200 p-3 rounded-lg">
                     {aiAuditResult.overview}
                   </p>
                 )}
 
                 {aiAuditResult.suggestions && aiAuditResult.suggestions.length > 0 && (
-                  <div className="space-y-2.5">
-                    <p className="text-xs font-extrabold text-[#0F1B3D] uppercase tracking-wider text-[11px]">
-                      Recommended Actions & Fixes:
+                  <div className="space-y-2">
+                    <p className="text-xs font-extrabold text-[#0F1B3D] uppercase tracking-wider text-[10px]">
+                      Recommended Fixes:
                     </p>
-                    <div className="grid gap-2.5 sm:grid-cols-2">
+                    <div className="grid gap-2 sm:grid-cols-2">
                       {aiAuditResult.suggestions.map((sug, idx) => (
                         <div
                           key={idx}
-                          className="flex items-start gap-2.5 rounded-xl border-2 border-slate-300 bg-white p-3.5 text-xs text-slate-800 shadow-2xs hover:border-[#1E3A8A] transition-all font-medium"
+                          className="flex items-start gap-2 rounded-lg border-2 border-slate-200 bg-white p-3 text-xs text-slate-800 shadow-2xs hover:border-[#1E3A8A] transition-all font-medium"
                         >
                           <span className="text-emerald-600 font-bold shrink-0">✓</span>
                           <span className="leading-snug">{sug}</span>
@@ -801,224 +1012,7 @@ export default function ProjectDetailClient() {
                   </div>
                 )}
               </div>
-            ) : (
-              <div className="mt-4 flex items-center justify-between p-4 rounded-xl bg-slate-50 border-2 border-slate-300 text-xs text-slate-600 font-medium">
-                <p>
-                  Click <strong>&quot;Run AI Audit&quot;</strong> to analyze this application with Gemini 3.5 Flash Lite for performance, network stability, and database connectivity.
-                </p>
-              </div>
             )}
-          </div>
-
-          {/* Latest Deployed Build & Live Instance Banner */}
-          {(() => {
-            const latestDep = deploymentsList[0];
-            const activeInst = runtimeInstances[0];
-            const latestBld = buildsList[0];
-            const isReady = activeInst?.status === "running" || latestDep?.status === "ready";
-            const isFailed = latestDep?.status === "failed";
-            const isBuilding = latestDep?.status === "building" || latestDep?.status === "deploying";
-
-            return (
-              <div className={`jp-card p-5 border transition-all ${
-                isReady
-                  ? "border-emerald-500/30 bg-gradient-to-r from-emerald-50/50 via-white to-slate-50"
-                  : isFailed
-                  ? "border-red-500/30 bg-red-50/40"
-                  : "border-blue-500/30 bg-blue-50/40"
-              }`}>
-                <div className="flex flex-wrap items-center justify-between gap-4">
-                  <div className="space-y-2">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-xl">🚀</span>
-                      <h4 className="text-xs font-bold uppercase tracking-wider text-slate-900">
-                        Latest Deployed Build
-                      </h4>
-
-                      <span
-                        className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-bold uppercase ${
-                          isReady
-                            ? "bg-emerald-100 text-emerald-800 border border-emerald-300"
-                            : isFailed
-                            ? "bg-red-100 text-red-800 border border-red-300"
-                            : isBuilding
-                            ? "bg-blue-100 text-blue-800 border border-blue-300"
-                            : "bg-slate-200 text-slate-800"
-                        }`}
-                      >
-                        <span
-                          className={`h-1.5 w-1.5 rounded-full ${
-                            isReady
-                              ? "bg-emerald-600 animate-pulse"
-                              : isFailed
-                              ? "bg-red-600"
-                              : "bg-blue-600 animate-pulse"
-                          }`}
-                        />
-                        {isReady ? "LIVE / READY" : latestDep?.status?.toUpperCase() || "ACTIVE"}
-                      </span>
-
-                      <span className="rounded bg-slate-900 text-white font-mono font-bold px-2 py-0.5 text-[10px] flex items-center gap-1">
-                        <span>🌱</span>
-                        {latestDep?.git_branch || "main"}
-                        {latestDep?.git_sha && (
-                          <span className="text-slate-400">
-                            @{latestDep.git_sha === "HEAD" ? "HEAD" : latestDep.git_sha.slice(0, 7)}
-                          </span>
-                        )}
-                      </span>
-
-                      {latestDep?.message && (
-                        <span className="rounded border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-medium text-slate-600 max-w-xs truncate" title={latestDep.message}>
-                          🏷️ {latestDep.message}
-                        </span>
-                      )}
-                    </div>
-
-                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] font-mono text-slate-600">
-                      <span className="flex items-center gap-1">
-                        <strong className="text-slate-800">Container:</strong>
-                        <code className="bg-slate-100 px-1.5 py-0.5 rounded text-slate-900 border border-slate-200">
-                          {activeInst?.container_name || activeInst?.container_id?.slice(0, 12) || "jp-active"}
-                        </code>
-                      </span>
-                      <span className="text-slate-300">•</span>
-                      <span className="flex items-center gap-1">
-                        <strong className="text-slate-800">Port:</strong>
-                        <span className="text-emerald-700 font-bold">
-                          {activeInst?.port || 8080}
-                        </span>
-                      </span>
-                      <span className="text-slate-300">•</span>
-                      <span className="flex items-center gap-1">
-                        <strong className="text-slate-800">Image:</strong>
-                        <code className="bg-slate-100 px-1.5 py-0.5 rounded text-slate-900 border border-slate-200">
-                          {activeInst?.image_ref || latestDep?.image_ref || "latest"}
-                        </code>
-                      </span>
-                      {latestBld && (
-                        <>
-                          <span className="text-slate-300">•</span>
-                          <span className="flex items-center gap-1">
-                            <strong className="text-slate-800">Build:</strong>
-                            <span>{latestBld.id.slice(0, 8)}</span>
-                          </span>
-                        </>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-2 shrink-0">
-                    <Link
-                      href={`/projects/${actualProjectId}?tab=builds`}
-                      className="text-xs font-semibold px-3 py-1.5 rounded-md border border-[var(--border)] bg-white hover:bg-slate-50 text-[var(--ink)] shadow-2xs"
-                    >
-                      🛠️ Builds & Logs
-                    </Link>
-                    <a
-                      href={appPublicUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="flex items-center gap-1 text-xs font-bold px-3 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white shadow-2xs transition-colors"
-                    >
-                      <span>Open Live App</span>
-                      <span>↗</span>
-                    </a>
-                  </div>
-                </div>
-              </div>
-            );
-          })()}
-          <div className="grid gap-4 md:grid-cols-3">
-            <div className="jp-card p-4 space-y-1">
-              <p className="text-[11px] font-bold uppercase tracking-wider text-[var(--ink-muted)]">
-                Default Public URL
-              </p>
-              <a
-                href={appPublicUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="block truncate font-mono text-sm font-bold text-[var(--accent)] hover:underline"
-              >
-                {appPublicUrl} ↗
-              </a>
-              <p className="text-[10px] text-[var(--ink-faint)]">
-                Auto-assigned via wildcard: *.{rootDomain}
-              </p>
-            </div>
-
-            <div className="jp-card p-4 space-y-1">
-              <p className="text-[11px] font-bold uppercase tracking-wider text-[var(--ink-muted)]">
-                Deployment Strategy
-              </p>
-              <p className="text-sm font-bold text-[var(--ink)]">Rolling Zero-Downtime</p>
-              <p className="text-[10px] text-[var(--ink-faint)]">Automatic container health checking</p>
-            </div>
-
-            <div className="jp-card p-4 space-y-1">
-              <p className="text-[11px] font-bold uppercase tracking-wider text-[var(--ink-muted)]">
-                Environment Scope
-              </p>
-              <p className="text-sm font-bold text-[var(--ink)]">Production Isolated</p>
-              <p className="text-[10px] text-[var(--ink-faint)]">Private Docker network bridge</p>
-            </div>
-          </div>
-
-          <div className="grid gap-6 lg:grid-cols-3">
-            <div className="jp-card p-5 lg:col-span-2 space-y-4">
-              <div className="border-b border-[var(--border)] pb-3 flex items-center justify-between">
-                <div>
-                  <h3 className="text-sm font-bold text-[var(--ink)]">Application Details</h3>
-                  <p className="text-xs text-[var(--ink-muted)]">Core metadata and runtime identity.</p>
-                </div>
-                <Link href={`/projects/${actualProjectId}?tab=settings`}>
-                  <Button variant="secondary" size="sm">Edit</Button>
-                </Link>
-              </div>
-
-              <dl className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
-                <div>
-                  <dt className="font-bold text-[var(--ink-muted)] uppercase text-[10px]">App Name</dt>
-                  <dd className="mt-0.5 font-bold text-[var(--ink)] text-sm">{project.name}</dd>
-                </div>
-                <div>
-                  <dt className="font-bold text-[var(--ink-muted)] uppercase text-[10px]">Project ID</dt>
-                  <dd className="mt-0.5 font-mono text-[var(--ink-secondary)]">{project.id}</dd>
-                </div>
-                <div className="sm:col-span-2">
-                  <dt className="font-bold text-[var(--ink-muted)] uppercase text-[10px]">Description</dt>
-                  <dd className="mt-0.5 text-[var(--ink-secondary)]">
-                    {project.description || "No description provided."}
-                  </dd>
-                </div>
-              </dl>
-            </div>
-
-            <div className="jp-card p-5 space-y-3">
-              <h3 className="text-sm font-bold text-[var(--ink)]">Quick Navigation</h3>
-              <ul className="space-y-2 text-xs font-semibold text-[var(--ink-secondary)]">
-                <li>
-                  <Link href={`/projects/${actualProjectId}?tab=git`} className="flex items-center gap-1.5 hover:text-[var(--accent)]">
-                    <span>🐙</span> Git Repository Source
-                  </Link>
-                </li>
-                <li>
-                  <Link href={`/projects/${actualProjectId}?tab=domains`} className="flex items-center gap-1.5 hover:text-[var(--accent)]">
-                    <span>🌐</span> Custom Domains & TLS
-                  </Link>
-                </li>
-                <li>
-                  <Link href={`/projects/${actualProjectId}?tab=secrets`} className="flex items-center gap-1.5 hover:text-[var(--accent)]">
-                    <span>🔐</span> Environment Variables & Secrets
-                  </Link>
-                </li>
-                <li>
-                  <Link href={`/projects/${actualProjectId}?tab=addons`} className="flex items-center gap-1.5 hover:text-[var(--accent)]">
-                    <span>🧩</span> Add-ons & Databases
-                  </Link>
-                </li>
-              </ul>
-            </div>
           </div>
         </div>
       )}

@@ -346,38 +346,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   <Link
                     href="/projects"
                     onClick={() => setActiveProject(null)}
-                    className="hover:text-slate-900 transition-colors shrink-0 text-slate-500 font-bold hidden md:inline"
+                    className="hover:text-slate-900 transition-colors shrink-0 text-slate-500 font-bold hidden sm:inline"
                   >
                     Projects
                   </Link>
-                  <span className="text-slate-300 font-bold hidden md:inline">/</span>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <h1 className="text-sm sm:text-base md:text-lg font-black text-[#0F1B3D] tracking-tight truncate max-w-[140px] sm:max-w-[220px]">
-                      {projectName}
-                    </h1>
-                    <span className="inline-flex items-center gap-1 rounded-full border-2 border-emerald-300 bg-emerald-50 px-2 py-0.2 text-[10px] font-bold text-emerald-800 shrink-0">
-                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                      Live
-                    </span>
-                    <a
-                      href={defaultAppDomain}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="hidden lg:inline-flex items-center gap-1 text-[11px] font-mono font-bold text-[#1E3A8A] bg-slate-100 hover:bg-slate-200 border-2 border-slate-300 rounded-lg px-2 py-0.5 transition-colors"
-                      title={defaultAppDomain}
-                    >
-                      <span className="truncate max-w-[160px]">{projectSlug}.{rootDomain.replace(/^panel\./, "")}</span>
-                      <span className="text-[10px]">↗</span>
-                    </a>
-                  </div>
-                  {currentTab && currentTab !== "overview" && (
-                    <>
-                      <span className="text-slate-300 font-bold text-xs">/</span>
-                      <span className="capitalize font-black text-[#1E3A8A] text-sm sm:text-base shrink-0">
-                        {projectNav.find((p) => p.tab === currentTab)?.label || currentTab}
-                      </span>
-                    </>
-                  )}
+                  <span className="text-slate-300 font-bold hidden sm:inline">/</span>
+                  <h1 className="text-sm sm:text-base md:text-lg font-black text-[#0F1B3D] tracking-tight truncate">
+                    {projectNav.find((p) => p.tab === currentTab)?.label || (currentTab === "overview" || !currentTab ? "Overview" : currentTab)}
+                  </h1>
                 </>
               ) : (
                 <h1 className="text-sm sm:text-base md:text-lg font-black text-[#0F1B3D] tracking-tight truncate">
@@ -392,25 +368,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           {/* Right: Primary Page Action Button (Replaces static workspace pill) */}
           <div className="flex items-center gap-2.5 shrink-0">
             {isInsideProject ? (
-              <>
-                <Link
-                  href={`/projects/${urlProjectId}?tab=deployments`}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-[#1E3A8A] hover:bg-[#162456] px-3.5 py-1.5 text-xs font-bold text-white shadow-sm transition-all"
-                >
-                  <span>🚀</span>
-                  <span>Deploy App</span>
-                </Link>
-                <a
-                  href={defaultAppDomain}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="hidden sm:inline-flex items-center gap-1 rounded-lg border-2 border-slate-300 bg-white hover:bg-slate-50 px-3 py-1.5 text-xs font-bold text-slate-800 shadow-2xs transition-all"
-                  title="Open Live App"
-                >
-                  <span>Open App</span>
-                  <span className="text-[10px]">↗</span>
-                </a>
-              </>
+              <Link
+                href={`/projects/${urlProjectId}?tab=deployments`}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-[#1E3A8A] hover:bg-[#162456] px-3.5 py-1.5 text-xs font-bold text-white shadow-sm transition-all"
+              >
+                <span>🚀</span>
+                <span>Deploy App</span>
+              </Link>
             ) : normalizedPath === "/projects" ? (
               <Link
                 href="/projects/new"
