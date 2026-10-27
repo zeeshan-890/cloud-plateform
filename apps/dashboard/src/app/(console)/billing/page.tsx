@@ -52,8 +52,8 @@ export default function BillingPage() {
   return (
     <div className="animate-fade-up">
       <PageHeader
-        title="Billing"
-        description="Plans and stub usage meters (build minutes, runtime hours)."
+        title="Billing & Usage"
+        description="Organization subscription tier and resource usage meters."
       />
       {error ? (
         <div className="mb-4">
@@ -62,8 +62,7 @@ export default function BillingPage() {
       ) : null}
 
       <p className="mb-6 text-sm text-[var(--ink-muted)]">
-        Current plan: <span className="font-medium text-[var(--ink)]">{planId}</span>
-        {note ? ` — ${note}` : null}
+        Current plan: <span className="font-semibold text-[var(--ink)] capitalize">{planId}</span>
       </p>
 
       <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-[var(--ink-faint)]">

@@ -340,49 +340,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   )}
                 </>
               ) : normalizedPath === "/projects" ? (
-                <span className="font-bold text-[var(--accent)]">All Projects</span>
+                <span className="font-bold text-[var(--ink)]">Projects & Apps</span>
               ) : (
-                <>
-                  <Link
-                    href="/projects"
-                    onClick={() => setActiveProject(null)}
-                    className="hover:text-[var(--ink)] transition-colors shrink-0"
-                  >
-                    Projects
-                  </Link>
-                  <span className="text-slate-300">/</span>
-                  <span className="font-bold text-[var(--ink)] truncate">
-                    {platformNav.find((p) => p.href === normalizedPath)?.label || normalizedPath.replace("/", "")}
-                  </span>
-                </>
+                <span className="font-bold text-[var(--ink)] truncate">
+                  {platformNav.find((p) => p.href === normalizedPath)?.label || normalizedPath.replace("/", "")}
+                </span>
               )}
             </nav>
           </div>
 
-          {/* Right: Quick Navigation Actions */}
+          {/* Right: Workspace Pill */}
           <div className="flex items-center gap-2 shrink-0">
-            {/* If on any page other than /projects, show a prominent Back to Projects button */}
-            {normalizedPath !== "/projects" && (
-              <Link
-                href="/projects"
-                onClick={() => setActiveProject(null)}
-                className="flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-slate-50 px-2.5 py-1.5 text-xs font-bold text-[var(--ink)] hover:bg-slate-100 hover:border-[var(--border-strong)] transition-all shadow-2xs"
-              >
-                <span className="text-[var(--accent)] text-sm leading-none">←</span>
-                <span className="hidden sm:inline">
-                  {isInsideProject ? "Back to All Projects" : "All Projects"}
-                </span>
-                <span className="sm:hidden">Projects</span>
-              </Link>
-            )}
-
-            {/* Platform Status indicator */}
-            <div className="hidden md:flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-medium text-emerald-800">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-              <span>Core Live</span>
-            </div>
-
-            {/* Current Workspace Pill */}
             <span className="rounded-md border border-[var(--border)] bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-[var(--ink-secondary)]">
               {currentOrg?.name || "Workspace"}
             </span>

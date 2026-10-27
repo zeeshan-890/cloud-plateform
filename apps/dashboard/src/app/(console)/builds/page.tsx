@@ -118,7 +118,7 @@ export default function BuildsPage() {
     <div className="animate-fade-up">
       <PageHeader
         title="Builds"
-        description="Build farm jobs from Redis Streams — status, logs, and AI explain on failures."
+        description="View build pipeline execution, compiler outputs, and image compilation logs."
       />
 
       {error ? (

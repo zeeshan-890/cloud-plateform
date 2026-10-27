@@ -104,8 +104,8 @@ export default function DatabasesPage() {
   return (
     <div className="animate-fade-up">
       <PageHeader
-        title="Databases"
-        description="One-click Postgres for a project. Connection strings are stored as secret refs."
+        title="Managed Databases"
+        description="Provision and manage dedicated project databases."
       />
       {error ? <Alert>{error}</Alert> : null}
 
@@ -124,11 +124,6 @@ export default function DatabasesPage() {
                 </option>
               ))}
             </select>
-            {mode ? (
-              <span className="rounded border border-[var(--border)] bg-slate-100 px-2.5 py-1 text-xs font-bold text-[var(--ink-secondary)]">
-                {mode}
-              </span>
-            ) : null}
           </div>
         </div>
 

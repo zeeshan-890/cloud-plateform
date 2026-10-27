@@ -233,31 +233,26 @@ export default function SettingsPage() {
 
       {/* 1. Main Root Domain & Automated App Subdomains */}
       <form onSubmit={handleSaveDomain} className="jp-card p-5 space-y-4">
-        <div className="border-b border-[var(--border)] pb-3 flex items-center justify-between">
-          <div>
-            <h2 className="text-base font-bold text-[var(--ink)]">
-              Main Platform Domain & DNS Configuration
-            </h2>
-            <p className="text-xs text-[var(--ink-muted)]">
-              Panel domain: <code className="font-bold text-[var(--accent)] font-mono">{panelDomain}</code> &bull; App subdomains: <code className="font-bold text-blue-600 font-mono">appname.{rootDomain}</code>
-            </p>
-          </div>
-          <span className="rounded-full bg-blue-50 border border-blue-200 px-2.5 py-0.5 text-xs font-bold text-blue-800">
-            Wildcard Ingress: Traefik v3
-          </span>
+        <div className="border-b border-[var(--border)] pb-3">
+          <h2 className="text-base font-bold text-[var(--ink)]">
+            Main Platform Domain & DNS Configuration
+          </h2>
+          <p className="text-xs text-[var(--ink-muted)]">
+            Panel: <code className="font-bold text-[var(--accent)] font-mono">{panelDomain}</code> &bull; Apps: <code className="font-bold text-blue-600 font-mono">*.{rootDomain}</code>
+          </p>
         </div>
 
         <div className="space-y-4">
           <div>
             <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
-              Root Domain (e.g., yourdomain.com)
+              Root Domain
             </label>
             <div className="flex items-center gap-2">
               <Input
                 type="text"
                 value={domainInput}
                 onChange={(e) => setDomainInput(e.target.value)}
-                placeholder="e.g. mycompany.com or jp.localhost"
+                placeholder="e.g. mycompany.com"
                 required
               />
               <Button type="submit" disabled={saving || !domainInput.trim()}>
@@ -266,97 +261,78 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          {/* Live Preview Card */}
-          <div className="rounded-lg border border-blue-200 bg-blue-50/60 p-4 space-y-3">
-            <h4 className="text-xs font-bold uppercase tracking-wider text-blue-950">
-              Live Routing Resolution Map:
-            </h4>
-            <div className="grid gap-2 sm:grid-cols-2 text-xs font-mono">
-              <div className="rounded bg-white p-2.5 border border-blue-200 shadow-2xs">
-                <p className="text-[10px] uppercase font-bold text-slate-500">Management Panel Domain</p>
-                <p className="font-bold text-blue-700 mt-0.5 truncate">https://{panelDomain}</p>
+          {/* DNS Records */}
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 space-y-3">
+            <p className="text-xs font-bold uppercase tracking-wider text-slate-700">
+              Required DNS Records:
+            </p>
+            <div className="space-y-2 font-mono text-[11px]">
+              {/* Record 1: Panel Domain */}
+              <div className="flex items-center justify-between rounded bg-white px-3 py-2 border border-slate-200">
+                <div className="flex items-center gap-2">
+                  <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-bold text-blue-800">A</span>
+                  <strong className="text-blue-900">panel</strong>
+                  <span className="text-slate-400">&rarr;</span>
+                  <code className="text-slate-900 font-bold">{serverIp}</code>
+                  <span className="text-slate-500 text-[10px] font-sans font-medium">(Management Panel)</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => copyToClipboard(`panel.${rootDomain}`, "panel")}
+                  className="text-xs text-blue-600 font-bold hover:underline shrink-0"
+                >
+                  {copiedRecord === "panel" ? "Copied!" : "Copy Host"}
+                </button>
               </div>
-              <div className="rounded bg-white p-2.5 border border-blue-200 shadow-2xs">
-                <p className="text-[10px] uppercase font-bold text-slate-500">Default App Subdomain Pattern</p>
-                <p className="font-bold text-blue-700 mt-0.5 truncate">https://[app-name].{rootDomain}</p>
+
+              {/* Record 2: Wildcard for Apps */}
+              <div className="flex items-center justify-between rounded bg-white px-3 py-2 border border-slate-200">
+                <div className="flex items-center gap-2">
+                  <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold text-emerald-800">A</span>
+                  <strong className="text-emerald-900">*</strong>
+                  <span className="text-slate-400">&rarr;</span>
+                  <code className="text-slate-900 font-bold">{serverIp}</code>
+                  <span className="text-slate-500 text-[10px] font-sans font-medium">(All App Containers)</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => copyToClipboard(`*.${rootDomain}`, "wildcard")}
+                  className="text-xs text-blue-600 font-bold hover:underline shrink-0"
+                >
+                  {copiedRecord === "wildcard" ? "Copied!" : "Copy Host"}
+                </button>
+              </div>
+
+              {/* Record 3: Apex Domain */}
+              <div className="flex items-center justify-between rounded bg-white px-3 py-2 border border-slate-200">
+                <div className="flex items-center gap-2">
+                  <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-800">A</span>
+                  <strong className="text-slate-900">@</strong>
+                  <span className="text-slate-400">&rarr;</span>
+                  <code className="text-slate-900 font-bold">{serverIp}</code>
+                  <span className="text-slate-500 text-[10px] font-sans font-medium">(Apex / Root Domain)</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => copyToClipboard(rootDomain, "root")}
+                  className="text-xs text-blue-600 font-bold hover:underline shrink-0"
+                >
+                  {copiedRecord === "root" ? "Copied!" : "Copy Host"}
+                </button>
               </div>
             </div>
 
-            {/* Step-by-Step DNS Instructions */}
-            <div className="border-t border-blue-200/60 pt-3 text-xs text-slate-700 space-y-2.5">
-              <p className="font-bold text-slate-900">
-                DNS Records Setup (Add in your Cloudflare / Namecheap / GoDaddy DNS Manager):
-              </p>
-              <div className="space-y-2 font-mono text-[11px]">
-                {/* Record 1: Panel Domain */}
-                <div className="flex items-center justify-between rounded bg-white px-3 py-2 border border-blue-200">
-                  <div className="flex items-center gap-2">
-                    <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-bold text-blue-800">A</span>
-                    <strong className="text-blue-900">panel</strong>
-                    <span className="text-slate-400">&rarr;</span>
-                    <code className="text-slate-900 font-bold">{serverIp}</code>
-                    <span className="text-slate-500 text-[10px] font-sans font-medium">(Management Panel)</span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => copyToClipboard(`panel.${rootDomain}`, "panel")}
-                    className="text-xs text-blue-600 font-bold hover:underline shrink-0"
-                  >
-                    {copiedRecord === "panel" ? "Copied!" : "Copy Host"}
-                  </button>
-                </div>
-
-                {/* Record 2: Wildcard for Apps */}
-                <div className="flex items-center justify-between rounded bg-white px-3 py-2 border border-blue-200">
-                  <div className="flex items-center gap-2">
-                    <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold text-emerald-800">A</span>
-                    <strong className="text-emerald-900">*</strong>
-                    <span className="text-slate-400">&rarr;</span>
-                    <code className="text-slate-900 font-bold">{serverIp}</code>
-                    <span className="text-slate-500 text-[10px] font-sans font-medium">(All Deployed App Containers)</span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => copyToClipboard(`*.${rootDomain}`, "wildcard")}
-                    className="text-xs text-blue-600 font-bold hover:underline shrink-0"
-                  >
-                    {copiedRecord === "wildcard" ? "Copied!" : "Copy Host"}
-                  </button>
-                </div>
-
-                {/* Record 3: Apex Domain */}
-                <div className="flex items-center justify-between rounded bg-white px-3 py-2 border border-blue-200">
-                  <div className="flex items-center gap-2">
-                    <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-800">A</span>
-                    <strong className="text-slate-900">@</strong>
-                    <span className="text-slate-400">&rarr;</span>
-                    <code className="text-slate-900 font-bold">{serverIp}</code>
-                    <span className="text-slate-500 text-[10px] font-sans font-medium">(Apex / Root Domain)</span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => copyToClipboard(rootDomain, "root")}
-                    className="text-xs text-blue-600 font-bold hover:underline shrink-0"
-                  >
-                    {copiedRecord === "root" ? "Copied!" : "Copy Host"}
-                  </button>
-                </div>
-              </div>
-              <p className="text-[11px] text-slate-600 pt-1">
-                Once DNS propagates (usually 1-5 minutes), opening <code className="font-bold text-blue-700">http://panel.{rootDomain}</code> opens this management console, and each project app will automatically respond at <code className="font-bold text-blue-700">http://&lt;app&gt;.{rootDomain}</code>.
-              </p>
-
-              {/* Action Buttons: Check Propagation & External Check */}
-              <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-blue-200/60">
-                <Button
-                  type="button"
-                  size="sm"
-                  onClick={handleCheckPropagation}
-                  disabled={checkingDns}
-                  className="bg-blue-600 hover:bg-blue-700 text-white font-bold"
-                >
-                  {checkingDns ? "Checking Global DNS & HTTPS..." : "⚡ Check DNS & HTTPS Propagation"}
-                </Button>
+            {/* Action Buttons: Check Propagation */}
+            <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-200">
+              <Button
+                type="button"
+                size="sm"
+                onClick={handleCheckPropagation}
+                disabled={checkingDns}
+                className="bg-blue-600 hover:bg-blue-700 text-white font-bold"
+              >
+                {checkingDns ? "Checking DNS & HTTPS..." : "⚡ Check DNS & HTTPS Propagation"}
+              </Button>
 
                 <a
                   href={`https://www.whatsmydns.net/#A/panel.${rootDomain}`}
@@ -439,21 +415,15 @@ export default function SettingsPage() {
 
                   {/* HTTPS Status Alert Card */}
                   {httpsStatus && (
-                    <div className="mt-2.5 rounded border border-blue-200 bg-blue-50/80 p-2.5 text-xs text-blue-900 flex items-start gap-2.5">
+                    <div className="mt-2.5 rounded border border-blue-200 bg-blue-50/80 p-2.5 text-xs text-blue-900 flex items-center gap-2">
                       <span className="text-base leading-none">🔒</span>
-                      <div className="space-y-1">
-                        <p className="font-bold">{httpsStatus.message}</p>
-                        <p className="text-[11px] text-blue-700 leading-relaxed">
-                          <strong>HTTPS Setup Guide:</strong> If using Cloudflare (Orange cloud enabled), set Cloudflare SSL/TLS to <strong>Full</strong> or <strong>Flexible</strong> to immediately activate HTTPS with zero browser security warnings. If using Direct DNS, Traefik v3 issues an automated Let&apos;s Encrypt certificate on port 443.
-                        </p>
-                      </div>
+                      <p className="font-bold">{httpsStatus.message}</p>
                     </div>
                   )}
                 </div>
               )}
             </div>
           </div>
-        </div>
       </form>
 
       {/* 2. One-Click Automated Maintenance */}

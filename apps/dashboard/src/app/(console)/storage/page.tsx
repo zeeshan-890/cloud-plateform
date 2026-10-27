@@ -120,8 +120,8 @@ export default function StoragePage() {
   return (
     <div className="animate-fade-up">
       <PageHeader
-        title="Storage"
-        description="Object storage buckets per project. Upload text objects, get signed URLs, list and delete."
+        title="Object Storage"
+        description="S3-compatible object storage buckets and file assets."
       />
       {error ? <Alert>{error}</Alert> : null}
 
@@ -142,8 +142,7 @@ export default function StoragePage() {
         </label>
         {bucket ? (
           <p className="text-sm text-[var(--ink-muted)]">
-            Bucket <span className="font-medium text-[var(--ink)]">{bucket}</span>
-            {mode ? ` · mode ${mode}` : null}
+            Bucket: <span className="font-semibold text-[var(--ink)]">{bucket}</span>
           </p>
         ) : null}
       </div>

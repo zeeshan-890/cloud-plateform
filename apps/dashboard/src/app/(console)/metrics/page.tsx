@@ -80,7 +80,7 @@ export default function MetricsPage() {
     <div className="animate-fade-up">
       <PageHeader
         title="Metrics"
-        description={`Project series (${mode}). Prometheus/Grafana optional under --profile monitoring.`}
+        description="Real-time telemetry and project performance series."
       />
       {error ? <Alert>{error}</Alert> : null}
 
@@ -103,13 +103,6 @@ export default function MetricsPage() {
           Refresh
         </Button>
       </div>
-
-      {promURL ? (
-        <p className="mb-4 text-sm text-[var(--ink-muted)]">
-          Prometheus: <span className="font-mono">{promURL}</span> (host: http://localhost:9090 when
-          monitoring profile is up)
-        </p>
-      ) : null}
 
       {metrics.length === 0 ? (
         <EmptyState title="No metrics" description="Simulate mode seeds sample series on refresh." />

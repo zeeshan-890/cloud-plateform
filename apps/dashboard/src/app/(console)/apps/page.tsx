@@ -52,8 +52,8 @@ export default function AppsPage() {
   return (
     <div className="animate-fade-up">
       <PageHeader
-        title="Apps"
-        description="Starter templates and marketplace shortcuts. Scaffold locally with the jp CLI, then deploy."
+        title="Application Templates"
+        description="Scaffold pre-configured runtimes and deploy production-ready applications."
       />
 
       {error ? (

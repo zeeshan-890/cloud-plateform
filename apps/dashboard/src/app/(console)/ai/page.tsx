@@ -88,16 +88,11 @@ export default function AIPage() {
     );
   }
 
-  const modeHint =
-    mode === "openai"
-      ? `Mode: openai${model ? ` (${model})` : ""}.`
-      : "Mode: simulate (set OPENAI_API_KEY and restart with --profile platform for hosted LLM).";
-
   return (
     <div className="animate-fade-up">
       <PageHeader
-        title="AI ops"
-        description={`Explain failed deploys/builds from logs, or ask a free-form question. ${modeHint}`}
+        title="AI Ops & Diagnostics"
+        description="Automated failure analysis and root-cause diagnostic assistant."
       />
       {error ? (
         <div className="mb-4">

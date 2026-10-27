@@ -187,19 +187,7 @@ export default function DeploymentsPage() {
         </div>
       ) : null}
 
-      {(configHash || drift !== null) && (
-        <p className="mb-4 text-sm text-[var(--ink-muted)]">
-          jp.yaml last-applied hash:{" "}
-          <span className="font-[family-name:var(--font-mono)] text-xs">
-            {configHash ? configHash.slice(0, 12) : "none"}
-          </span>
-          {drift !== null ? (
-            <span className="ml-3">
-              Drift stub: {drift ? "possible drift" : "in sync"}
-            </span>
-          ) : null}
-        </p>
-      )}
+
 
       {explainText ? (
         <pre className="mb-6 max-w-3xl whitespace-pre-wrap rounded-md border border-[var(--border)] bg-[var(--surface)] p-4 text-sm text-[var(--ink)]">

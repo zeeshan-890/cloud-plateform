@@ -237,20 +237,20 @@ export default function AddonsPage() {
 
   return (
     <div className="animate-fade-up">
-      {/* Navigation Return Link */}
-      <div className="mb-3 flex items-center justify-between">
-        <Link
-          href="/projects"
-          className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-slate-50 px-3 py-1.5 text-xs font-bold text-[var(--ink)] hover:bg-slate-100 hover:border-[var(--border-strong)] transition-all shadow-2xs"
-        >
-          <span className="text-[var(--accent)] text-sm">←</span>
-          <span>Back to All Projects</span>
-        </Link>
-      </div>
-
       <PageHeader
         title="Add-ons & Marketplace"
-        description="Provision one-click databases or deploy any custom Docker application on demand."
+        description="Provision one-click databases or deploy custom container apps."
+        actions={
+          tab === "custom" ? (
+            <Button variant="secondary" onClick={() => setTab("catalog")}>
+              ← Back to Catalog
+            </Button>
+          ) : (
+            <Button onClick={() => setTab("custom")}>
+              + Deploy Custom Container
+            </Button>
+          )
+        }
       />
 
       {error ? (
@@ -263,56 +263,6 @@ export default function AddonsPage() {
           <Alert tone="success">{success}</Alert>
         </div>
       ) : null}
-
-      <div className="mb-5 rounded-lg border border-blue-200 bg-blue-50/80 p-3.5 text-xs text-blue-950 flex items-start gap-3 shadow-2xs">
-        <span className="text-base font-bold text-blue-600 mt-0.5">💡</span>
-        <div className="flex-1">
-          <p className="font-bold text-blue-900 text-sm">Zero-Domain Architecture & Internal Express Linking</p>
-          <p className="mt-1 text-blue-800 leading-relaxed font-medium">
-            All services communicate over the internal Docker network (<code className="bg-blue-100 text-blue-900 px-1.5 py-0.5 rounded font-mono font-bold">jp</code>). Connect your Express, Node.js, Python, or Go servers using the <strong>Docker Internal URLs</strong> below. For public outside browser access without any domain name, open apps directly via your <strong>Server IP and Port</strong> (<code className="bg-blue-100 text-blue-900 px-1.5 py-0.5 rounded font-mono font-bold">http://{hostName}:PORT</code>).
-          </p>
-        </div>
-      </div>
-
-      <div className="mb-6 rounded-md border border-[var(--border)] bg-[var(--surface)] p-4 flex flex-wrap items-center justify-between gap-3 shadow-2xs">
-        <div>
-          <p className="text-sm font-semibold text-[var(--ink)] flex items-center gap-2">
-            <span>Provision mode:</span>
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-bold text-emerald-800 border border-emerald-200">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-              {mode === "shared" ? "Shared Multi-Tenant" : "Docker Container Engine (Local Dedicated)"}
-            </span>
-          </p>
-          <p className="mt-1 text-xs text-[var(--ink-muted)]">
-            Services run as isolated containers on your machine. Zero background bloat.
-          </p>
-        </div>
-
-        <div className="flex rounded-md border border-[var(--border)] bg-[var(--paper)] p-1">
-          <button
-            type="button"
-            onClick={() => setTab("catalog")}
-            className={`px-3 py-1 text-xs font-bold rounded transition-colors ${
-              tab === "catalog"
-                ? "bg-[var(--accent)] text-white shadow-2xs"
-                : "text-[var(--ink-muted)] hover:text-[var(--ink)]"
-            }`}
-          >
-            One-Click Catalog ({catalog.length})
-          </button>
-          <button
-            type="button"
-            onClick={() => setTab("custom")}
-            className={`px-3 py-1 text-xs font-bold rounded transition-colors ${
-              tab === "custom"
-                ? "bg-[var(--accent)] text-white shadow-2xs"
-                : "text-[var(--ink-muted)] hover:text-[var(--ink)]"
-            }`}
-          >
-            + Deploy Any Custom Container
-          </button>
-        </div>
-      </div>
 
       <div className="mb-4 flex flex-col sm:flex-row gap-3 items-stretch sm:items-center justify-between">
         <label className="block max-w-sm text-sm text-[var(--ink-muted)] font-medium">

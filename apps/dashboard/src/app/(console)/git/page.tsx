@@ -202,9 +202,7 @@ export default function ConnectGitPage() {
         <div className="border-b border-[var(--border)] pb-3">
           <h2 className="text-sm font-bold text-[var(--ink)]">GitHub App Integration</h2>
           <p className="text-xs text-[var(--ink-muted)]">
-            Installations: {installations.length || "0 active"} &bull; Mode:{" "}
-            <span className="font-semibold text-[var(--ink)]">{mode}</span>
-            {installMode ? ` &bull; last start: ${installMode}` : ""}
+            Install the GitHub App to enable automated push-to-deploy for this organization.
           </p>
         </div>
 

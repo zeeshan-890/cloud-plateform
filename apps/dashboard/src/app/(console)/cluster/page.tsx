@@ -238,9 +238,6 @@ export default function ClusterPage() {
         <div className="p-5 border-b border-[var(--border)] flex items-center justify-between">
           <div>
             <h2 className="text-base font-semibold text-[var(--ink)]">Connected Server Nodes</h2>
-            <p className="text-xs text-[var(--ink-muted)]">
-              Nodes automatically report heartbeats and receive desired-state container instructions.
-            </p>
           </div>
           {refreshing && (
             <span className="text-xs text-[var(--brand)] animate-pulse">Syncing metrics...</span>
@@ -348,9 +345,9 @@ export default function ClusterPage() {
 
       {/* Connect Server Modal / Card */}
       {showEnrollModal && (
-        <div className="rounded-xl border border-[var(--brand)] bg-[var(--surface)] p-6 space-y-4">
+        <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-6 space-y-4 shadow-sm">
           <div className="flex justify-between items-center">
-            <h3 className="font-semibold text-[var(--ink)]">Enroll a New Linux Server</h3>
+            <h3 className="font-semibold text-[var(--ink)]">Enroll Server Node</h3>
             <button
               onClick={() => setShowEnrollModal(false)}
               className="text-xs text-[var(--ink-muted)] hover:text-[var(--ink)]"
@@ -360,7 +357,7 @@ export default function ClusterPage() {
           </div>
 
           <p className="text-xs text-[var(--ink-muted)]">
-            Run this single command on your worker VPS to install the lightweight node agent and register it with this control plane:
+            Run on your target Linux worker host to connect to this cluster:
           </p>
 
           <div className="flex items-center gap-2">
@@ -368,13 +365,9 @@ export default function ClusterPage() {
               {enrollCommand}
             </div>
             <Button variant="secondary" onClick={copyEnrollCommand}>
-              {copied ? "Copied!" : "Copy Command"}
+              {copied ? "Copied!" : "Copy"}
             </Button>
           </div>
-
-          <p className="text-[11px] text-[var(--ink-faint)]">
-            Control Plane URL: <code className="text-[var(--ink)] font-mono">{controlPlaneUrl}</code> • Tokens expire in 1 hour and grant least-privilege node identity with automated heartbeats.
-          </p>
         </div>
       )}
     </div>

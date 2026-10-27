@@ -103,9 +103,7 @@ export default function SecurityPage() {
             <span className="font-[family-name:var(--font-display)] text-3xl font-bold text-[var(--ok)]">
               Grade A
             </span>
-            <span className="text-xs text-[var(--ink-muted)]">Self-Hosted Hardened</span>
           </div>
-          <p className="mt-2 text-xs text-[var(--ink-faint)]">Zero public daemon or database leaks.</p>
         </div>
 
         <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-5">
@@ -113,7 +111,6 @@ export default function SecurityPage() {
           <div className="mt-2 font-[family-name:var(--font-display)] text-3xl font-bold text-[var(--ink)]">
             {criticalCount}
           </div>
-          <p className="mt-2 text-xs text-[var(--ink-faint)]">Trivy & Grype OCI image scans clean.</p>
         </div>
 
         <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-5">
@@ -121,7 +118,6 @@ export default function SecurityPage() {
           <div className="mt-2 font-[family-name:var(--font-display)] text-3xl font-bold text-[var(--ink)]">
             {highCount}
           </div>
-          <p className="mt-2 text-xs text-[var(--ink-faint)]">No excessive Linux capabilities granted.</p>
         </div>
 
         <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-5">
@@ -131,7 +127,6 @@ export default function SecurityPage() {
               AES-256-GCM
             </span>
           </div>
-          <p className="mt-2 text-xs text-[var(--ink-faint)]">Envelope key derivation with 12-byte nonces.</p>
         </div>
       </div>
 
@@ -140,9 +135,6 @@ export default function SecurityPage() {
         <h2 className="font-[family-name:var(--font-display)] text-lg font-semibold text-[var(--ink)]">
           Platform Hardening Controls
         </h2>
-        <p className="mt-1 text-sm text-[var(--ink-muted)]">
-          Verified security boundaries applied automatically across control-plane services and tenant workloads.
-        </p>
 
         <div className="mt-6 divide-y divide-[var(--border)]">
           <div className="flex items-center justify-between py-3.5">

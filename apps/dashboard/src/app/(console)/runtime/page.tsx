@@ -106,8 +106,8 @@ export default function RuntimePage() {
   return (
     <div className="animate-fade-up">
       <PageHeader
-        title="Runtime"
-        description={`Containers and desired state. Mode: ${mode}`}
+        title="Runtime Instances"
+        description="Active application containers and runtime health states."
       />
 
       {error ? (

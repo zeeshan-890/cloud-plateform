@@ -98,7 +98,7 @@ export default function LogsPage() {
     <div className="animate-fade-up">
       <PageHeader
         title="Logs"
-        description={`Build and runtime log query (${backend || "postgres"}). Loki is optional via monitoring profile.`}
+        description="Query build execution output and real-time application logs."
       />
       {error ? <Alert>{error}</Alert> : null}
 
@@ -132,18 +132,6 @@ export default function LogsPage() {
         </label>
         <Button variant="ghost" onClick={() => loadLogs(projectId)} disabled={busy}>
           Refresh
-        </Button>
-      </div>
-
-      <div className="mb-8 flex flex-wrap items-end gap-3">
-        <Input
-          placeholder="Ingest a test log line"
-          value={message}
-          onChange={(e) => setMessage(e.target.value)}
-          className="max-w-md"
-        />
-        <Button onClick={onIngest} disabled={busy || !message.trim()}>
-          Ingest
         </Button>
       </div>
 
