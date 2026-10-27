@@ -9,7 +9,7 @@ import { Alert, EmptyState, PageHeader } from "@/components/ui/page";
 import { api, ApiError } from "@/lib/api";
 import { useOrg } from "@/lib/org-context";
 import { useProject } from "@/lib/project-context";
-import type { Build, Deployment, LogEntry, ManagedAddon, Project, RuntimeInstance, SecretMeta } from "@/lib/types";
+import type { Build, ConnectedRepo, Deployment, LogEntry, ManagedAddon, Project, RuntimeInstance, SecretMeta } from "@/lib/types";
 import { setVisibilityInterval } from "@/lib/visibility";
 
 export default function ProjectDetailClient() {
@@ -32,8 +32,9 @@ export default function ProjectDetailClient() {
   const [gitUrl, setGitUrl] = useState("");
   const [gitBranch, setGitBranch] = useState("main");
   const [gitToken, setGitToken] = useState("");
+  const [privateTokenOpen, setPrivateTokenOpen] = useState(false);
   const [connectingGit, setConnectingGit] = useState(false);
-  const [connectedRepos, setConnectedRepos] = useState<Array<{ id: string; full_name: string }>>([]);
+  const [connectedRepos, setConnectedRepos] = useState<ConnectedRepo[]>([]);
   const [buildLogs, setBuildLogs] = useState("");
 
   // Sub-tab states for Domains
@@ -85,7 +86,7 @@ export default function ProjectDetailClient() {
   const [explainingDeployId, setExplainingDeployId] = useState<string | null>(null);
 
   // Builds & Runtime Logs state
-  const [logsTab, setLogsTab] = useState<"builds" | "runtime">("builds");
+  const [logsTab, setLogsTab] = useState<"builds" | "runtime">("runtime");
   const [buildsList, setBuildsList] = useState<Build[]>([]);
   const [selectedBuildId, setSelectedBuildId] = useState("");
   const [buildLogsText, setBuildLogsText] = useState("");
@@ -483,31 +484,87 @@ export default function ProjectDetailClient() {
     }
   }
 
-  // Real Git Connect Handler (NO MOCK!)
-  async function handleConnectGit(e: FormEvent) {
-    e.preventDefault();
-    if (!currentOrg || !project || !gitUrl.trim()) return;
+  // Real Git Connect Handler (Tokenless for Public Repos, Optional PAT for Private)
+  async function handleConnectGit(e?: FormEvent, targetRepoUrl?: string, targetBranch = "main") {
+    if (e) e.preventDefault();
+    if (!currentOrg || !project) return;
+    const inputUrl = (targetRepoUrl || gitUrl).trim();
+    if (!inputUrl) return;
+
     setConnectingGit(true);
     setError("");
     setSuccess("");
     try {
-      const cleanUrl = gitUrl.trim();
-      const repoName = cleanUrl.replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "");
+      let repoName = inputUrl;
+      let cloneUrl = inputUrl;
+
+      if (inputUrl.startsWith("http://") || inputUrl.startsWith("https://")) {
+        repoName = inputUrl.replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "");
+        cloneUrl = inputUrl.endsWith(".git") ? inputUrl : `${inputUrl}.git`;
+      } else {
+        repoName = inputUrl.replace(/\.git$/, "");
+        cloneUrl = `https://github.com/${repoName}.git`;
+      }
+
       await api.connectRepo(currentOrg.id, project.id, {
         full_name: repoName,
-        clone_url: cleanUrl,
-        default_branch: gitBranch.trim() || "main",
+        clone_url: cloneUrl,
+        default_branch: (targetBranch || gitBranch).trim() || "main",
         token: gitToken.trim() || undefined,
       });
-      setSuccess(`Connected repository "${repoName}".`);
+
+      setSuccess(`✓ Connected repository "${repoName}" successfully.`);
       setGitUrl("");
       setGitToken("");
+      setPrivateTokenOpen(false);
       const updated = await api.listRepos(currentOrg.id, project.id);
       setConnectedRepos(updated);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Failed to connect repository");
     } finally {
       setConnectingGit(false);
+    }
+  }
+
+  // Disconnect / Remove Connected Repository
+  async function handleDisconnectRepo(repoId: string, repoName: string) {
+    if (!currentOrg || !project) return;
+    if (!window.confirm(`Are you sure you want to disconnect repository "${repoName}" from this project?`)) {
+      return;
+    }
+    setError("");
+    setSuccess("");
+    try {
+      await api.disconnectRepo(currentOrg.id, project.id, repoId);
+      setSuccess(`✓ Disconnected repository "${repoName}".`);
+      const updated = await api.listRepos(currentOrg.id, project.id);
+      setConnectedRepos(updated);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to disconnect repository");
+    }
+  }
+
+  // Quick Deploy from Connected Repo
+  async function handleQuickDeployRepo(repo: ConnectedRepo) {
+    if (!currentOrg || !project) return;
+    setTriggeringDeploy(true);
+    setError("");
+    setSuccess("");
+    try {
+      await api.createDeployment(currentOrg.id, project.id, {
+        full_name: repo.full_name,
+        git_branch: repo.default_branch || "main",
+        clone_url: repo.clone_url,
+        repo_id: repo.id,
+        git_sha: "HEAD",
+        message: `Deploy from ${repo.full_name}@${repo.default_branch || "main"}`,
+      });
+      setSuccess(`🚀 Build & deployment triggered for ${repo.full_name}! View progress in Deployments.`);
+      await loadDeployments(currentOrg.id, project.id);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to trigger deployment");
+    } finally {
+      setTriggeringDeploy(false);
     }
   }
 
@@ -1396,24 +1453,214 @@ export default function ProjectDetailClient() {
       )}
 
       {/* ========================================================
+          TAB 3: GIT REPOSITORIES & SOURCE CONTROL
+          ======================================================== */}
+      {currentTab === "git" && (
+        <div className="space-y-6">
+          {/* Active Connected Repositories */}
+          <div className="jp-card p-5 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] pb-3">
+              <div>
+                <h2 className="text-sm font-bold text-[var(--ink)]">
+                  Connected Source Code ({connectedRepos.length})
+                </h2>
+                <p className="text-xs text-[var(--ink-muted)]">
+                  Git repositories connected to <strong>{project.name}</strong> for automated builds and deployment tracking.
+                </p>
+              </div>
+            </div>
+
+            {connectedRepos.length === 0 ? (
+              <div className="rounded-xl border-2 border-dashed border-slate-300 p-8 text-center space-y-2 bg-slate-50/50">
+                <span className="text-3xl">🐙</span>
+                <p className="text-xs font-bold text-[var(--ink)]">
+                  No repository linked to this project yet.
+                </p>
+                <p className="text-xs text-[var(--ink-muted)] max-w-sm mx-auto">
+                  Connect any public GitHub repository below in one click without any token, or paste your repository URL.
+                </p>
+              </div>
+            ) : (
+              <ul className="divide-y divide-[var(--border)] rounded-xl border border-[var(--border)] bg-white overflow-hidden shadow-2xs">
+                {connectedRepos.map((r) => {
+                  const cleanClone = r.clone_url?.replace(/:[^@]+@/, ":***@") || `https://github.com/${r.full_name}.git`;
+                  const githubUrl = `https://github.com/${r.full_name}`;
+
+                  return (
+                    <li
+                      key={r.id}
+                      className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 text-xs hover:bg-slate-50/70 transition-colors"
+                    >
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-base">🐙</span>
+                          <span className="font-mono font-bold text-[var(--ink)] text-sm">
+                            {r.full_name}
+                          </span>
+                          <span className="rounded bg-blue-50 border border-blue-200 px-2 py-0.5 font-mono text-[10px] font-bold text-blue-700">
+                            {r.default_branch || "main"}
+                          </span>
+                          <a
+                            href={githubUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-[11px] text-blue-600 hover:text-blue-800 font-semibold inline-flex items-center gap-0.5 hover:underline"
+                          >
+                            <span>GitHub</span>
+                            <span>↗</span>
+                          </a>
+                        </div>
+                        <p className="font-mono text-[11px] text-[var(--ink-muted)] truncate max-w-lg">
+                          {cleanClone}
+                        </p>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        <Button
+                          type="button"
+                          size="sm"
+                          disabled={triggeringDeploy}
+                          onClick={() => handleQuickDeployRepo(r)}
+                          className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-xs"
+                        >
+                          {triggeringDeploy ? "Queuing..." : "🚀 Deploy Now"}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="danger"
+                          size="sm"
+                          onClick={() => handleDisconnectRepo(r.id, r.full_name)}
+                          className="text-xs"
+                        >
+                          Disconnect
+                        </Button>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+
+          {/* Quick Connect Repository Card (Tokenless for Public Repos) */}
+          <div className="jp-card p-5 space-y-4">
+            <div className="border-b border-[var(--border)] pb-3">
+              <h2 className="text-sm font-bold text-[var(--ink)]">
+                Connect GitHub Repository (No PAT Required)
+              </h2>
+              <p className="text-xs text-[var(--ink-muted)]">
+                Paste any GitHub repository URL or shorthand (<code className="font-mono text-slate-700 font-bold">owner/repo</code>). Public repositories connect instantly without any credentials.
+              </p>
+            </div>
+
+            {/* 1-Click Starter Quick Picks */}
+            <div className="space-y-2">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-[var(--ink-secondary)] block">
+                Quick-Connect Templates:
+              </span>
+              <div className="flex flex-wrap gap-2">
+                {[
+                  { name: "Financer App", url: "https://github.com/zeeshan-890/financor", branch: "main", icon: "💰" },
+                  { name: "Next.js Starter", url: "https://github.com/vercel/next-learn-starter", branch: "main", icon: "▲" },
+                  { name: "FastAPI Python", url: "https://github.com/tiangolo/fastapi", branch: "master", icon: "⚡" },
+                  { name: "Express Node API", url: "https://github.com/expressjs/express", branch: "master", icon: "🟢" },
+                ].map((tpl) => (
+                  <button
+                    key={tpl.name}
+                    type="button"
+                    onClick={() => {
+                      setGitUrl(tpl.url);
+                      setGitBranch(tpl.branch);
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white hover:bg-blue-50/70 hover:border-blue-400 px-3 py-1.5 text-xs font-semibold text-slate-800 transition-all shadow-2xs"
+                  >
+                    <span>{tpl.icon}</span>
+                    <span>{tpl.name}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <form onSubmit={handleConnectGit} className="space-y-3.5 pt-1">
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div className="sm:col-span-2">
+                  <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
+                    Repository URL or owner/repo
+                  </label>
+                  <Input
+                    placeholder="e.g. zeeshan-890/financor or https://github.com/..."
+                    value={gitUrl}
+                    onChange={(e) => setGitUrl(e.target.value)}
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
+                    Default Branch
+                  </label>
+                  <Input
+                    placeholder="main"
+                    value={gitBranch}
+                    onChange={(e) => setGitBranch(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              {/* Collapsible Token Input for Private Repos Only */}
+              <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-slate-700 font-medium">
+                    Is this a private repository on GitHub?
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setPrivateTokenOpen(!privateTokenOpen)}
+                    className="text-xs font-bold text-blue-700 hover:underline"
+                  >
+                    {privateTokenOpen ? "Hide Token Field" : "+ Add Private Access Token (Optional)"}
+                  </button>
+                </div>
+
+                {privateTokenOpen && (
+                  <div className="pt-2 border-t border-slate-200/80 space-y-1 animate-fade-in">
+                    <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-700">
+                      GitHub Personal Access Token (PAT)
+                    </label>
+                    <Input
+                      type="password"
+                      placeholder="ghp_... or github_pat_..."
+                      value={gitToken}
+                      onChange={(e) => setGitToken(e.target.value)}
+                    />
+                    <p className="text-[11px] text-slate-500">
+                      Only needed if your repository is private. Public repositories do NOT require a token.
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              <div className="pt-1">
+                <Button
+                  type="submit"
+                  disabled={connectingGit || !gitUrl.trim()}
+                  className="font-bold text-xs"
+                >
+                  {connectingGit ? "Connecting..." : "➕ Connect Repository"}
+                </Button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================
           TAB 4: BUILDS & LOGS
           ======================================================== */}
       {currentTab === "builds" && (
         <div className="space-y-6">
-          {/* Top Segmented Controls: Compiler vs Running App */}
+          {/* Top Segmented Controls: Container vs Compiler (Defaults to Container Logs) */}
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center rounded-lg border border-[var(--border)] bg-white p-1 shadow-2xs text-xs">
-              <button
-                type="button"
-                onClick={() => setLogsTab("builds")}
-                className={`px-3 py-1.5 font-bold rounded-md transition-all ${
-                  logsTab === "builds"
-                    ? "bg-[var(--accent)] text-white shadow-2xs"
-                    : "text-[var(--ink-secondary)] hover:text-[var(--ink)]"
-                }`}
-              >
-                🏗️ Compiler & Build Stream
-              </button>
               <button
                 type="button"
                 onClick={() => setLogsTab("runtime")}
@@ -1424,6 +1671,17 @@ export default function ProjectDetailClient() {
                 }`}
               >
                 🟢 Running App Container Logs
+              </button>
+              <button
+                type="button"
+                onClick={() => setLogsTab("builds")}
+                className={`px-3 py-1.5 font-bold rounded-md transition-all ${
+                  logsTab === "builds"
+                    ? "bg-[var(--accent)] text-white shadow-2xs"
+                    : "text-[var(--ink-secondary)] hover:text-[var(--ink)]"
+                }`}
+              >
+                🏗️ Compiler & Build Stream
               </button>
             </div>
 

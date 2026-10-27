@@ -297,23 +297,51 @@ export default function ConnectGitPage() {
         </div>
       </div>
 
-      {/* 2. Direct Repository Connect (URL or owner/repo) */}
+      {/* 2. Direct Repository Connect (Tokenless for Public Repos, Optional PAT) */}
       <div className="jp-card p-5 space-y-4">
         <div className="border-b border-[var(--border)] pb-3">
-          <h2 className="text-sm font-bold text-[var(--ink)]">Connect Any Repository (Public or Private)</h2>
+          <h2 className="text-sm font-bold text-[var(--ink)]">Connect Any GitHub Repository (No PAT Required)</h2>
           <p className="text-xs text-[var(--ink-muted)]">
-            Paste any GitHub repository URL or name. If the repository is private, provide your Personal Access Token.
+            Paste any GitHub repository URL or shorthand (<code className="font-mono text-slate-700 font-bold">owner/repo</code>). Public repositories connect instantly without any credentials.
           </p>
         </div>
 
-        <form onSubmit={onManualSubmit} className="space-y-3">
+        {/* 1-Click Starter Quick Picks */}
+        <div className="space-y-2">
+          <span className="text-[11px] font-bold uppercase tracking-wider text-[var(--ink-secondary)] block">
+            Quick-Connect Starter Templates:
+          </span>
+          <div className="flex flex-wrap gap-2">
+            {[
+              { name: "Financer App", url: "https://github.com/zeeshan-890/financor", branch: "main", icon: "💰" },
+              { name: "Next.js Starter", url: "https://github.com/vercel/next-learn-starter", branch: "main", icon: "▲" },
+              { name: "FastAPI Python", url: "https://github.com/tiangolo/fastapi", branch: "master", icon: "⚡" },
+              { name: "Express Node API", url: "https://github.com/expressjs/express", branch: "master", icon: "🟢" },
+            ].map((tpl) => (
+              <button
+                key={tpl.name}
+                type="button"
+                onClick={() => {
+                  setFullName(tpl.url);
+                  setBranch(tpl.branch);
+                }}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white hover:bg-blue-50/70 hover:border-blue-400 px-3 py-1.5 text-xs font-semibold text-slate-800 transition-all shadow-2xs"
+              >
+                <span>{tpl.icon}</span>
+                <span>{tpl.name}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <form onSubmit={onManualSubmit} className="space-y-3.5 pt-1">
           <div className="grid gap-3 sm:grid-cols-3">
             <div className="sm:col-span-2">
               <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
                 Repository URL or owner/repo
               </label>
               <Input
-                placeholder="e.g. zeeshan-890/my-app or https://github.com/..."
+                placeholder="e.g. zeeshan-890/financor or https://github.com/..."
                 value={fullName}
                 onChange={(e) => setFullName(e.target.value)}
                 required
@@ -331,14 +359,19 @@ export default function ConnectGitPage() {
             </div>
           </div>
 
-          <div>
-            <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
-              Personal Access Token (Required for Private Repositories)
-            </label>
+          <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-slate-700 font-medium">
+                Is this a private repository on GitHub?
+              </span>
+              <span className="text-[11px] text-slate-500">
+                (Public repositories connect directly without any token)
+              </span>
+            </div>
             <div className="flex items-center gap-2">
               <Input
                 type="password"
-                placeholder="ghp_... or github_pat_..."
+                placeholder="Optional: ghp_... or github_pat_..."
                 value={patToken}
                 onChange={(e) => setPatToken(e.target.value)}
               />
@@ -347,18 +380,16 @@ export default function ConnectGitPage() {
                 variant="secondary"
                 onClick={handleSaveTokenAndFetch}
                 disabled={fetchingRepos || !patToken.trim()}
+                className="text-xs"
               >
-                {fetchingRepos ? "Loading..." : "Load Repos"}
+                {fetchingRepos ? "Loading..." : "Load My Repos"}
               </Button>
             </div>
-            <p className="mt-1 text-[11px] text-[var(--ink-muted)]">
-              Generate a classic or fine-grained token with <code className="font-mono font-bold">repo</code> read access.
-            </p>
           </div>
 
-          <div className="pt-2">
-            <Button type="submit" disabled={busy || !projectId || !fullName.trim()}>
-              {busy ? "Connecting..." : "Connect Repository"}
+          <div className="pt-1">
+            <Button type="submit" disabled={busy || !projectId || !fullName.trim()} className="font-bold text-xs">
+              {busy ? "Connecting..." : "➕ Connect Repository"}
             </Button>
           </div>
         </form>
