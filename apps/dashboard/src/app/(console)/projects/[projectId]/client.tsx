@@ -5,11 +5,12 @@ import { FormEvent, useEffect, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Alert, PageHeader } from "@/components/ui/page";
+import { Alert, EmptyState, PageHeader } from "@/components/ui/page";
 import { api, ApiError } from "@/lib/api";
 import { useOrg } from "@/lib/org-context";
 import { useProject } from "@/lib/project-context";
-import type { ManagedAddon, Project, SecretMeta } from "@/lib/types";
+import type { Build, Deployment, LogEntry, ManagedAddon, Project, RuntimeInstance, SecretMeta } from "@/lib/types";
+import { setVisibilityInterval } from "@/lib/visibility";
 
 export default function ProjectDetailClient() {
   const params = useParams<{ projectId: string }>();
@@ -70,6 +71,30 @@ export default function ProjectDetailClient() {
   const [bulkSecretText, setBulkSecretText] = useState("");
   const [bulkSecretSaving, setBulkSecretSaving] = useState(false);
 
+  // Deployments state
+  const [deploymentsList, setDeploymentsList] = useState<Deployment[]>([]);
+  const [loadingDeployments, setLoadingDeployments] = useState(false);
+  const [triggeringDeploy, setTriggeringDeploy] = useState(false);
+  const [selectedDeployLogs, setSelectedDeployLogs] = useState<{
+    deploymentId: string;
+    buildId?: string;
+    logs: string;
+    loading: boolean;
+  } | null>(null);
+  const [explainText, setExplainText] = useState("");
+  const [explainingDeployId, setExplainingDeployId] = useState<string | null>(null);
+
+  // Builds & Runtime Logs state
+  const [logsTab, setLogsTab] = useState<"builds" | "runtime">("builds");
+  const [buildsList, setBuildsList] = useState<Build[]>([]);
+  const [selectedBuildId, setSelectedBuildId] = useState("");
+  const [buildLogsText, setBuildLogsText] = useState("");
+  const [runtimeInstances, setRuntimeInstances] = useState<RuntimeInstance[]>([]);
+  const [runtimeLogs, setRuntimeLogs] = useState<LogEntry[]>([]);
+  const [runtimeSourceFilter, setRuntimeSourceFilter] = useState("");
+  const [runtimeSearchQuery, setRuntimeSearchQuery] = useState("");
+  const [autoRefreshLogs, setAutoRefreshLogs] = useState(true);
+
   // Active tab from URL
   const currentTab = searchParams.get("tab") || "overview";
 
@@ -108,11 +133,184 @@ export default function ProjectDetailClient() {
     };
   }, [currentOrg, actualProjectId, setActiveProject]);
 
+  async function loadDeployments(orgId: string, projId: string) {
+    try {
+      const list = await api.listDeployments(orgId, projId);
+      setDeploymentsList(list);
+    } catch {
+      // ignore
+    }
+  }
+
+  async function loadBuilds(orgId: string, projId: string) {
+    try {
+      const list = await api.listBuilds(orgId, projId);
+      setBuildsList(list);
+      if (list.length > 0) {
+        const targetId = selectedBuildId && list.some((b) => b.id === selectedBuildId) ? selectedBuildId : list[0].id;
+        if (targetId !== selectedBuildId) {
+          setSelectedBuildId(targetId);
+        }
+        api.getBuildLogs(orgId, projId, targetId)
+          .then((res) => setBuildLogsText(res.logs || "// No logs recorded for this build."))
+          .catch(() => setBuildLogsText("// Failed to fetch build logs."));
+      } else {
+        setBuildLogsText("// No builds recorded yet. Trigger a deployment to view compiler output.");
+      }
+    } catch {
+      setBuildLogsText("// Failed to load builds.");
+    }
+  }
+
+  async function loadBuildLogs(orgId: string, projId: string, buildId: string) {
+    try {
+      const res = await api.getBuildLogs(orgId, projId, buildId);
+      setBuildLogsText(res.logs || "// No logs recorded for this build.");
+    } catch {
+      setBuildLogsText("// Failed to fetch build logs.");
+    }
+  }
+
+  async function loadRuntimeLogs(orgId: string, projId: string) {
+    try {
+      const [logsRes, instRes] = await Promise.all([
+        api.queryLogs(orgId, projId, {
+          source: runtimeSourceFilter || undefined,
+          q: runtimeSearchQuery || undefined,
+          limit: 150,
+        }).catch(() => ({ entries: [] as LogEntry[] })),
+        api.listRuntimeInstances(orgId, projId).catch(() => ({ instances: [] as RuntimeInstance[], mode: "simulate" })),
+      ]);
+      setRuntimeLogs(logsRes.entries || []);
+      setRuntimeInstances(instRes.instances || []);
+    } catch {
+      // ignore
+    }
+  }
+
+  async function handleTriggerDeployment() {
+    if (!currentOrg || !actualProjectId) return;
+    setTriggeringDeploy(true);
+    setError("");
+    setSuccess("");
+    try {
+      const repos = await api.listRepos(currentOrg.id, actualProjectId);
+      const repo = repos[0];
+      const dep = await api.createDeployment(currentOrg.id, actualProjectId, {
+        git_branch: repo?.default_branch || "main",
+        git_sha: "HEAD",
+        clone_url: repo?.clone_url,
+        full_name: repo?.full_name,
+        repo_id: repo?.id,
+        message: repo ? `Deploy from ${repo.full_name}@${repo.default_branch || "main"}` : "Manual deployment",
+      });
+      setSuccess("New deployment successfully queued!");
+      await loadDeployments(currentOrg.id, actualProjectId);
+      if (dep.build_id) {
+        setSelectedDeployLogs({
+          deploymentId: dep.id,
+          buildId: dep.build_id,
+          logs: "Build queued... Waiting for worker to start compilation.",
+          loading: true,
+        });
+      }
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to trigger deployment");
+    } finally {
+      setTriggeringDeploy(false);
+    }
+  }
+
+  async function handleViewBuildLogs(d: Deployment) {
+    if (!currentOrg || !actualProjectId) return;
+    setSelectedDeployLogs({
+      deploymentId: d.id,
+      buildId: d.build_id,
+      logs: "Loading compiler output...",
+      loading: true,
+    });
+    if (d.build_id) {
+      try {
+        const res = await api.getBuildLogs(currentOrg.id, actualProjectId, d.build_id);
+        setSelectedDeployLogs({
+          deploymentId: d.id,
+          buildId: d.build_id,
+          logs: res.logs || "// No logs recorded for this build.",
+          loading: false,
+        });
+      } catch {
+        setSelectedDeployLogs({
+          deploymentId: d.id,
+          buildId: d.build_id,
+          logs: "// Failed to fetch build logs.",
+          loading: false,
+        });
+      }
+    } else {
+      setSelectedDeployLogs({
+        deploymentId: d.id,
+        logs: "// No build ID associated with this deployment.",
+        loading: false,
+      });
+    }
+  }
+
+  async function handleExplainFailure(d: Deployment) {
+    if (!currentOrg || !actualProjectId) return;
+    setExplainingDeployId(d.id);
+    setExplainText("");
+    try {
+      const res = await api.explainFailure(currentOrg.id, actualProjectId, {
+        deployment_id: d.id,
+        build_id: d.build_id,
+        prompt: "Analyze the failure and explain the root cause and how to fix it.",
+      });
+      setExplainText(`[AI Analysis - ${res.mode}] ${res.explanation}`);
+    } catch (err) {
+      setExplainText(err instanceof ApiError ? err.message : "Failed to analyze error");
+    } finally {
+      setExplainingDeployId(null);
+    }
+  }
+
+  async function handleRollback(deploymentId?: string) {
+    if (!currentOrg || !actualProjectId) return;
+    if (!window.confirm("Are you sure you want to rollback to this deployment?")) return;
+    setError("");
+    setSuccess("");
+    try {
+      await api.rollbackDeployment(currentOrg.id, actualProjectId, deploymentId);
+      setSuccess("Rollback initiated. Live traffic will be routed to the selected image.");
+      await loadDeployments(currentOrg.id, actualProjectId);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Rollback failed");
+    }
+  }
+
   // Load tab-specific resources when switching tabs
   useEffect(() => {
     if (!currentOrg || !actualProjectId || actualProjectId === "default") return;
 
-    if (currentTab === "git") {
+    if (currentTab === "deployments") {
+      loadDeployments(currentOrg.id, actualProjectId);
+      const cancelInterval = setVisibilityInterval(() => {
+        loadDeployments(currentOrg.id, actualProjectId);
+      }, 3000);
+      return () => cancelInterval();
+    } else if (currentTab === "builds") {
+      loadBuilds(currentOrg.id, actualProjectId);
+      loadRuntimeLogs(currentOrg.id, actualProjectId);
+      const cancelInterval = setVisibilityInterval(() => {
+        if (autoRefreshLogs) {
+          if (logsTab === "builds") {
+            loadBuilds(currentOrg.id, actualProjectId);
+          } else {
+            loadRuntimeLogs(currentOrg.id, actualProjectId);
+          }
+        }
+      }, 3000);
+      return () => cancelInterval();
+    } else if (currentTab === "git") {
       api.listRepos(currentOrg.id, actualProjectId)
         .then((repos) => setConnectedRepos(repos))
         .catch(() => setConnectedRepos([]));
@@ -134,20 +332,8 @@ export default function ProjectDetailClient() {
       api.listDatabases(currentOrg.id, actualProjectId)
         .then((res) => setDbList(res.databases || []))
         .catch(() => setDbList([]));
-    } else if (currentTab === "builds") {
-      api.listBuilds(currentOrg.id, actualProjectId)
-        .then((builds) => {
-          if (builds.length > 0) {
-            api.getBuildLogs(currentOrg.id, actualProjectId, builds[0].id)
-              .then((res) => setBuildLogs(res.logs || ""))
-              .catch(() => setBuildLogs("// No logs recorded"));
-          } else {
-            setBuildLogs("// No builds recorded yet. Trigger a deployment to view compiler output.");
-          }
-        })
-        .catch(() => setBuildLogs("// Failed to load builds"));
     }
-  }, [currentOrg, actualProjectId, currentTab, secretEnv]);
+  }, [currentOrg, actualProjectId, currentTab, secretEnv, logsTab, autoRefreshLogs, runtimeSourceFilter, runtimeSearchQuery]);
 
   async function onSave(e: FormEvent) {
     e.preventDefault();
@@ -454,12 +640,6 @@ export default function ProjectDetailClient() {
             </a>
           </p>
         </div>
-
-        <div className="flex items-center gap-2">
-          <Link href={`/projects/${actualProjectId}?tab=deployments`}>
-            <Button size="sm">Deploy App</Button>
-          </Link>
-        </div>
       </div>
 
       {error ? <Alert tone="error">{error}</Alert> : null}
@@ -651,26 +831,250 @@ export default function ProjectDetailClient() {
           ======================================================== */}
       {currentTab === "deployments" && (
         <div className="space-y-6">
-          <div className="jp-card p-5 flex items-center justify-between">
+          {/* Deploy Trigger Card */}
+          <div className="jp-card p-5 flex flex-wrap items-center justify-between gap-4">
             <div>
               <h2 className="text-sm font-bold text-[var(--ink)]">Deploy Application</h2>
               <p className="text-xs text-[var(--ink-muted)]">
                 Queue a new build and rolling update for {project.name}.
+                {connectedRepos.length > 0 && (
+                  <span className="ml-1 text-emerald-600 font-semibold">
+                    (Linked: <code className="font-mono">{connectedRepos[0].full_name}</code>)
+                  </span>
+                )}
               </p>
             </div>
-            <Button
-              onClick={async () => {
-                try {
-                  await api.createDeployment(currentOrg!.id, actualProjectId, { message: "Manual deployment" });
-                  setSuccess("Deployment queued successfully!");
-                } catch (err) {
-                  setError(err instanceof ApiError ? err.message : "Deployment failed to start");
-                }
-              }}
-            >
-              Trigger New Deployment
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button
+                onClick={handleTriggerDeployment}
+                disabled={triggeringDeploy}
+                className="font-bold shadow-xs"
+              >
+                {triggeringDeploy ? "Queueing Build..." : "⚡ Trigger New Deployment"}
+              </Button>
+            </div>
           </div>
+
+          {/* AI Explanation Banner (if open) */}
+          {explainText && (
+            <div className="jp-card p-4 border-amber-300 bg-amber-50/70 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold uppercase tracking-wider text-amber-900 flex items-center gap-1.5">
+                  <span>🤖</span> AI Deployment Issue Diagnosis
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setExplainText("")}
+                  className="text-amber-800 hover:text-amber-950 font-bold text-xs"
+                >
+                  ✕ Close
+                </button>
+              </div>
+              <pre className="text-xs font-mono text-amber-950 whitespace-pre-wrap leading-relaxed bg-white/80 p-3 rounded-lg border border-amber-200">
+                {explainText}
+              </pre>
+            </div>
+          )}
+
+          {/* Deployment History Table */}
+          {deploymentsList.length === 0 ? (
+            <EmptyState
+              title="No deployments yet"
+              description={`No builds or deployments have been executed for ${project.name} yet. Click "Trigger New Deployment" above or connect a Git repository.`}
+              action={
+                <Button onClick={handleTriggerDeployment} disabled={triggeringDeploy}>
+                  ⚡ Trigger First Deployment
+                </Button>
+              }
+            />
+          ) : (
+            <div className="jp-card overflow-hidden">
+              <div className="border-b border-[var(--border)] bg-slate-50 px-4 py-3 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
+                    All Deployments ({deploymentsList.length})
+                  </h3>
+                  <span className="flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-100/60 px-2 py-0.5 rounded-full">
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-600 animate-pulse" />
+                    Live
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => currentOrg && loadDeployments(currentOrg.id, actualProjectId)}
+                  className="text-xs text-[var(--accent)] font-bold hover:underline"
+                >
+                  ↻ Refresh Now
+                </button>
+              </div>
+
+              <div className="divide-y divide-[var(--border)]">
+                {deploymentsList.map((d) => {
+                  const isReady = d.status === "ready";
+                  const isFailed = d.status === "failed";
+                  const isBuilding = d.status === "building" || d.status === "deploying";
+                  const targetUrl = d.preview_url || appPublicUrl;
+
+                  return (
+                    <div key={d.id} className="p-4 hover:bg-slate-50/50 transition-colors space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        {/* Status + Source */}
+                        <div className="flex items-center gap-2.5">
+                          <span
+                            className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-bold ${
+                              isReady
+                                ? "border-emerald-300 bg-emerald-50 text-emerald-800"
+                                : isFailed
+                                ? "border-red-300 bg-red-50 text-red-800"
+                                : isBuilding
+                                ? "border-blue-300 bg-blue-50 text-blue-800"
+                                : "border-slate-300 bg-slate-100 text-slate-800"
+                            }`}
+                          >
+                            <span
+                              className={`h-1.5 w-1.5 rounded-full ${
+                                isReady
+                                  ? "bg-emerald-600"
+                                  : isFailed
+                                  ? "bg-red-600"
+                                  : isBuilding
+                                  ? "bg-blue-600 animate-pulse"
+                                  : "bg-slate-500"
+                              }`}
+                            />
+                            {d.status.toUpperCase()}
+                          </span>
+
+                          <span className="rounded bg-slate-100 border border-slate-200 px-2 py-0.5 text-[10px] font-bold uppercase text-slate-700 font-mono">
+                            {d.source || "manual"}
+                          </span>
+
+                          <span className="text-xs text-[var(--ink-muted)]">
+                            {d.created_at ? new Date(d.created_at).toLocaleString() : "Recently"}
+                          </span>
+                        </div>
+
+                        {/* Action Buttons */}
+                        <div className="flex items-center gap-2">
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            size="sm"
+                            onClick={() => handleViewBuildLogs(d)}
+                            className="text-xs font-semibold"
+                          >
+                            📋 View Build Logs
+                          </Button>
+
+                          {isFailed && (
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => handleExplainFailure(d)}
+                              disabled={explainingDeployId === d.id}
+                              className="text-xs font-semibold text-amber-700 border-amber-300 hover:bg-amber-50"
+                            >
+                              {explainingDeployId === d.id ? "Analyzing..." : "🤖 Explain Issue"}
+                            </Button>
+                          )}
+
+                          {isReady && d.image_ref && (
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => handleRollback(d.id)}
+                              className="text-xs font-semibold"
+                            >
+                              Rollback
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Public HTTPS Address & Git info bar */}
+                      <div className="grid gap-2 sm:grid-cols-2 text-xs">
+                        {/* Domain address */}
+                        <div className="rounded-lg bg-slate-50 border border-[var(--border)] p-2.5 flex items-center justify-between">
+                          <div className="flex items-center gap-2 overflow-hidden">
+                            <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--ink-muted)] shrink-0">
+                              App URL:
+                            </span>
+                            {isReady ? (
+                              <a
+                                href={targetUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="font-mono font-bold text-[var(--accent)] hover:underline truncate"
+                              >
+                                {targetUrl} ↗
+                              </a>
+                            ) : (
+                              <span className="font-mono text-slate-500 truncate">
+                                {isBuilding ? "Deploying to " + targetUrl : "Offline (Build " + d.status + ")"}
+                              </span>
+                            )}
+                          </div>
+                          {isReady && (
+                            <button
+                              type="button"
+                              onClick={() => copyToClipboard(targetUrl, `url-${d.id}`)}
+                              className="text-[10px] text-[var(--accent)] font-bold hover:underline shrink-0 ml-2"
+                            >
+                              {copiedKey === `url-${d.id}` ? "✓ Copied" : "Copy"}
+                            </button>
+                          )}
+                        </div>
+
+                        {/* Git Commit & Branch */}
+                        <div className="rounded-lg bg-slate-50 border border-[var(--border)] p-2.5 flex items-center justify-between">
+                          <div className="flex items-center gap-2 overflow-hidden">
+                            <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--ink-muted)] shrink-0">
+                              Git:
+                            </span>
+                            <span className="font-mono font-bold text-[var(--ink)] shrink-0">
+                              {d.git_branch || "main"}
+                            </span>
+                            {d.git_sha && (
+                              <code className="text-[10px] font-mono text-[var(--ink-muted)] shrink-0">
+                                @{d.git_sha.slice(0, 7)}
+                              </code>
+                            )}
+                            <span className="text-slate-500 truncate text-[11px]">
+                              {d.message || "Manual deployment"}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Issue Box (if failed) */}
+                      {isFailed && (
+                        <div className="rounded-lg border border-red-200 bg-red-50/70 p-3 text-xs text-red-900 flex items-start justify-between gap-3">
+                          <div className="flex items-start gap-2">
+                            <span className="text-base leading-none">⚠️</span>
+                            <div>
+                              <strong className="font-bold text-red-950 block">Deployment Issue Detected:</strong>
+                              <p className="font-mono text-[11px] text-red-800 mt-0.5 break-all">
+                                {d.error || "Build step failed or container did not pass health check."}
+                              </p>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleViewBuildLogs(d)}
+                            className="shrink-0 text-xs font-bold text-red-700 hover:text-red-950 underline"
+                          >
+                            Inspect Build Logs →
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -679,19 +1083,250 @@ export default function ProjectDetailClient() {
           ======================================================== */}
       {currentTab === "builds" && (
         <div className="space-y-6">
-          <div className="jp-card overflow-hidden">
-            <div className="border-b border-slate-700 bg-slate-900 px-4 py-3 flex items-center justify-between">
-              <span className="font-mono text-xs font-bold text-slate-200">
-                Compiler Terminal & Live Build Stream
-              </span>
-              <span className="rounded bg-slate-800 px-2 py-0.5 font-mono text-[10px] text-emerald-400">
-                App: {project.name}
-              </span>
+          {/* Top Segmented Controls: Compiler vs Running App */}
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center rounded-lg border border-[var(--border)] bg-white p-1 shadow-2xs text-xs">
+              <button
+                type="button"
+                onClick={() => setLogsTab("builds")}
+                className={`px-3 py-1.5 font-bold rounded-md transition-all ${
+                  logsTab === "builds"
+                    ? "bg-[var(--accent)] text-white shadow-2xs"
+                    : "text-[var(--ink-secondary)] hover:text-[var(--ink)]"
+                }`}
+              >
+                🏗️ Compiler & Build Stream
+              </button>
+              <button
+                type="button"
+                onClick={() => setLogsTab("runtime")}
+                className={`px-3 py-1.5 font-bold rounded-md transition-all ${
+                  logsTab === "runtime"
+                    ? "bg-[var(--accent)] text-white shadow-2xs"
+                    : "text-[var(--ink-secondary)] hover:text-[var(--ink)]"
+                }`}
+              >
+                🟢 Running App Container Logs
+              </button>
             </div>
-            <pre className="h-80 overflow-auto bg-slate-950 p-4 font-mono text-xs text-emerald-400 leading-relaxed shadow-inner whitespace-pre-wrap">
-              {buildLogs || `// Live build stream for ${project.name}. Connect a repository and trigger a deployment to view compilation steps.`}
-            </pre>
+
+            <div className="flex items-center gap-2">
+              <label className="flex items-center gap-1.5 text-xs text-[var(--ink-secondary)] font-semibold cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={autoRefreshLogs}
+                  onChange={(e) => setAutoRefreshLogs(e.target.checked)}
+                  className="rounded border-[var(--border)]"
+                />
+                Live Streaming {autoRefreshLogs ? "Active" : "Paused"}
+              </label>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  if (currentOrg) {
+                    if (logsTab === "builds") loadBuilds(currentOrg.id, actualProjectId);
+                    else loadRuntimeLogs(currentOrg.id, actualProjectId);
+                  }
+                }}
+                className="text-xs"
+              >
+                ↻ Refresh
+              </Button>
+            </div>
           </div>
+
+          {/* Subview 1: Compiler & Build Stream */}
+          {logsTab === "builds" && (
+            <div className="space-y-4">
+              <div className="jp-card p-4 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <label className="text-xs font-bold uppercase tracking-wider text-[var(--ink-muted)]">
+                    Select Build:
+                  </label>
+                  <select
+                    className="rounded-md border border-[var(--border)] bg-white px-3 py-1.5 text-xs font-semibold text-[var(--ink)] shadow-2xs focus:border-[var(--accent)] focus:outline-none"
+                    value={selectedBuildId}
+                    onChange={(e) => {
+                      setSelectedBuildId(e.target.value);
+                      if (currentOrg) loadBuildLogs(currentOrg.id, actualProjectId, e.target.value);
+                    }}
+                  >
+                    {buildsList.map((b) => (
+                      <option key={b.id} value={b.id}>
+                        [{b.status.toUpperCase()}] {b.framework ? `(${b.framework})` : ""} {b.created_at ? new Date(b.created_at).toLocaleTimeString() : b.id.slice(0, 8)} {b.git_sha ? `@${b.git_sha.slice(0, 7)}` : ""}
+                      </option>
+                    ))}
+                    {buildsList.length === 0 && <option value="">No builds recorded</option>}
+                  </select>
+                </div>
+
+                {selectedBuildId && (
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => copyToClipboard(buildLogsText, "build-logs")}
+                      className="text-xs font-semibold px-2.5 py-1 rounded border border-[var(--border)] bg-white hover:bg-slate-50 text-[var(--ink)]"
+                    >
+                      {copiedKey === "build-logs" ? "✓ Copied Logs" : "📋 Copy Logs"}
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <div className="jp-card overflow-hidden">
+                <div className="border-b border-slate-800 bg-slate-900 px-4 py-3 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="h-2 w-2 rounded-full bg-emerald-400" />
+                    <span className="font-mono text-xs font-bold text-slate-200">
+                      Compiler Terminal & Live Build Stream
+                    </span>
+                  </div>
+                  <span className="rounded bg-slate-800 px-2 py-0.5 font-mono text-[10px] text-emerald-400">
+                    App: {project.name}
+                  </span>
+                </div>
+                <pre className="h-96 overflow-auto bg-slate-950 p-4 font-mono text-xs text-emerald-400 leading-relaxed shadow-inner whitespace-pre-wrap">
+                  {buildLogsText || `// No build output yet. Trigger a deployment to view live compiler steps.`}
+                </pre>
+              </div>
+            </div>
+          )}
+
+          {/* Subview 2: Running App Container Logs */}
+          {logsTab === "runtime" && (
+            <div className="space-y-4">
+              {/* Container Status Banner */}
+              <div className="jp-card p-4 flex flex-wrap items-center justify-between gap-3 border-emerald-500/30 bg-emerald-50/40">
+                <div className="flex items-center gap-2.5">
+                  <span className="text-xl">🐳</span>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h4 className="text-xs font-bold uppercase tracking-wider text-emerald-950">
+                        Running Container Instance
+                      </h4>
+                      {runtimeInstances.length > 0 ? (
+                        <span className="rounded bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 text-[10px] uppercase">
+                          {runtimeInstances[0].status || "Running"}
+                        </span>
+                      ) : (
+                        <span className="rounded bg-slate-200 text-slate-700 font-bold px-2 py-0.5 text-[10px] uppercase">
+                          Simulated / Standby
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-emerald-700 font-mono mt-0.5">
+                      {runtimeInstances.length > 0
+                        ? `Container: ${runtimeInstances[0].container_name || runtimeInstances[0].id.slice(0, 12)} • Image: ${runtimeInstances[0].image_ref || "latest"}`
+                        : `App runtime service for ${project.name} on ${appPublicUrl}`}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <a
+                    href={appPublicUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-xs font-bold px-3 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white transition-colors"
+                  >
+                    Open Live App ↗
+                  </a>
+                </div>
+              </div>
+
+              {/* Filter and Search Bar */}
+              <div className="jp-card p-4 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-3">
+                  <label className="flex items-center gap-1.5 text-xs text-[var(--ink-secondary)] font-semibold">
+                    <span>Source:</span>
+                    <select
+                      className="rounded-md border border-[var(--border)] bg-white px-2.5 py-1 text-xs font-bold text-[var(--ink)] shadow-2xs"
+                      value={runtimeSourceFilter}
+                      onChange={(e) => setRuntimeSourceFilter(e.target.value)}
+                    >
+                      <option value="">All Sources</option>
+                      <option value="runtime">Runtime Engine</option>
+                      <option value="app">App Stdout/Stderr</option>
+                      <option value="build">Build Logs</option>
+                    </select>
+                  </label>
+
+                  <Input
+                    placeholder="Filter logs by keyword..."
+                    value={runtimeSearchQuery}
+                    onChange={(e) => setRuntimeSearchQuery(e.target.value)}
+                    className="w-56 text-xs h-8"
+                  />
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const allText = runtimeLogs.map((l) => `[${l.logged_at}] [${l.source}/${l.level}] ${l.message}`).join("\n");
+                      copyToClipboard(allText, "app-logs");
+                    }}
+                    className="text-xs font-semibold px-2.5 py-1 rounded border border-[var(--border)] bg-white hover:bg-slate-50 text-[var(--ink)]"
+                  >
+                    {copiedKey === "app-logs" ? "✓ Copied Logs" : "📋 Copy All Logs"}
+                  </button>
+                </div>
+              </div>
+
+              {/* Terminal Logs View */}
+              <div className="jp-card overflow-hidden">
+                <div className="border-b border-slate-800 bg-slate-900 px-4 py-3 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+                    <span className="font-mono text-xs font-bold text-slate-200">
+                      Live Running Application Logs
+                    </span>
+                  </div>
+                  <span className="font-mono text-[10px] text-slate-400">
+                    {runtimeLogs.length} events logged
+                  </span>
+                </div>
+                {runtimeLogs.length === 0 ? (
+                  <div className="h-80 flex flex-col items-center justify-center bg-slate-950 p-6 text-center text-xs text-slate-500 font-mono">
+                    <p className="mb-2">No application log events received yet.</p>
+                    <p className="text-[11px] text-slate-600">
+                      When your running container emits stdout or stderr, logs will automatically stream into this terminal.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="h-96 overflow-auto bg-slate-950 p-4 font-mono text-xs text-slate-200 leading-relaxed space-y-1">
+                    {runtimeLogs.map((log) => {
+                      const isErr = log.level === "error" || log.message.toLowerCase().includes("error");
+                      const isWarn = log.level === "warn" || log.message.toLowerCase().includes("warn");
+                      return (
+                        <div key={log.id} className="flex items-start gap-2 hover:bg-slate-900/60 py-0.5 rounded px-1">
+                          <span className="text-slate-500 shrink-0 select-none text-[10px]">
+                            {log.logged_at ? new Date(log.logged_at).toLocaleTimeString() : "--:--:--"}
+                          </span>
+                          <span
+                            className={`rounded px-1 text-[10px] uppercase font-bold shrink-0 ${
+                              isErr
+                                ? "bg-red-950 text-red-400 border border-red-800/50"
+                                : isWarn
+                                ? "bg-amber-950 text-amber-400 border border-amber-800/50"
+                                : "bg-slate-800 text-slate-300"
+                            }`}
+                          >
+                            {log.source}/{log.level}
+                          </span>
+                          <span className={`break-all ${isErr ? "text-red-300 font-semibold" : isWarn ? "text-amber-300" : "text-emerald-400"}`}>
+                            {log.message}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -1549,6 +2184,58 @@ DATABASE_URL=${getInternalUrl(snippetAddon)}`}
             >
               {deleting ? "Deleting..." : "Delete Project Permanently"}
             </Button>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================
+          BUILD LOGS MODAL (when clicked from any deployment)
+          ======================================================== */}
+      {selectedDeployLogs && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-3xl rounded-2xl border border-[var(--border)] bg-slate-950 shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
+            <div className="border-b border-slate-800 bg-slate-900 px-6 py-4 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="h-2 w-2 rounded-full bg-emerald-400" />
+                <h3 className="text-sm font-bold text-white font-mono flex items-center gap-2">
+                  <span>Build Logs for Deployment</span>
+                  <code className="text-xs text-emerald-400 font-mono">
+                    {selectedDeployLogs.deploymentId.slice(0, 8)}
+                  </code>
+                </h3>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => copyToClipboard(selectedDeployLogs.logs, "modal-logs")}
+                  className="text-xs text-slate-300 hover:text-white font-bold bg-slate-800 px-2.5 py-1 rounded"
+                >
+                  {copiedKey === "modal-logs" ? "✓ Copied" : "📋 Copy"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedDeployLogs(null)}
+                  className="text-slate-400 hover:text-white text-lg font-bold p-1 ml-2"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            <div className="p-4 flex-1 overflow-auto font-mono text-xs text-emerald-400 leading-relaxed whitespace-pre-wrap">
+              {selectedDeployLogs.logs}
+            </div>
+
+            <div className="border-t border-slate-800 bg-slate-900 px-6 py-3 flex items-center justify-between text-xs text-slate-400">
+              <span>Status: {selectedDeployLogs.loading ? "Streaming compiler logs..." : "Logs loaded"}</span>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => setSelectedDeployLogs(null)}
+              >
+                Close
+              </Button>
+            </div>
           </div>
         </div>
       )}
