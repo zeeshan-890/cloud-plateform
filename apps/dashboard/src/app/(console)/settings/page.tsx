@@ -262,16 +262,16 @@ export default function SettingsPage() {
           </div>
 
           {/* DNS Records */}
-          <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 space-y-3">
-            <p className="text-xs font-bold uppercase tracking-wider text-slate-700">
+          <div className="rounded-xl border-2 border-slate-300 bg-slate-50 p-5 space-y-4 shadow-2xs">
+            <p className="text-xs font-extrabold uppercase tracking-wider text-[#0F1B3D]">
               Required DNS Records:
             </p>
-            <div className="space-y-2 font-mono text-[11px]">
+            <div className="space-y-2.5 font-mono text-[11px]">
               {/* Record 1: Panel Domain */}
-              <div className="flex items-center justify-between rounded bg-white px-3 py-2 border border-slate-200">
+              <div className="flex items-center justify-between rounded-lg bg-white px-3.5 py-2.5 border-2 border-slate-300 shadow-2xs">
                 <div className="flex items-center gap-2">
                   <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-bold text-blue-800">A</span>
-                  <strong className="text-blue-900">panel</strong>
+                  <strong className="text-blue-900 font-bold">panel</strong>
                   <span className="text-slate-400">&rarr;</span>
                   <code className="text-slate-900 font-bold">{serverIp}</code>
                   <span className="text-slate-500 text-[10px] font-sans font-medium">(Management Panel)</span>
@@ -279,17 +279,17 @@ export default function SettingsPage() {
                 <button
                   type="button"
                   onClick={() => copyToClipboard(`panel.${rootDomain}`, "panel")}
-                  className="text-xs text-blue-600 font-bold hover:underline shrink-0"
+                  className="text-xs text-[#1E3A8A] font-bold hover:underline shrink-0"
                 >
                   {copiedRecord === "panel" ? "Copied!" : "Copy Host"}
                 </button>
               </div>
 
               {/* Record 2: Wildcard for Apps */}
-              <div className="flex items-center justify-between rounded bg-white px-3 py-2 border border-slate-200">
+              <div className="flex items-center justify-between rounded-lg bg-white px-3.5 py-2.5 border-2 border-slate-300 shadow-2xs">
                 <div className="flex items-center gap-2">
                   <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold text-emerald-800">A</span>
-                  <strong className="text-emerald-900">*</strong>
+                  <strong className="text-emerald-900 font-bold">*</strong>
                   <span className="text-slate-400">&rarr;</span>
                   <code className="text-slate-900 font-bold">{serverIp}</code>
                   <span className="text-slate-500 text-[10px] font-sans font-medium">(All App Containers)</span>
@@ -297,17 +297,17 @@ export default function SettingsPage() {
                 <button
                   type="button"
                   onClick={() => copyToClipboard(`*.${rootDomain}`, "wildcard")}
-                  className="text-xs text-blue-600 font-bold hover:underline shrink-0"
+                  className="text-xs text-[#1E3A8A] font-bold hover:underline shrink-0"
                 >
                   {copiedRecord === "wildcard" ? "Copied!" : "Copy Host"}
                 </button>
               </div>
 
               {/* Record 3: Apex Domain */}
-              <div className="flex items-center justify-between rounded bg-white px-3 py-2 border border-slate-200">
+              <div className="flex items-center justify-between rounded-lg bg-white px-3.5 py-2.5 border-2 border-slate-300 shadow-2xs">
                 <div className="flex items-center gap-2">
                   <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-800">A</span>
-                  <strong className="text-slate-900">@</strong>
+                  <strong className="text-slate-900 font-bold">@</strong>
                   <span className="text-slate-400">&rarr;</span>
                   <code className="text-slate-900 font-bold">{serverIp}</code>
                   <span className="text-slate-500 text-[10px] font-sans font-medium">(Apex / Root Domain)</span>
@@ -315,7 +315,7 @@ export default function SettingsPage() {
                 <button
                   type="button"
                   onClick={() => copyToClipboard(rootDomain, "root")}
-                  className="text-xs text-blue-600 font-bold hover:underline shrink-0"
+                  className="text-xs text-[#1E3A8A] font-bold hover:underline shrink-0"
                 >
                   {copiedRecord === "root" ? "Copied!" : "Copy Host"}
                 </button>
@@ -323,13 +323,13 @@ export default function SettingsPage() {
             </div>
 
             {/* Action Buttons: Check Propagation */}
-            <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-200">
+            <div className="flex flex-wrap items-center gap-2 pt-3 border-t-2 border-slate-200">
               <Button
                 type="button"
                 size="sm"
                 onClick={handleCheckPropagation}
                 disabled={checkingDns}
-                className="bg-blue-600 hover:bg-blue-700 text-white font-bold"
+                className="bg-[#1E3A8A] hover:bg-[#162456] text-white font-bold"
               >
                 {checkingDns ? "Checking DNS & HTTPS..." : "⚡ Check DNS & HTTPS Propagation"}
               </Button>
@@ -338,7 +338,7 @@ export default function SettingsPage() {
                   href={`https://www.whatsmydns.net/#A/panel.${rootDomain}`}
                   target="_blank"
                   rel="noreferrer"
-                  className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-white px-3 py-1.5 text-xs font-bold text-[var(--ink)] hover:bg-slate-50 transition-colors shadow-2xs"
+                  className="inline-flex items-center gap-1 rounded-lg border-2 border-slate-300 bg-white px-3 py-1.5 text-xs font-bold text-slate-800 hover:bg-slate-50 transition-colors shadow-2xs"
                 >
                   <span>Global Map (WhatsMyDNS)</span>
                   <span className="text-[10px] text-blue-600">↗</span>
@@ -349,7 +349,7 @@ export default function SettingsPage() {
                     href={`https://panel.${rootDomain}`}
                     target="_blank"
                     rel="noreferrer"
-                    className="inline-flex items-center gap-1 rounded-md border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-800 hover:bg-emerald-100 transition-colors shadow-2xs"
+                    className="inline-flex items-center gap-1 rounded-lg border-2 border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-800 hover:bg-emerald-100 transition-colors shadow-2xs"
                   >
                     <span>🔒 Open https://panel.{rootDomain}</span>
                     <span className="text-[10px]">↗</span>
@@ -359,7 +359,7 @@ export default function SettingsPage() {
 
               {/* Real-time Propagation Results Panel */}
               {dnsResults && (
-                <div className="mt-3 space-y-2.5 rounded-lg border border-slate-200 bg-white p-3.5 shadow-xs">
+                <div className="mt-3 space-y-2.5 rounded-xl border-2 border-slate-300 bg-white p-4 shadow-sm">
                   <div className="flex items-center justify-between border-b border-slate-100 pb-2">
                     <h5 className="text-xs font-bold uppercase tracking-wider text-slate-800">
                       Live DNS Verification Report

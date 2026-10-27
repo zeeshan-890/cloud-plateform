@@ -1,7 +1,7 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { FormEvent, Suspense, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { BrandMark } from "@/components/brand";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -9,9 +9,11 @@ import { Alert } from "@/components/ui/page";
 import { useAuth } from "@/lib/auth-context";
 import { api, ApiError } from "@/lib/api";
 
-export default function RootAuthPage() {
+function AuthForm() {
   const { user, loading, login, bootstrap } = useAuth();
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const expired = searchParams.get("expired") === "1";
 
   const [checkingBootstrap, setCheckingBootstrap] = useState(true);
   const [isInitialized, setIsInitialized] = useState(true);
@@ -38,7 +40,6 @@ export default function RootAuthPage() {
           setIsInitialized(Boolean(res.initialized));
         }
       } catch {
-        // Fallback: If status endpoint not available or error, assume initialized (regular login)
         if (active) setIsInitialized(true);
       } finally {
         if (active) setCheckingBootstrap(false);
@@ -70,15 +71,13 @@ export default function RootAuthPage() {
     setSubmitting(true);
     try {
       await bootstrap(username.trim(), password);
-      // Automatically create a default workspace organization
       try {
         await api.createOrg({ name: "Default Workspace", slug: "default-workspace" });
       } catch {
-        // Non-critical if auto-created or already exists
+        // Non-critical if auto-created
       }
       router.replace("/projects");
     } catch (err) {
-      // If already initialized, seamlessly fallback to login
       if (err instanceof ApiError && err.status === 403) {
         setIsInitialized(true);
         setError("Platform is already initialized. Please sign in.");
@@ -112,103 +111,131 @@ export default function RootAuthPage() {
 
   if (loading || checkingBootstrap) {
     return (
-      <div className="flex min-h-screen items-center justify-center hero-atmosphere">
+      <div className="flex min-h-screen items-center justify-center bg-[#D6DEEB]">
         <div className="flex flex-col items-center gap-3">
           <BrandMark size="hero" href={null} />
-          <p className="text-xs text-[var(--ink-muted)] animate-pulse">Loading console…</p>
+          <p className="text-xs font-bold text-slate-500 animate-pulse">Loading console…</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="flex min-h-screen flex-col hero-atmosphere">
-      <header className="px-6 py-5 sm:px-10">
+    <div className="flex min-h-screen flex-col bg-[#D6DEEB]">
+      <header className="px-6 py-5 sm:px-10 flex items-center justify-between">
         <BrandMark size="md" href="/" />
+        <span className="text-xs font-bold text-slate-600 bg-white/80 border-2 border-slate-300 rounded-lg px-2.5 py-1 shadow-2xs">
+          Cloud Console
+        </span>
       </header>
 
-      <main className="flex flex-1 items-start justify-center px-6 py-12 sm:items-center">
+      <main className="flex flex-1 items-center justify-center px-4 py-8">
         <div className="w-full max-w-md animate-fade-up">
-          <div className="mb-6">
-            <h1 className="font-[family-name:var(--font-display)] text-3xl font-bold tracking-tight text-[var(--ink)]">
-              {!isInitialized ? "Set up Administrator" : "Sign in"}
-            </h1>
-            <p className="mt-2 text-sm text-[var(--ink-muted)]">
-              {!isInitialized
-                ? "First-time setup: configure your master administrator credentials."
-                : "Enter your username and password to access the platform."}
-            </p>
-          </div>
+          <div className="bg-white border-2 border-slate-300 rounded-2xl shadow-sm p-6 sm:p-8">
+            <div className="mb-6">
+              <h1 className="text-2xl font-extrabold tracking-tight text-[#0F1B3D]">
+                {!isInitialized ? "Set up Administrator" : "Sign in to Platform"}
+              </h1>
+              <p className="mt-1.5 text-xs font-medium text-slate-500">
+                {!isInitialized
+                  ? "First-time setup: configure your master administrator credentials."
+                  : "Enter your master credentials to access the deployment console."}
+              </p>
+            </div>
 
-          {!isInitialized ? (
-            <form onSubmit={handleBootstrap} className="flex flex-col gap-4">
-              {error ? <Alert>{error}</Alert> : null}
-              <Input
-                label="Username"
-                type="text"
-                autoComplete="username"
-                required
-                autoFocus
-                placeholder="admin"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-              />
-              <Input
-                label="Password"
-                type="password"
-                autoComplete="new-password"
-                required
-                minLength={8}
-                hint="At least 8 characters"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-              <Input
-                label="Confirm Password"
-                type="password"
-                autoComplete="new-password"
-                required
-                minLength={8}
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-              />
-              <Button type="submit" disabled={submitting} className="mt-2 w-full py-2.5">
-                {submitting ? "Setting up platform…" : "Set Up Administrator & Launch"}
-              </Button>
-            </form>
-          ) : (
-            <form onSubmit={handleLogin} className="flex flex-col gap-4">
-              {error ? <Alert>{error}</Alert> : null}
-              <Input
-                label="Username"
-                type="text"
-                autoComplete="username"
-                required
-                autoFocus
-                placeholder="admin"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-              />
-              <Input
-                label="Password"
-                type="password"
-                autoComplete="current-password"
-                required
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-              <Button type="submit" disabled={submitting} className="mt-2 w-full py-2.5">
-                {submitting ? "Signing in…" : "Sign in"}
-              </Button>
-            </form>
-          )}
+            {expired ? (
+              <div className="mb-4">
+                <Alert tone="warning">
+                  Your session has expired. Please sign in again.
+                </Alert>
+              </div>
+            ) : null}
 
-          <div className="mt-8 pt-4 border-t border-[var(--ink)]/10 flex items-center justify-between text-xs text-[var(--ink-muted)]">
-            <span>JP Cloud Platform — Self-Hosted</span>
-            <span>v1.0.0</span>
+            {!isInitialized ? (
+              <form onSubmit={handleBootstrap} className="flex flex-col gap-4">
+                {error ? <Alert tone="error">{error}</Alert> : null}
+                <Input
+                  label="Username"
+                  type="text"
+                  autoComplete="username"
+                  required
+                  autoFocus
+                  placeholder="admin"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                />
+                <Input
+                  label="Password"
+                  type="password"
+                  autoComplete="new-password"
+                  required
+                  minLength={8}
+                  hint="At least 8 characters"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                />
+                <Input
+                  label="Confirm Password"
+                  type="password"
+                  autoComplete="new-password"
+                  required
+                  minLength={8}
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                />
+                <Button type="submit" disabled={submitting} className="mt-2 w-full py-2.5">
+                  {submitting ? "Setting up platform…" : "Set Up Administrator & Launch"}
+                </Button>
+              </form>
+            ) : (
+              <form onSubmit={handleLogin} className="flex flex-col gap-4">
+                {error ? <Alert tone="error">{error}</Alert> : null}
+                <Input
+                  label="Username"
+                  type="text"
+                  autoComplete="username"
+                  required
+                  autoFocus
+                  placeholder="admin"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                />
+                <Input
+                  label="Password"
+                  type="password"
+                  autoComplete="current-password"
+                  required
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                />
+                <Button type="submit" disabled={submitting} className="mt-2 w-full py-2.5">
+                  {submitting ? "Signing in…" : "Sign in to Console"}
+                </Button>
+              </form>
+            )}
+
+            <div className="mt-6 pt-4 border-t-2 border-slate-100 flex items-center justify-between text-[11px] font-semibold text-slate-500">
+              <span>Cloud Platform</span>
+              <span>Self-Hosted • v1.0.0</span>
+            </div>
           </div>
         </div>
       </main>
     </div>
+  );
+}
+
+export default function RootAuthPage() {
+  return (
+    <Suspense fallback={
+      <div className="flex min-h-screen items-center justify-center bg-[#D6DEEB]">
+        <div className="flex flex-col items-center gap-3">
+          <BrandMark size="hero" href={null} />
+          <p className="text-xs font-bold text-slate-500 animate-pulse">Loading console…</p>
+        </div>
+      </div>
+    }>
+      <AuthForm />
+    </Suspense>
   );
 }

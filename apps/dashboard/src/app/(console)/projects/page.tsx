@@ -60,17 +60,17 @@ export default function ProjectsPage() {
   return (
     <div className="space-y-6 animate-fade-up">
       {/* Crezumic-Style Projects Header */}
-      <div className="bg-white rounded-xl border border-slate-200/90 p-6 shadow-xs flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+      <div className="bg-white rounded-xl border-2 border-slate-300 p-6 shadow-sm flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-2xl md:text-3xl font-extrabold text-slate-900 tracking-tight">
+          <div className="flex items-center gap-2.5">
+            <h1 className="text-xl md:text-2xl font-extrabold text-[#0F1B3D] tracking-tight">
               Projects & Applications
             </h1>
-            <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-bold text-slate-700 border border-slate-200">
+            <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-bold text-slate-700 border border-slate-300">
               {projects.length}
             </span>
           </div>
-          <p className="text-xs text-slate-500 mt-1">
+          <p className="text-xs text-slate-500 mt-1 font-medium">
             Active workspace for <strong className="text-slate-800">{currentOrg?.name || "your organization"}</strong>.
           </p>
         </div>
@@ -79,7 +79,7 @@ export default function ProjectsPage() {
           <Link href="/projects/new">
             <button
               type="button"
-              className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-xs font-bold text-white shadow-xs hover:bg-blue-700 transition-all"
+              className="h-9 px-4 rounded-lg bg-[#1E3A8A] text-white font-bold text-xs inline-flex items-center gap-1.5 shadow-sm hover:bg-[#162456] transition-colors"
             >
               <span>+</span>
               <span>New Project</span>
@@ -93,7 +93,7 @@ export default function ProjectsPage() {
       ) : null}
 
       {loading || orgLoading ? (
-        <div className="flex h-48 items-center justify-center text-sm font-semibold text-slate-400">
+        <div className="flex h-48 items-center justify-center text-sm font-semibold text-slate-500">
           Loading projects…
         </div>
       ) : projects.length === 0 ? (
@@ -112,16 +112,16 @@ export default function ProjectsPage() {
             <Link
               key={project.id}
               href={`/projects/${project.id}`}
-              className="bg-white rounded-xl border border-slate-200/90 p-5 shadow-xs hover:shadow-md hover:border-blue-400 transition-all flex flex-col justify-between group cursor-pointer"
+              className="bg-white rounded-xl border-2 border-slate-300 p-5 shadow-sm hover:shadow-md hover:border-slate-400 transition-all flex flex-col justify-between group cursor-pointer"
             >
               <div>
                 <div className="flex items-start justify-between gap-2 mb-2">
                   <div className="flex items-center gap-2.5">
-                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-gradient-to-br from-blue-600 to-indigo-700 text-white font-extrabold text-sm shadow-xs">
+                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-gradient-to-br from-blue-700 to-indigo-800 text-white font-extrabold text-sm shadow-xs">
                       {project.name.slice(0, 2).toUpperCase()}
                     </div>
                     <div>
-                      <h3 className="font-extrabold text-slate-900 text-sm group-hover:text-blue-600 transition-colors">
+                      <h3 className="font-extrabold text-[#0F1B3D] text-sm group-hover:text-[#1E3A8A] transition-colors">
                         {project.name}
                       </h3>
                       <p className="text-[10px] text-slate-400 font-mono">
@@ -129,7 +129,7 @@ export default function ProjectsPage() {
                       </p>
                     </div>
                   </div>
-                  <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700 border border-emerald-200 shrink-0">
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-0.5 text-[10px] font-bold text-emerald-800 border-2 border-emerald-200 shrink-0">
                     <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
                     Active
                   </span>
@@ -139,11 +139,11 @@ export default function ProjectsPage() {
                 </p>
               </div>
 
-              <div className="pt-3 border-t border-slate-100 flex items-center justify-between text-xs mt-3">
-                <span className="inline-flex items-center gap-1 font-mono text-[10px] bg-slate-50 text-slate-600 font-semibold px-2 py-0.5 rounded border border-slate-200">
+              <div className="pt-3 border-t-2 border-slate-100 flex items-center justify-between text-xs mt-3">
+                <span className="inline-flex items-center gap-1 font-mono text-[10px] bg-slate-50 text-slate-700 font-bold px-2 py-0.5 rounded-lg border-2 border-slate-300">
                   <span>🐳</span> Docker Native
                 </span>
-                <span className="font-bold text-xs text-blue-600 group-hover:translate-x-0.5 transition-transform flex items-center gap-1">
+                <span className="font-bold text-xs text-[#1E3A8A] group-hover:translate-x-0.5 transition-transform flex items-center gap-1">
                   <span>Manage</span>
                   <span>&rarr;</span>
                 </span>

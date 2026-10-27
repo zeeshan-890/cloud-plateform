@@ -131,6 +131,16 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     if (ok) {
       return request<T>(path, { ...options, skipRefresh: true });
     }
+    if (typeof window !== "undefined") {
+      clearTokens();
+      if (
+        window.location.pathname !== "/" &&
+        !window.location.pathname.startsWith("/login") &&
+        !window.location.pathname.startsWith("/register")
+      ) {
+        window.location.href = "/?expired=1";
+      }
+    }
   }
 
   if (res.status === 204) {

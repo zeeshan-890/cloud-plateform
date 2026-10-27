@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Button } from "@/components/ui/button";
+import { useRouter } from "next/navigation";
 import { Alert, EmptyState } from "@/components/ui/page";
 import { api, ApiError } from "@/lib/api";
 import { useOrg } from "@/lib/org-context";
@@ -31,6 +31,7 @@ const PROMPT_TEMPLATES = [
 ];
 
 export default function AIPage() {
+  const router = useRouter();
   const { currentOrg } = useOrg();
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState("");
@@ -39,6 +40,7 @@ export default function AIPage() {
   const [prompt, setPrompt] = useState(PROMPT_TEMPLATES[0].prompt);
   const [answer, setAnswer] = useState("");
   const [error, setError] = useState("");
+  const [sessionExpired, setSessionExpired] = useState(false);
   const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState<"explain" | "ask" | "logs" | "">("");
 
@@ -58,6 +60,10 @@ export default function AIPage() {
         if (status.model) setModel(status.model);
       } catch (err) {
         if (mounted) {
+          if (err instanceof ApiError && (err.status === 401 || err.message.toLowerCase().includes("token") || err.message.toLowerCase().includes("unauthorized"))) {
+            setSessionExpired(true);
+            return;
+          }
           setError(err instanceof ApiError ? err.message : "Failed to load AI status");
         }
       }
@@ -77,6 +83,10 @@ export default function AIPage() {
       setAnswer(res.explanation);
       if (res.mode) setMode(res.mode);
     } catch (err) {
+      if (err instanceof ApiError && (err.status === 401 || err.message.toLowerCase().includes("token"))) {
+        setSessionExpired(true);
+        return;
+      }
       setError(err instanceof ApiError ? err.message : "Explain failed");
     } finally {
       setBusy("");
@@ -97,6 +107,10 @@ export default function AIPage() {
       setAnswer(res.answer);
       if (res.mode) setMode(res.mode);
     } catch (err) {
+      if (err instanceof ApiError && (err.status === 401 || err.message.toLowerCase().includes("token"))) {
+        setSessionExpired(true);
+        return;
+      }
       setError(err instanceof ApiError ? err.message : "Ask failed");
     } finally {
       setBusy("");
@@ -125,6 +139,10 @@ ${res.recommendations?.map((r, i) => `${i + 1}. ${r}`).join("\n") || "No action 
       if (res.model) setModel(res.model);
       setMode("gemini-api");
     } catch (err) {
+      if (err instanceof ApiError && (err.status === 401 || err.message.toLowerCase().includes("token"))) {
+        setSessionExpired(true);
+        return;
+      }
       setError(err instanceof ApiError ? err.message : "Log analysis failed");
     } finally {
       setBusy("");
@@ -150,18 +168,18 @@ ${res.recommendations?.map((r, i) => `${i + 1}. ${r}`).join("\n") || "No action 
   return (
     <div className="space-y-6 animate-fade-up">
       {/* Crezumic-Style Page Header */}
-      <div className="bg-white rounded-xl border border-slate-200/90 p-6 shadow-xs">
+      <div className="bg-white rounded-xl border-2 border-slate-300 p-6 shadow-sm">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div className="space-y-1">
-            <div className="flex items-center gap-2.5">
-              <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-blue-600 text-white text-lg shadow-xs">
+            <div className="flex items-center gap-3">
+              <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br from-blue-700 to-indigo-800 text-white text-lg shadow-sm">
                 ✨
               </span>
               <div>
-                <h1 className="text-2xl md:text-3xl font-extrabold text-slate-900 tracking-tight">
+                <h1 className="text-xl md:text-2xl font-extrabold text-[#0F1B3D] tracking-tight">
                   AI Ops & Diagnostic Intelligence
                 </h1>
-                <p className="text-xs text-slate-500">
+                <p className="text-xs text-slate-500 font-medium">
                   Automated root-cause analysis, container log diagnostics, and architectural optimization.
                 </p>
               </div>
@@ -169,36 +187,55 @@ ${res.recommendations?.map((r, i) => `${i + 1}. ${r}`).join("\n") || "No action 
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-indigo-200 bg-indigo-50/70 px-3 py-1 text-xs font-bold text-indigo-700">
-              <span className="h-2 w-2 rounded-full bg-blue-500 animate-pulse" />
+            <span className="inline-flex items-center gap-1.5 rounded-full border-2 border-blue-200 bg-blue-50 px-3 py-1 text-xs font-bold text-[#1E3A8A] shadow-2xs">
+              <span className="h-2 w-2 rounded-full bg-blue-600 animate-pulse" />
               Gemini 3.5 Flash Lite Active
             </span>
           </div>
         </div>
       </div>
 
+      {sessionExpired ? (
+        <div className="bg-amber-50 border-2 border-amber-300 rounded-xl p-5 shadow-sm flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <span className="text-2xl">🔐</span>
+            <div>
+              <p className="text-sm font-extrabold text-amber-950">Your console session has expired</p>
+              <p className="text-xs text-amber-800">Please sign in again to refresh security credentials and access your projects.</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => router.push("/login")}
+            className="h-9 px-4 rounded-lg bg-[#1E3A8A] text-white font-bold text-xs inline-flex items-center justify-center shadow-sm hover:bg-[#162456] transition-colors shrink-0"
+          >
+            Log In Again &rarr;
+          </button>
+        </div>
+      ) : null}
+
       {error ? (
         <Alert tone="error">{error}</Alert>
       ) : null}
 
       {/* Main Interactive AI Query Console */}
-      <div className="bg-white rounded-xl border border-slate-200/90 p-6 shadow-xs space-y-5">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+      <div className="bg-white rounded-xl border-2 border-slate-300 p-6 shadow-sm space-y-5">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-slate-100 pb-4">
           <div>
-            <h3 className="text-sm font-bold text-slate-900">
+            <h3 className="text-base font-extrabold text-[#0F1B3D]">
               Assistant Query & Failure Diagnosis
             </h3>
-            <p className="text-xs text-slate-500">
+            <p className="text-xs text-slate-500 font-medium">
               Select an application and submit custom prompts or choose pre-built diagnostic templates.
             </p>
           </div>
 
-          <div className="flex items-center gap-2">
-            <label className="text-xs font-bold text-slate-600 shrink-0">
+          <div className="flex items-center gap-2.5">
+            <label className="text-xs font-bold text-slate-700 shrink-0 uppercase tracking-wider text-[11px]">
               Target App:
             </label>
             <select
-              className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-bold text-slate-900 shadow-2xs focus:border-blue-500 focus:outline-none"
+              className="rounded-lg border-2 border-slate-300 bg-white px-3 py-1.5 text-xs font-bold text-slate-900 shadow-2xs focus:border-[#1E3A8A] focus:outline-none"
               value={projectId}
               onChange={(e) => setProjectId(e.target.value)}
             >
@@ -213,8 +250,8 @@ ${res.recommendations?.map((r, i) => `${i + 1}. ${r}`).join("\n") || "No action 
         </div>
 
         {/* Quick Suggestion Chips */}
-        <div className="space-y-1.5">
-          <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+        <div className="space-y-2">
+          <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
             Quick Diagnostic Templates:
           </p>
           <div className="flex flex-wrap gap-2">
@@ -223,10 +260,10 @@ ${res.recommendations?.map((r, i) => `${i + 1}. ${r}`).join("\n") || "No action 
                 key={tmpl.label}
                 type="button"
                 onClick={() => setPrompt(tmpl.prompt)}
-                className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold transition-all ${
+                className={`inline-flex items-center gap-1.5 rounded-lg border-2 px-3.5 py-1.5 text-xs font-bold transition-all shadow-2xs ${
                   prompt === tmpl.prompt
-                    ? "border-blue-500 bg-blue-50 text-blue-700 shadow-2xs"
-                    : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50"
+                    ? "border-[#1E3A8A] bg-blue-50 text-[#1E3A8A] ring-1 ring-[#1E3A8A]/30"
+                    : "border-slate-300 bg-white text-slate-700 hover:border-slate-400 hover:bg-slate-50"
                 }`}
               >
                 <span>{tmpl.icon}</span>
@@ -238,11 +275,11 @@ ${res.recommendations?.map((r, i) => `${i + 1}. ${r}`).join("\n") || "No action 
 
         {/* Prompt Input Box */}
         <div className="space-y-1.5">
-          <label className="text-xs font-bold text-slate-700">
+          <label className="text-xs font-bold uppercase tracking-wider text-slate-700 text-[11px]">
             Prompt / Question:
           </label>
           <textarea
-            className="w-full min-h-[110px] rounded-xl border border-slate-200 bg-slate-50/50 p-3.5 text-xs text-slate-900 shadow-inner focus:border-blue-500 focus:bg-white focus:outline-none transition-all leading-relaxed"
+            className="w-full min-h-[120px] rounded-xl border-2 border-slate-300 bg-white p-4 text-xs font-medium text-slate-900 shadow-2xs focus:border-[#1E3A8A] focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all leading-relaxed"
             placeholder="Type your question or issue description for Gemini 3.5 Flash Lite..."
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
@@ -255,7 +292,7 @@ ${res.recommendations?.map((r, i) => `${i + 1}. ${r}`).join("\n") || "No action 
             type="button"
             onClick={onAsk}
             disabled={!!busy || !prompt.trim()}
-            className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-xs font-bold text-white shadow-xs hover:bg-blue-700 transition-all disabled:opacity-50"
+            className="h-10 px-5 rounded-lg bg-[#1E3A8A] text-white font-bold text-xs inline-flex items-center gap-2 shadow-sm hover:bg-[#162456] transition-colors disabled:opacity-50"
           >
             <span>✨</span>
             <span>{busy === "ask" ? "Asking Gemini 3.5..." : "Ask Gemini 3.5"}</span>
@@ -265,7 +302,7 @@ ${res.recommendations?.map((r, i) => `${i + 1}. ${r}`).join("\n") || "No action 
             type="button"
             onClick={onExplain}
             disabled={!!busy || !projectId}
-            className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-800 shadow-2xs hover:bg-slate-50 transition-all disabled:opacity-50"
+            className="h-10 px-4 rounded-lg bg-white border-2 border-slate-300 text-slate-800 font-bold text-xs inline-flex items-center gap-2 shadow-sm hover:bg-slate-50 hover:border-slate-400 transition-colors disabled:opacity-50"
           >
             <span>🔍</span>
             <span>{busy === "explain" ? "Diagnosing Failure..." : "Explain Last Failure"}</span>
@@ -275,7 +312,7 @@ ${res.recommendations?.map((r, i) => `${i + 1}. ${r}`).join("\n") || "No action 
             type="button"
             onClick={onAnalyzeLogs}
             disabled={!!busy || !projectId}
-            className="inline-flex items-center gap-2 rounded-lg border border-indigo-200 bg-gradient-to-r from-blue-50 to-indigo-50 px-4 py-2 text-xs font-bold text-indigo-700 shadow-2xs hover:from-blue-100 hover:to-indigo-100 transition-all disabled:opacity-50"
+            className="h-10 px-4 rounded-lg bg-white border-2 border-blue-200 text-[#1E3A8A] font-bold text-xs inline-flex items-center gap-2 shadow-sm hover:bg-blue-50 transition-colors disabled:opacity-50"
           >
             <span>📋</span>
             <span>{busy === "logs" ? "Analyzing Live Logs..." : "Analyze Live Logs"}</span>
@@ -285,16 +322,16 @@ ${res.recommendations?.map((r, i) => `${i + 1}. ${r}`).join("\n") || "No action 
 
       {/* Answer / AI Analysis Output Card */}
       {answer ? (
-        <div className="bg-white rounded-xl border border-indigo-200 p-6 shadow-sm space-y-4 animate-fade-up">
+        <div className="bg-white rounded-xl border-2 border-slate-300 p-6 shadow-sm space-y-4 animate-fade-up">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3">
             <div className="flex items-center gap-2">
-              <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-blue-600 text-white text-xs shadow-xs">
+              <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-blue-700 to-indigo-800 text-white text-xs shadow-xs">
                 ✨
               </span>
-              <h3 className="text-sm font-bold text-slate-900">
+              <h3 className="text-sm font-extrabold text-[#0F1B3D]">
                 Gemini 3.5 Flash Lite Output
               </h3>
-              <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-800 border border-emerald-200">
+              <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-[10px] font-bold text-emerald-800 border border-emerald-300">
                 Mode: {mode}
               </span>
             </div>
@@ -303,14 +340,14 @@ ${res.recommendations?.map((r, i) => `${i + 1}. ${r}`).join("\n") || "No action 
               <button
                 type="button"
                 onClick={copyAnswer}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 shadow-2xs hover:bg-slate-50 transition-all"
+                className="h-8 px-3 rounded-md bg-white border-2 border-slate-300 text-slate-700 font-bold text-xs inline-flex items-center gap-1.5 hover:border-[#1E3A8A] hover:text-[#1E3A8A] transition-colors shadow-sm"
               >
                 <span>{copied ? "✓ Copied" : "📋 Copy Output"}</span>
               </button>
             </div>
           </div>
 
-          <div className="bg-slate-50/70 border border-slate-200/80 rounded-xl p-4 text-xs font-mono text-slate-800 leading-relaxed whitespace-pre-wrap shadow-inner overflow-x-auto">
+          <div className="bg-slate-50 border-2 border-slate-200 rounded-xl p-4 text-xs font-mono text-slate-800 leading-relaxed whitespace-pre-wrap shadow-inner overflow-x-auto">
             {answer}
           </div>
         </div>

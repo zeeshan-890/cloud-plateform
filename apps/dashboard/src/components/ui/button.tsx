@@ -5,21 +5,21 @@ type Size = "sm" | "md" | "lg";
 
 const variants: Record<Variant, string> = {
   primary:
-    "bg-[var(--accent)] text-white font-semibold hover:bg-[var(--accent-hover)] shadow-sm",
+    "bg-[#1E3A8A] text-white font-bold hover:bg-[#162456] shadow-sm transition-colors",
   secondary:
-    "bg-[var(--surface)] text-[var(--ink)] border border-[var(--border)] font-medium hover:bg-[var(--surface-hover)] hover:border-[var(--border-strong)] shadow-xs",
+    "bg-white text-slate-700 border-2 border-slate-300 font-bold hover:bg-slate-50 hover:border-slate-400 hover:text-slate-900 shadow-sm transition-colors",
   ghost:
-    "bg-transparent text-[var(--ink-secondary)] font-medium hover:bg-[var(--surface-hover)] hover:text-[var(--ink)]",
+    "bg-transparent text-slate-700 font-semibold hover:bg-slate-200/70 hover:text-slate-900 transition-colors",
   danger:
-    "bg-[var(--danger-soft)] text-[var(--danger)] border border-[var(--danger-border)] font-medium hover:bg-[var(--danger)] hover:text-white shadow-xs",
+    "bg-red-50 text-red-700 border-2 border-red-200 font-bold hover:bg-red-600 hover:text-white hover:border-red-600 shadow-sm transition-colors",
   success:
-    "bg-[var(--ok-soft)] text-[var(--ok)] border border-[var(--ok-border)] font-medium hover:bg-[var(--ok)] hover:text-white shadow-xs",
+    "bg-emerald-50 text-emerald-800 border-2 border-emerald-300 font-bold hover:bg-emerald-600 hover:text-white hover:border-emerald-600 shadow-sm transition-colors",
 };
 
 const sizes: Record<Size, string> = {
-  sm: "px-2.5 py-1 text-xs rounded",
-  md: "px-3.5 py-1.5 text-sm rounded-md",
-  lg: "px-4 py-2 text-base rounded-md",
+  sm: "h-8 px-3 text-xs rounded-lg",
+  md: "h-9 px-4 text-xs rounded-lg",
+  lg: "h-11 px-6 text-sm rounded-lg",
 };
 
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
@@ -38,7 +38,7 @@ export function Button({
 }: ButtonProps) {
   return (
     <button
-      className={`inline-flex items-center justify-center gap-1.5 font-medium transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-1 disabled:pointer-events-none disabled:opacity-50 cursor-pointer ${variants[variant]} ${sizes[size]} ${className}`}
+      className={`inline-flex items-center justify-center gap-1.5 whitespace-nowrap transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:ring-offset-1 disabled:pointer-events-none disabled:opacity-50 cursor-pointer ${variants[variant]} ${sizes[size]} ${className}`}
       disabled={disabled}
       {...props}
     >

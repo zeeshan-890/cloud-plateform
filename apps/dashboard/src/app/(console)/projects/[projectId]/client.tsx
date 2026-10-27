@@ -721,33 +721,33 @@ export default function ProjectDetailClient() {
   return (
     <div className="space-y-6">
       {/* Crezumic-Style Page Header */}
-      <div className="bg-white rounded-xl border border-slate-200/90 p-5 shadow-xs transition-all">
+      <div className="bg-white rounded-xl border-2 border-slate-300 p-6 shadow-sm transition-all">
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-          <div className="flex items-start gap-3.5">
-            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-br from-blue-600 to-indigo-700 text-xl font-black text-white shadow-xs shrink-0">
+          <div className="flex items-start gap-4">
+            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-[#1E3A8A] text-xl font-black text-white shadow-xs shrink-0">
               {project.name.slice(0, 1).toUpperCase()}
             </div>
             <div>
               <div className="flex flex-wrap items-center gap-2.5">
-                <h1 className="text-2xl md:text-3xl font-extrabold text-slate-900 tracking-tight">
+                <h1 className="text-2xl md:text-3xl font-extrabold text-[#0F1B3D] tracking-tight">
                   {project.name}
                 </h1>
-                <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-0.5 text-xs font-bold text-emerald-800">
+                <span className="inline-flex items-center gap-1.5 rounded-full border-2 border-emerald-300 bg-emerald-50 px-2.5 py-0.5 text-xs font-bold text-emerald-800">
                   <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
                   Live Operational
                 </span>
-                <span className="rounded-md border border-slate-200 bg-slate-50 px-2 py-0.5 font-mono text-[11px] text-slate-600 font-semibold">
+                <span className="rounded-lg border-2 border-slate-300 bg-slate-50 px-2.5 py-0.5 font-mono text-[11px] text-slate-700 font-bold">
                   Docker Native
                 </span>
               </div>
-              <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-slate-500">
+              <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-slate-500 font-medium">
                 <span>Production Environment</span>
                 <span className="text-slate-300">•</span>
                 <a
                   href={appPublicUrl}
                   target="_blank"
                   rel="noreferrer"
-                  className="inline-flex items-center gap-1 font-mono font-semibold text-blue-600 hover:text-blue-800 hover:underline"
+                  className="inline-flex items-center gap-1 font-mono font-bold text-[#1E3A8A] hover:underline"
                 >
                   <span>{appPublicUrl}</span>
                   <span className="text-[10px]">↗</span>
@@ -761,7 +761,7 @@ export default function ProjectDetailClient() {
               type="button"
               onClick={runAiAudit}
               disabled={aiAuditLoading}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-gradient-to-r from-blue-50 to-indigo-50 px-3.5 py-2 text-xs font-bold text-indigo-700 shadow-2xs hover:from-blue-100 hover:to-indigo-100 transition-all"
+              className="inline-flex items-center gap-1.5 rounded-lg border-2 border-slate-300 bg-white hover:bg-slate-50 px-3.5 py-2 text-xs font-bold text-slate-800 shadow-sm transition-all"
             >
               <span>✨</span>
               <span>{aiAuditLoading ? "Auditing with Gemini..." : "Gemini 3.5 Audit"}</span>
@@ -771,7 +771,7 @@ export default function ProjectDetailClient() {
               type="button"
               onClick={handleTriggerDeployment}
               disabled={triggeringDeploy}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-xs font-bold text-white shadow-xs hover:bg-blue-700 transition-all disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-[#1E3A8A] hover:bg-[#162456] px-4 py-2 text-xs font-bold text-white shadow-sm transition-all disabled:opacity-50"
             >
               <span>🚀</span>
               <span>{triggeringDeploy ? "Deploying..." : "Deploy App"}</span>
@@ -781,7 +781,7 @@ export default function ProjectDetailClient() {
               href={appPublicUrl}
               target="_blank"
               rel="noreferrer"
-              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-xs font-bold text-slate-800 shadow-2xs hover:bg-slate-50 transition-all"
+              className="inline-flex items-center gap-1.5 rounded-lg border-2 border-slate-300 bg-white hover:bg-slate-50 px-3.5 py-2 text-xs font-bold text-slate-800 shadow-sm transition-all"
             >
               <span>Open Live App</span>
               <span className="text-slate-400">↗</span>
@@ -790,8 +790,8 @@ export default function ProjectDetailClient() {
         </div>
 
         {/* Crezumic Segmented Pill Tabs Navigation */}
-        <div className="mt-5 border-t border-slate-100 pt-4">
-          <div className="flex flex-wrap items-center gap-1.5 rounded-xl bg-slate-100/80 p-1 border border-slate-200/60">
+        <div className="mt-5 border-t-2 border-slate-100 pt-4">
+          <div className="flex flex-wrap items-center gap-1.5 rounded-xl bg-slate-200/60 p-1.5 border-2 border-slate-300">
             {tabsList.map((t) => {
               const isActive =
                 t.id === "overview"
@@ -806,10 +806,10 @@ export default function ProjectDetailClient() {
                 <Link
                   key={t.id}
                   href={targetUrl}
-                  className={`inline-flex items-center gap-2 rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-all ${
+                  className={`inline-flex items-center gap-2 rounded-lg px-3.5 py-1.5 text-xs font-bold transition-all ${
                     isActive
-                      ? "bg-white text-slate-900 font-bold shadow-xs border border-slate-200/80"
-                      : "text-slate-600 hover:bg-white/60 hover:text-slate-900"
+                      ? "bg-[#1E3A8A] text-white shadow-sm"
+                      : "text-slate-700 hover:bg-white/80 hover:text-slate-900"
                   }`}
                 >
                   <span>{t.icon}</span>
@@ -830,22 +830,22 @@ export default function ProjectDetailClient() {
       {currentTab === "overview" && (
         <div className="space-y-6">
           {/* ✨ Google Gemini 3.5 Flash Lite Live Ops & Security Diagnostic Card */}
-          <div className="bg-white rounded-xl border border-indigo-100 p-5 shadow-xs relative overflow-hidden transition-all">
-            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 pb-3 border-b border-slate-100">
-              <div className="flex items-center gap-2.5">
-                <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-blue-600 text-white text-sm shadow-xs">
+          <div className="bg-white rounded-xl border-2 border-slate-300 p-6 shadow-sm relative overflow-hidden transition-all">
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 pb-4 border-b-2 border-slate-100">
+              <div className="flex items-center gap-3">
+                <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#1E3A8A] text-white text-base shadow-xs">
                   ✨
                 </span>
                 <div>
                   <div className="flex items-center gap-2">
-                    <h3 className="text-sm font-bold text-slate-900">
+                    <h3 className="text-sm font-extrabold text-[#0F1B3D]">
                       Google Gemini 3.5 Flash Lite Live Audit & Suggestions
                     </h3>
-                    <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-bold text-blue-700 border border-blue-200">
+                    <span className="rounded-full bg-blue-50 px-2.5 py-0.5 text-[10px] font-bold text-[#1E3A8A] border-2 border-blue-200">
                       Free Tier Model Active
                     </span>
                   </div>
-                  <p className="text-xs text-slate-500">
+                  <p className="text-xs text-slate-500 font-medium">
                     Real-time container architecture, database links, and security recommendations.
                   </p>
                 </div>
@@ -855,7 +855,7 @@ export default function ProjectDetailClient() {
                 type="button"
                 onClick={runAiAudit}
                 disabled={aiAuditLoading}
-                className="inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 px-3.5 py-1.5 text-xs font-bold text-white shadow-xs hover:from-blue-700 hover:to-indigo-700 transition-all shrink-0 disabled:opacity-50"
+                className="inline-flex items-center gap-2 rounded-lg bg-[#1E3A8A] hover:bg-[#162456] px-4 py-2 text-xs font-bold text-white shadow-sm transition-all shrink-0 disabled:opacity-50"
               >
                 <span>{aiAuditLoading ? "Auditing..." : "Run AI Audit"}</span>
                 <span>↻</span>
@@ -864,35 +864,35 @@ export default function ProjectDetailClient() {
 
             {aiAuditResult ? (
               <div className="mt-4 space-y-3.5 animate-fade-up">
-                <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-50 p-3 rounded-lg border border-slate-200/80">
+                <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-50 p-3.5 rounded-xl border-2 border-slate-300">
                   <div className="flex items-center gap-2">
-                    <span className="text-xs font-bold text-slate-700">Audit Status:</span>
-                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2.5 py-0.5 text-[11px] font-bold text-emerald-800">
+                    <span className="text-xs font-extrabold text-[#0F1B3D]">Audit Status:</span>
+                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2.5 py-0.5 text-[11px] font-bold text-emerald-800 border-2 border-emerald-300">
                       <span className="h-1.5 w-1.5 rounded-full bg-emerald-600" />
                       {aiAuditResult.risk_level?.toUpperCase() || "LOW RISK / PRODUCTION READY"}
                     </span>
                   </div>
-                  <span className="font-mono text-[10px] text-slate-500">
+                  <span className="font-mono text-[10px] text-slate-500 font-bold">
                     Engine: {aiAuditResult.model || "gemini-3.5-flash-lite"}
                   </span>
                 </div>
 
                 {aiAuditResult.overview && (
-                  <p className="text-xs text-slate-700 leading-relaxed font-medium bg-blue-50/50 border border-blue-100 p-3 rounded-lg">
+                  <p className="text-xs text-slate-800 leading-relaxed font-medium bg-blue-50/70 border-2 border-blue-200 p-3.5 rounded-xl">
                     {aiAuditResult.overview}
                   </p>
                 )}
 
                 {aiAuditResult.suggestions && aiAuditResult.suggestions.length > 0 && (
-                  <div className="space-y-2">
-                    <p className="text-xs font-bold text-slate-800 uppercase tracking-wider text-[11px]">
+                  <div className="space-y-2.5">
+                    <p className="text-xs font-extrabold text-[#0F1B3D] uppercase tracking-wider text-[11px]">
                       Recommended Actions & Fixes:
                     </p>
-                    <div className="grid gap-2 sm:grid-cols-2">
+                    <div className="grid gap-2.5 sm:grid-cols-2">
                       {aiAuditResult.suggestions.map((sug, idx) => (
                         <div
                           key={idx}
-                          className="flex items-start gap-2 rounded-lg border border-slate-200/80 bg-white p-3 text-xs text-slate-700 shadow-2xs hover:border-blue-300 transition-all"
+                          className="flex items-start gap-2.5 rounded-xl border-2 border-slate-300 bg-white p-3.5 text-xs text-slate-800 shadow-2xs hover:border-[#1E3A8A] transition-all font-medium"
                         >
                           <span className="text-emerald-600 font-bold shrink-0">✓</span>
                           <span className="leading-snug">{sug}</span>
@@ -903,7 +903,7 @@ export default function ProjectDetailClient() {
                 )}
               </div>
             ) : (
-              <div className="mt-4 flex items-center justify-between p-3.5 rounded-lg bg-slate-50 border border-slate-200/60 text-xs text-slate-600">
+              <div className="mt-4 flex items-center justify-between p-4 rounded-xl bg-slate-50 border-2 border-slate-300 text-xs text-slate-600 font-medium">
                 <p>
                   Click <strong>&quot;Run AI Audit&quot;</strong> to analyze this application with Gemini 3.5 Flash Lite for performance, network stability, and database connectivity.
                 </p>
