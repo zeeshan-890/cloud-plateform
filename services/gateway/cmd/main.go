@@ -255,6 +255,8 @@ func main() {
 	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/databases/{dbId}", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(databaseSvc, "/api/v1")))))
 	mux.Handle("DELETE /api/v1/orgs/{orgId}/projects/{projectId}/databases/{dbId}", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(databaseSvc, "/api/v1")))))
 
+	mux.Handle("GET /api/v1/orgs/{orgId}/addons", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(addonSvc, "/api/v1")))))
+	mux.Handle("GET /api/v1/orgs/{orgId}/addons/catalog", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(addonSvc, "/api/v1")))))
 	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/addons/catalog", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(addonSvc, "/api/v1")))))
 	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/addons", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(addonSvc, "/api/v1")))))
 	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/addons", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(addonSvc, "/api/v1")))))

@@ -630,6 +630,33 @@ export const api = {
       mode: data.mode,
     };
   },
+  async listOrgAddons(orgId: string, engine?: string) {
+    const q = engine ? `?engine=${encodeURIComponent(engine)}` : "";
+    try {
+      const data = await request<{ addons: ManagedAddon[]; mode?: string }>(
+        `/orgs/${orgId}/addons${q}`,
+      );
+      return {
+        addons: (unwrap(data, "addons") as ManagedAddon[]) || [],
+        mode: data.mode,
+      };
+    } catch {
+      const projects = await api.listProjects(orgId);
+      const allResults = await Promise.all(
+        projects.map((p) => api.listAddons(orgId, p.id, engine).catch(() => ({ addons: [] as ManagedAddon[] })))
+      );
+      const combined = allResults.flatMap((r) => r.addons || []);
+      const seen = new Set<string>();
+      const deduped: ManagedAddon[] = [];
+      for (const a of combined) {
+        if (!seen.has(a.id)) {
+          seen.add(a.id);
+          deduped.push(a);
+        }
+      }
+      return { addons: deduped, mode: "docker" };
+    }
+  },
   async listAddons(orgId: string, projectId: string, engine?: string) {
     const q = engine ? `?engine=${encodeURIComponent(engine)}` : "";
     const data = await request<{ addons: ManagedAddon[]; mode?: string }>(

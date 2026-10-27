@@ -64,7 +64,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     { label: "Builds & Logs", tab: "builds", icon: "🛠️" },
     { label: "Custom Domains", tab: "domains", icon: "🌐" },
     { label: "Secrets & Env", tab: "secrets", icon: "🔐" },
-    { label: "Managed Databases", tab: "databases", icon: "🗄️" },
+    { label: "Add-ons & Databases", tab: "addons", icon: "🧩" },
     { label: "Project Settings", tab: "settings", icon: "⚙️" },
   ];
 

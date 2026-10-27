@@ -33,6 +33,8 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /healthz", httpx.Healthz)
 	auth := middleware.BearerAuth(h.JWT)
 
+	mux.Handle("GET /orgs/{orgId}/addons", auth(http.HandlerFunc(h.ListOrg)))
+	mux.Handle("GET /orgs/{orgId}/addons/catalog", auth(http.HandlerFunc(h.Catalog)))
 	mux.Handle("GET /orgs/{orgId}/projects/{projectId}/addons/catalog", auth(http.HandlerFunc(h.Catalog)))
 	mux.Handle("GET /orgs/{orgId}/projects/{projectId}/addons", auth(http.HandlerFunc(h.List)))
 	mux.Handle("POST /orgs/{orgId}/projects/{projectId}/addons", auth(http.HandlerFunc(h.Create)))
@@ -84,6 +86,21 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	}
 	engine := strings.TrimSpace(r.URL.Query().Get("engine"))
 	list, err := h.Store.List(r.Context(), orgID, projectID, engine)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "internal", "list failed")
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"addons": list, "mode": h.Provisioner.Mode})
+}
+
+func (h *Handler) ListOrg(w http.ResponseWriter, r *http.Request) {
+	uid := middleware.UserIDFrom(r.Context())
+	orgID := r.PathValue("orgId")
+	if !h.requireMember(w, r, orgID, uid) {
+		return
+	}
+	engine := strings.TrimSpace(r.URL.Query().Get("engine"))
+	list, err := h.Store.List(r.Context(), orgID, "", engine)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, "internal", "list failed")
 		return
@@ -154,6 +171,23 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	if pubURL, ok := res.Metadata["public_url"].(string); ok && pubURL != "" {
 		h.storeSecret(r, orgID, projectID, env, secretName+"_PUBLIC", pubURL)
+	}
+	// Inject standard canonical aliases so application frameworks (Prisma, Django, Next.js, Redis clients) connect automatically
+	switch engine {
+	case "postgres", "postgresql":
+		h.storeSecret(r, orgID, projectID, env, "DATABASE_URL", res.ConnectionURL)
+		h.storeSecret(r, orgID, projectID, env, "POSTGRES_URL", res.ConnectionURL)
+	case "redis", "valkey", "dragonfly":
+		h.storeSecret(r, orgID, projectID, env, "REDIS_URL", res.ConnectionURL)
+	case "mysql", "mariadb":
+		h.storeSecret(r, orgID, projectID, env, "MYSQL_URL", res.ConnectionURL)
+		h.storeSecret(r, orgID, projectID, env, "DATABASE_URL", res.ConnectionURL)
+	case "mongodb", "mongo":
+		h.storeSecret(r, orgID, projectID, env, "MONGODB_URI", res.ConnectionURL)
+		h.storeSecret(r, orgID, projectID, env, "MONGO_URL", res.ConnectionURL)
+	case "rabbitmq":
+		h.storeSecret(r, orgID, projectID, env, "RABBITMQ_URL", res.ConnectionURL)
+		h.storeSecret(r, orgID, projectID, env, "AMQP_URL", res.ConnectionURL)
 	}
 	a := &store.Addon{
 		OrgID: orgID, ProjectID: projectID, Engine: engine, Name: strings.TrimSpace(req.Name),

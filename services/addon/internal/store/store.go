@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -68,11 +69,15 @@ func (s *Store) List(ctx context.Context, orgID, projectID, engine string) ([]Ad
 	q := `
 		SELECT id, org_id, project_id, engine, name, mode, status, endpoint, metadata,
 		       secret_ref, connection_hint, created_by, created_at, updated_at
-		FROM managed_addons WHERE org_id=$1 AND project_id=$2`
-	args := []any{orgID, projectID}
+		FROM managed_addons WHERE org_id=$1`
+	args := []any{orgID}
+	if projectID != "" && projectID != "all" {
+		args = append(args, projectID)
+		q += fmt.Sprintf(` AND project_id=$%d`, len(args))
+	}
 	if engine != "" {
-		q += ` AND engine=$3`
 		args = append(args, engine)
+		q += fmt.Sprintf(` AND engine=$%d`, len(args))
 	}
 	q += ` ORDER BY created_at DESC`
 	rows, err := s.pool.Query(ctx, q, args...)
