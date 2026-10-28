@@ -118,6 +118,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Engine      string `json:"engine"`
 		Name        string `json:"name"`
+		SecretName  string `json:"secret_name,omitempty"`
 		Env         string `json:"env"`
 		DockerImage string `json:"docker_image,omitempty"`
 		Port        int    `json:"port,omitempty"`
@@ -172,45 +173,30 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		envsToInject = append(envsToInject, "production")
 	}
 
-	var secretRef string
-	for _, targetEnv := range envsToInject {
-		// Store one proper canonical connection URL per add-on
+	// Determine exactly one clean secret key name for this add-on
+	keyName := strings.TrimSpace(req.SecretName)
+	if keyName == "" {
 		switch engine {
 		case "postgres", "postgresql":
-			ref := h.storeSecret(r, orgID, projectID, targetEnv, "DATABASE_URL", res.ConnectionURL)
-			h.storeSecret(r, orgID, projectID, targetEnv, "POSTGRES_URL", res.ConnectionURL)
-			if secretRef == "" {
-				secretRef = ref
-			}
+			keyName = "DATABASE_URL"
 		case "redis", "valkey", "dragonfly":
-			ref := h.storeSecret(r, orgID, projectID, targetEnv, "REDIS_URL", res.ConnectionURL)
-			if secretRef == "" {
-				secretRef = ref
-			}
+			keyName = "REDIS_URL"
 		case "mysql", "mariadb":
-			ref := h.storeSecret(r, orgID, projectID, targetEnv, "DATABASE_URL", res.ConnectionURL)
-			h.storeSecret(r, orgID, projectID, targetEnv, "MYSQL_URL", res.ConnectionURL)
-			if secretRef == "" {
-				secretRef = ref
-			}
+			keyName = "DATABASE_URL"
 		case "mongodb", "mongo":
-			ref := h.storeSecret(r, orgID, projectID, targetEnv, "MONGODB_URI", res.ConnectionURL)
-			h.storeSecret(r, orgID, projectID, targetEnv, "MONGO_URL", res.ConnectionURL)
-			h.storeSecret(r, orgID, projectID, targetEnv, "MONGOURL", res.ConnectionURL)
-			if secretRef == "" {
-				secretRef = ref
-			}
+			keyName = "MONGODB_URI"
 		case "rabbitmq":
-			ref := h.storeSecret(r, orgID, projectID, targetEnv, "RABBITMQ_URL", res.ConnectionURL)
-			if secretRef == "" {
-				secretRef = ref
-			}
+			keyName = "RABBITMQ_URL"
 		default:
-			secretName := catalog.SecretName(engine, req.Name)
-			ref := h.storeSecret(r, orgID, projectID, targetEnv, secretName, res.ConnectionURL)
-			if secretRef == "" {
-				secretRef = ref
-			}
+			keyName = catalog.SecretName(engine, req.Name)
+		}
+	}
+
+	var secretRef string
+	for _, targetEnv := range envsToInject {
+		ref := h.storeSecret(r, orgID, projectID, targetEnv, keyName, res.ConnectionURL)
+		if secretRef == "" {
+			secretRef = ref
 		}
 	}
 	a := &store.Addon{

@@ -206,36 +206,58 @@ func (s *Store) CreateSecret(ctx context.Context, orgID, projectID, env, name, h
 }
 
 func (s *Store) UpdateSecret(ctx context.Context, meta *SecretMeta, hint string, ciphertext, nonce []byte, keyVersion int, actorID string) (*SecretMeta, error) {
+	return s.UpdateSecretWithRename(ctx, meta, meta.Name, hint, ciphertext, nonce, keyVersion, actorID)
+}
+
+func (s *Store) UpdateSecretWithRename(ctx context.Context, meta *SecretMeta, newName, hint string, ciphertext, nonce []byte, keyVersion int, actorID string) (*SecretMeta, error) {
 	now := time.Now().UTC()
-	next := meta.CurrentVersion + 1
 	var actor *string
 	if actorID != "" {
 		actor = &actorID
 	}
+	nameToSet := meta.Name
+	if newName != "" {
+		nameToSet = newName
+	}
+
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
 
-	_, err = tx.Exec(ctx, `
-		INSERT INTO secret_versions (id, secret_id, version, ciphertext, nonce, key_version, created_by, created_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-	`, uuid.NewString(), meta.ID, next, ciphertext, nonce, keyVersion, actor, now)
-	if err != nil {
-		return nil, err
+	next := meta.CurrentVersion
+	if len(ciphertext) > 0 {
+		next = meta.CurrentVersion + 1
+		_, err = tx.Exec(ctx, `
+			INSERT INTO secret_versions (id, secret_id, version, ciphertext, nonce, key_version, created_by, created_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+		`, uuid.NewString(), meta.ID, next, ciphertext, nonce, keyVersion, actor, now)
+		if err != nil {
+			return nil, err
+		}
 	}
+
+	hintToSet := meta.ValueHint
+	if hint != "" {
+		hintToSet = hint
+	}
+
 	_, err = tx.Exec(ctx, `
-		UPDATE secrets SET current_version=$2, value_hint=$3, updated_at=$4 WHERE id=$1
-	`, meta.ID, next, hint, now)
+		UPDATE secrets SET name=$2, current_version=$3, value_hint=$4, updated_at=$5 WHERE id=$1
+	`, meta.ID, nameToSet, next, hintToSet, now)
 	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			return nil, ErrConflict
+		}
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
+	meta.Name = nameToSet
 	meta.CurrentVersion = next
-	meta.ValueHint = hint
+	meta.ValueHint = hintToSet
 	meta.UpdatedAt = now
 	return meta, nil
 }

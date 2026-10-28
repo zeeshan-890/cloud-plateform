@@ -577,10 +577,10 @@ export const api = {
     );
     return (unwrap(data, "secrets") as SecretMeta[]) || [];
   },
-  async setSecret(orgId: string, projectId: string, env: string, name: string, value: string) {
+  async setSecret(orgId: string, projectId: string, env: string, name: string, value: string, newName?: string) {
     const data = await request<{ secret: SecretMeta }>(
       `/orgs/${orgId}/projects/${projectId}/environments/${env}/secrets/${encodeURIComponent(name)}`,
-      { method: "PUT", body: { value } },
+      { method: "PUT", body: { value, name: newName || name, new_name: newName || name } },
     );
     return unwrap(data, "secret") as SecretMeta;
   },
@@ -751,13 +751,13 @@ export const api = {
     engine: string,
     name: string,
     env?: string,
-    extra?: { docker_image?: string; port?: number; description?: string },
+    extra?: { docker_image?: string; port?: number; description?: string; secret_name?: string },
   ) {
     const data = await request<{ addon: ManagedAddon }>(
       `/orgs/${orgId}/projects/${projectId}/addons`,
       {
         method: "POST",
-        body: { engine, name, env: env || "development", ...(extra || {}) },
+        body: { engine, name, env: env || "production", ...(extra || {}) },
       },
     );
     return unwrap(data, "addon") as ManagedAddon;

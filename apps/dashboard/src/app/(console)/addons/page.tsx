@@ -33,6 +33,7 @@ export default function AddonsPage() {
   const [targetProjectId, setTargetProjectId] = useState("");
   const [targetEnv, setTargetEnv] = useState("production");
   const [instanceName, setInstanceName] = useState("");
+  const [customSecretKey, setCustomSecretKey] = useState("DATABASE_URL");
 
   // Custom Image Fields
   const [customEngine, setCustomEngine] = useState("");
@@ -161,6 +162,14 @@ export default function AddonsPage() {
     setSelectedItem(item);
     setIsCustomMode(false);
     setInstanceName(`${item.id}-1`);
+    const defaultKey =
+      item.id === "postgres" ? "DATABASE_URL" :
+      item.id === "redis" || item.id === "valkey" ? "REDIS_URL" :
+      item.id === "mysql" || item.id === "mariadb" ? "DATABASE_URL" :
+      item.id === "mongodb" ? "MONGODB_URI" :
+      item.id === "rabbitmq" ? "RABBITMQ_URL" :
+      `${item.id.toUpperCase()}_URL`;
+    setCustomSecretKey(defaultKey);
     setStandaloneProjectName(`${item.id}-app`);
     setDeployTarget(projects.length === 0 ? "standalone" : "attach");
     setError("");
@@ -173,6 +182,7 @@ export default function AddonsPage() {
     setIsCustomMode(true);
     setCustomEngine("custom-app");
     setInstanceName("custom-app-1");
+    setCustomSecretKey("CUSTOM_APP_URL");
     setStandaloneProjectName("custom-container-app");
     setCustomImage("");
     setCustomPort("8080");
@@ -193,7 +203,7 @@ export default function AddonsPage() {
     try {
       let finalProjectId = targetProjectId;
       let effectiveEngine = isCustomMode ? customEngine.trim().toLowerCase() : (selectedItem?.id || "");
-      let extra: { docker_image?: string; port?: number; description?: string } | undefined;
+      let extra: { docker_image?: string; port?: number; description?: string; secret_name?: string } | undefined;
 
       if (!instanceName.trim()) {
         throw new Error("Instance name is required.");
@@ -212,6 +222,11 @@ export default function AddonsPage() {
           description: customDesc.trim() || undefined,
         };
       }
+
+      extra = {
+        ...(extra || {}),
+        secret_name: customSecretKey.trim() || undefined,
+      };
 
       // Step 1: If Standalone, auto-create project first!
       if (deployTarget === "standalone") {
@@ -819,6 +834,21 @@ export default function AddonsPage() {
                     <option value="staging">STAGING</option>
                     <option value="development">DEVELOPMENT</option>
                   </select>
+                </div>
+
+                <div className="sm:col-span-2">
+                  <label className="block text-xs font-bold text-[var(--ink)] mb-1">
+                    Environment Variable Key (optional)
+                  </label>
+                  <Input
+                    value={customSecretKey}
+                    onChange={(e) => setCustomSecretKey(e.target.value)}
+                    placeholder="e.g. DATABASE_URL or MONGOURL"
+                    className="font-mono text-xs font-semibold uppercase"
+                  />
+                  <p className="text-[11px] text-[var(--ink-muted)] mt-1">
+                    Single environment variable name created in your project (you can also edit this key anytime in Secrets).
+                  </p>
                 </div>
               </div>
 

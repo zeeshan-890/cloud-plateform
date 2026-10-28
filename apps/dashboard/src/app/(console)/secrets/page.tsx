@@ -43,6 +43,44 @@ export default function SecretsPage() {
   const [bulkTargetEnv, setBulkTargetEnv] = useState("production");
   const [bulkSaving, setBulkSaving] = useState(false);
 
+  // Edit Single Secret state
+  const [editSecret, setEditSecret] = useState<SecretMeta | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editValue, setEditValue] = useState("");
+  const [editRevealed, setEditRevealed] = useState(false);
+  const [editSaving, setEditSaving] = useState(false);
+
+  function openEdit(s: SecretMeta) {
+    setEditSecret(s);
+    setEditName(s.name);
+    setEditValue(s.value || "");
+    setEditRevealed(false);
+  }
+
+  async function onSaveEdit() {
+    if (!currentOrg || !projectId || !editSecret || !editName.trim()) return;
+    setEditSaving(true);
+    setError("");
+    setSuccess("");
+    try {
+      await api.setSecret(
+        currentOrg.id,
+        projectId,
+        editSecret.environment,
+        editSecret.name,
+        editValue,
+        editName.trim(),
+      );
+      setSuccess(`Secret "${editName.trim()}" updated successfully.`);
+      setEditSecret(null);
+      await loadSecrets(projectId, env);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to update secret");
+    } finally {
+      setEditSaving(false);
+    }
+  }
+
   function copyToClipboard(text: string, id: string) {
     if (!text) return;
     navigator.clipboard.writeText(text);
@@ -541,14 +579,26 @@ export default function SecretsPage() {
                       </div>
                     </td>
                     <td className="px-4 py-3 text-right">
-                      <Button
-                        variant="danger"
-                        size="sm"
-                        disabled={busy}
-                        onClick={() => onDelete(s.environment, s.name)}
-                      >
-                        Delete
-                      </Button>
+                      <div className="flex items-center justify-end gap-1.5">
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          disabled={busy}
+                          onClick={() => openEdit(s)}
+                          className="text-xs"
+                        >
+                          ✏️ Edit
+                        </Button>
+                        <Button
+                          variant="danger"
+                          size="sm"
+                          disabled={busy}
+                          onClick={() => onDelete(s.environment, s.name)}
+                          className="text-xs"
+                        >
+                          Delete
+                        </Button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -646,6 +696,88 @@ NEXT_PUBLIC_API_URL=https://api.domain.com`}
                 className="font-bold shadow-xs"
               >
                 {bulkSaving ? "Saving Variables..." : `Save ${parsedCount} Variable${parsedCount === 1 ? "" : "s"}`}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Single Secret Modal */}
+      {editSecret && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-lg rounded-2xl border border-[var(--border)] bg-white shadow-2xl overflow-hidden flex flex-col">
+            <div className="border-b border-[var(--border)] bg-slate-50 px-6 py-4 flex items-center justify-between">
+              <div>
+                <h3 className="text-base font-bold text-[var(--ink)]">
+                  Edit Environment Variable
+                </h3>
+                <p className="text-xs text-[var(--ink-muted)]">
+                  Scope: <span className="font-bold text-slate-800 uppercase">{editSecret.environment}</span>
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditSecret(null)}
+                className="text-sm font-bold text-slate-400 hover:text-slate-700"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)] mb-1">
+                  Key Name
+                </label>
+                <Input
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  placeholder="VARIABLE_NAME"
+                  className="font-mono uppercase font-bold"
+                />
+                <p className="text-[11px] text-[var(--ink-muted)] mt-1">
+                  Rename this key to match what your code expects (e.g. <code>DATABASE_URL</code>, <code>MONGOURL</code>, etc.).
+                </p>
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
+                    Value
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setEditRevealed(!editRevealed)}
+                    className="text-xs text-[var(--accent)] font-semibold hover:underline"
+                  >
+                    {editRevealed ? "🙈 Mask" : "👁️ Reveal"}
+                  </button>
+                </div>
+                <textarea
+                  value={editValue}
+                  onChange={(e) => setEditValue(e.target.value)}
+                  placeholder="Secret Value"
+                  rows={4}
+                  className={`w-full rounded-md border border-[var(--border)] p-2.5 font-mono text-xs focus:outline-hidden focus:ring-2 focus:ring-[var(--accent)] ${
+                    editRevealed ? "text-slate-900" : "text-slate-400"
+                  }`}
+                />
+              </div>
+            </div>
+
+            <div className="border-t border-[var(--border)] bg-slate-50 px-6 py-3 flex items-center justify-end gap-2">
+              <Button
+                variant="secondary"
+                onClick={() => setEditSecret(null)}
+                disabled={editSaving}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={onSaveEdit}
+                disabled={editSaving || !editName.trim()}
+              >
+                {editSaving ? "Saving..." : "Save Changes"}
               </Button>
             </div>
           </div>

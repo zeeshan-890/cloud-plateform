@@ -73,10 +73,50 @@ export default function ProjectDetailClient() {
   const [selectedAddonEngine, setSelectedAddonEngine] = useState("postgres");
   const [addonInstanceName, setAddonInstanceName] = useState("postgres-1");
   const [addonEnv, setAddonEnv] = useState("production");
+  const [addonSecretKey, setAddonSecretKey] = useState("DATABASE_URL");
   const [provisioningAddon, setProvisioningAddon] = useState(false);
   const [addonModalOpen, setAddonModalOpen] = useState(false);
   const [snippetAddon, setSnippetAddon] = useState<ManagedAddon | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
+  // Edit Single Secret state
+  const [editSecret, setEditSecret] = useState<SecretMeta | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editValue, setEditValue] = useState("");
+  const [editRevealed, setEditRevealed] = useState(false);
+  const [editSaving, setEditSaving] = useState(false);
+
+  function openEditSecret(s: SecretMeta) {
+    setEditSecret(s);
+    setEditName(s.name);
+    setEditValue(s.value || "");
+    setEditRevealed(false);
+  }
+
+  async function handleSaveEditSecret() {
+    if (!currentOrg || !project || !editSecret || !editName.trim()) return;
+    setEditSaving(true);
+    setError("");
+    setSuccess("");
+    try {
+      await api.setSecret(
+        currentOrg.id,
+        project.id,
+        editSecret.environment,
+        editSecret.name,
+        editValue,
+        editName.trim(),
+      );
+      setSuccess(`Variable "${editName.trim()}" updated successfully.`);
+      setEditSecret(null);
+      const updated = await api.listSecrets(currentOrg.id, project.id, secretEnv);
+      setSecretsList(updated);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to update variable");
+    } finally {
+      setEditSaving(false);
+    }
+  }
 
   // Bulk Edit state for Secrets
   const [bulkSecretOpen, setBulkSecretOpen] = useState(false);
@@ -871,6 +911,7 @@ export default function ProjectDetailClient() {
         selectedAddonEngine,
         addonInstanceName.trim(),
         addonEnv,
+        { secret_name: addonSecretKey.trim() || undefined },
       );
       setSuccess(`Provisioned ${created.engine} (${created.name}) and injected connection credentials into ${project.name} .env!`);
       setAddonModalOpen(false);
@@ -2931,6 +2972,15 @@ export default function ProjectDetailClient() {
                               </button>
 
                               <Button
+                                variant="secondary"
+                                size="sm"
+                                onClick={() => openEditSecret(s)}
+                                className="text-xs"
+                              >
+                                ✏️ Edit
+                              </Button>
+
+                              <Button
                                 variant="danger"
                                 size="sm"
                                 onClick={() => handleDeleteSecret(s.name, s.environment)}
@@ -2989,6 +3039,14 @@ export default function ProjectDetailClient() {
                   onClick={() => {
                     setSelectedAddonEngine(template.id);
                     setAddonInstanceName(`${template.id}-1`);
+                    const defaultKey =
+                      template.id === "postgres" ? "DATABASE_URL" :
+                      template.id === "redis" ? "REDIS_URL" :
+                      template.id === "mysql" ? "DATABASE_URL" :
+                      template.id === "mongodb" ? "MONGODB_URI" :
+                      template.id === "rabbitmq" ? "RABBITMQ_URL" :
+                      `${template.id.toUpperCase()}_URL`;
+                    setAddonSecretKey(defaultKey);
                     setAddonModalOpen(true);
                   }}
                   className="rounded-xl border border-[var(--border)] bg-white p-3 text-left hover:border-[var(--accent)] hover:shadow-2xs transition-all flex flex-col justify-between"
@@ -3158,10 +3216,18 @@ export default function ProjectDetailClient() {
                 </select>
               </div>
 
-              <div className="rounded-lg bg-emerald-50 border border-emerald-200 p-3 text-xs text-emerald-900 space-y-1">
-                <p className="font-bold">✓ Automatic Zero-Config Environment Injected:</p>
-                <p className="font-mono text-[11px] text-emerald-800">
-                  {selectedAddonEngine.toUpperCase()}_URL &bull; DATABASE_URL (for Postgres/MySQL) &bull; REDIS_URL (for Redis)
+              <div>
+                <label className="block text-xs font-bold text-[var(--ink)] mb-1">
+                  Environment Variable Key (optional)
+                </label>
+                <Input
+                  value={addonSecretKey}
+                  onChange={(e) => setAddonSecretKey(e.target.value)}
+                  placeholder="e.g. DATABASE_URL or MONGOURL"
+                  className="font-mono text-xs font-semibold uppercase"
+                />
+                <p className="text-[11px] text-[var(--ink-muted)] mt-1">
+                  Single environment variable injected into {project.name} (editable anytime from Secrets).
                 </p>
               </div>
 
@@ -3421,6 +3487,90 @@ ${getAddonEnvSnippet(snippetAddon)}`}
                 onClick={() => setSelectedDeployLogs(null)}
               >
                 Close
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================
+          MODAL: EDIT SECRET
+          ======================================================== */}
+      {editSecret && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-lg rounded-2xl border border-[var(--border)] bg-white shadow-2xl overflow-hidden flex flex-col">
+            <div className="border-b border-[var(--border)] bg-slate-50 px-6 py-4 flex items-center justify-between">
+              <div>
+                <h3 className="text-base font-bold text-[var(--ink)]">
+                  Edit Environment Variable
+                </h3>
+                <p className="text-xs text-[var(--ink-muted)]">
+                  Scope: <span className="font-bold text-slate-800 uppercase">{editSecret.environment}</span>
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditSecret(null)}
+                className="text-sm font-bold text-slate-400 hover:text-slate-700"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)] mb-1">
+                  Key Name
+                </label>
+                <Input
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  placeholder="VARIABLE_NAME"
+                  className="font-mono uppercase font-bold"
+                />
+                <p className="text-[11px] text-[var(--ink-muted)] mt-1">
+                  Rename this key to match what your code expects (e.g. <code>DATABASE_URL</code>, <code>MONGOURL</code>, etc.).
+                </p>
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
+                    Value
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setEditRevealed(!editRevealed)}
+                    className="text-xs text-[var(--accent)] font-semibold hover:underline"
+                  >
+                    {editRevealed ? "🙈 Mask" : "👁️ Reveal"}
+                  </button>
+                </div>
+                <textarea
+                  value={editValue}
+                  onChange={(e) => setEditValue(e.target.value)}
+                  placeholder="Secret Value"
+                  rows={4}
+                  className={`w-full rounded-md border border-[var(--border)] p-2.5 font-mono text-xs focus:outline-hidden focus:ring-2 focus:ring-[var(--accent)] ${
+                    editRevealed ? "text-slate-900" : "text-slate-400"
+                  }`}
+                />
+              </div>
+            </div>
+
+            <div className="border-t border-[var(--border)] bg-slate-50 px-6 py-3 flex items-center justify-end gap-2">
+              <Button
+                variant="secondary"
+                onClick={() => setEditSecret(null)}
+                disabled={editSaving}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handleSaveEditSecret}
+                disabled={editSaving || !editName.trim()}
+              >
+                {editSaving ? "Saving..." : "Save Changes"}
               </Button>
             </div>
           </div>

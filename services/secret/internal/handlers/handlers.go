@@ -257,26 +257,42 @@ func (h *Handler) SetSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Value string `json:"value"`
+		Name    string `json:"name"`
+		NewName string `json:"new_name"`
+		Value   string `json:"value"`
 	}
-	if err := httpx.Decode(r, &req); err != nil || req.Value == "" {
-		httpx.Error(w, http.StatusBadRequest, "validation_error", "value required")
+	if err := httpx.Decode(r, &req); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "validation_error", "invalid payload")
 		return
 	}
-	hint := crypto.Hint(req.Value)
-	ct, nonce, err := h.Crypto.Encrypt([]byte(req.Value))
-	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "internal", "encrypt failed")
-		return
+	targetName := strings.TrimSpace(req.NewName)
+	if targetName == "" {
+		targetName = strings.TrimSpace(req.Name)
 	}
+	if targetName != "" {
+		targetName = normalizeSecretName(targetName)
+	} else {
+		targetName = name
+	}
+
 	meta, err := h.Store.GetSecret(r.Context(), orgID, projectID, env, name)
 	if err == store.ErrNotFound {
-		meta, err = h.Store.CreateSecret(r.Context(), orgID, projectID, env, name, hint, ct, nonce, h.Crypto.KeyVersion, uid)
+		if req.Value == "" {
+			httpx.Error(w, http.StatusBadRequest, "validation_error", "value required for new secret")
+			return
+		}
+		hint := crypto.Hint(req.Value)
+		ct, nonce, err := h.Crypto.Encrypt([]byte(req.Value))
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, "internal", "encrypt failed")
+			return
+		}
+		meta, err = h.Store.CreateSecret(r.Context(), orgID, projectID, env, targetName, hint, ct, nonce, h.Crypto.KeyVersion, uid)
 		if err != nil {
 			httpx.Error(w, http.StatusInternalServerError, "internal", "failed to set secret")
 			return
 		}
-		h.Store.Audit(r.Context(), orgID, projectID, env, name, "secret.create", uid, middleware.RequestIDFrom(r.Context()), map[string]any{"version": 1})
+		h.Store.Audit(r.Context(), orgID, projectID, env, targetName, "secret.create", uid, middleware.RequestIDFrom(r.Context()), map[string]any{"version": 1})
 		httpx.JSON(w, http.StatusCreated, map[string]any{"secret": meta})
 		return
 	}
@@ -284,16 +300,32 @@ func (h *Handler) SetSecret(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusInternalServerError, "internal", "failed")
 		return
 	}
-	meta, err = h.Store.UpdateSecret(r.Context(), meta, hint, ct, nonce, h.Crypto.KeyVersion, uid)
-	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "internal", "failed to rotate secret")
+
+	var hint string
+	var ct, nonce []byte
+	if req.Value != "" {
+		hint = crypto.Hint(req.Value)
+		ct, nonce, err = h.Crypto.Encrypt([]byte(req.Value))
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, "internal", "encrypt failed")
+			return
+		}
+	}
+
+	meta, err = h.Store.UpdateSecretWithRename(r.Context(), meta, targetName, hint, ct, nonce, h.Crypto.KeyVersion, uid)
+	if err == store.ErrConflict {
+		httpx.Error(w, http.StatusConflict, "conflict", "a secret with that name already exists")
 		return
 	}
-	h.Store.Audit(r.Context(), orgID, projectID, env, name, "secret.rotate", uid, middleware.RequestIDFrom(r.Context()), map[string]any{
-		"version": meta.CurrentVersion, "hint": hint,
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "internal", "failed to update secret")
+		return
+	}
+	h.Store.Audit(r.Context(), orgID, projectID, env, targetName, "secret.rotate", uid, middleware.RequestIDFrom(r.Context()), map[string]any{
+		"version": meta.CurrentVersion, "hint": meta.ValueHint, "old_name": name,
 	})
 	h.publish(r, uid, orgID, "secret.rotated", map[string]any{
-		"project_id": projectID, "environment": env, "name": name, "version": meta.CurrentVersion,
+		"project_id": projectID, "environment": env, "name": targetName, "version": meta.CurrentVersion,
 	})
 	httpx.JSON(w, http.StatusOK, map[string]any{"secret": meta})
 }
