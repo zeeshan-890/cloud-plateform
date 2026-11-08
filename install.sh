@@ -529,9 +529,9 @@ start_stack() {
   export JP_DOCKER
   export COMPOSE_PARALLEL_LIMIT="${COMPOSE_PARALLEL_LIMIT:-4}"
   log "sizing host"
-  ./scripts/size-host.sh "$TIER"
+  bash ./scripts/size-host.sh "$TIER"
   log "building and starting the stack (first build takes several minutes)"
-  ./scripts/jp-up.sh --size "$TIER"
+  bash ./scripts/jp-up.sh --size "$TIER"
 }
 
 verify_stack() {
@@ -558,7 +558,7 @@ verify_stack() {
 
   if [[ "$ok_gw" != true || "$ok_ui" != true ]]; then
     warn "not everything came up in time. Unhealthy / restarting containers:"
-    (./scripts/jp-compose.sh ps 2>/dev/null || true) | grep -Ev ' healthy| Up .*\(healthy\)' | head -20 || true
+    (bash ./scripts/jp-compose.sh ps 2>/dev/null || true) | grep -Ev ' healthy| Up .*\(healthy\)' | head -20 || true
     warn "inspect with:  cd $ROOT_DIR && docker compose logs --tail=80 <service>"
     return 1
   fi
