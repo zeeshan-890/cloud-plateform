@@ -46,6 +46,11 @@ func collectHost(n *nodeInfo) {
 			n.CPU["usage_percent"] = round1(100 * (1 - float64(i2-i1)/float64(t2-t1)))
 		}
 	}
+	if b, err := os.ReadFile("/proc/uptime"); err == nil {
+		if f := strings.Fields(string(b)); len(f) >= 1 {
+			n.UptimeSeconds = uint64(atof(f[0]))
+		}
+	}
 	if b, err := os.ReadFile("/proc/loadavg"); err == nil {
 		if f := strings.Fields(string(b)); len(f) >= 3 {
 			n.CPU["load1"], n.CPU["load5"], n.CPU["load15"] = atof(f[0]), atof(f[1]), atof(f[2])

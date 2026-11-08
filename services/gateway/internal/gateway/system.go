@@ -271,6 +271,34 @@ type nodeInfo struct {
 	Memory     map[string]any `json:"memory"`
 	Disk       map[string]any `json:"disk"`
 	Containers map[string]any `json:"containers"`
+
+	// Flat copies of the figures above, in the shape the dashboard's System health page reads.
+	CPUCount          int       `json:"cpu_count"`
+	CPUPercent        float64   `json:"cpu_percent"`
+	Load              []float64 `json:"load,omitempty"`
+	MemoryTotalBytes  uint64    `json:"memory_total_bytes"`
+	MemoryUsedBytes   uint64    `json:"memory_used_bytes"`
+	DiskTotalBytes    uint64    `json:"disk_total_bytes"`
+	DiskUsedBytes     uint64    `json:"disk_used_bytes"`
+	UptimeSeconds     uint64    `json:"uptime_seconds"`
+	DockerVersion     string    `json:"docker_version,omitempty"`
+	ContainersRunning *int      `json:"containers_running,omitempty"`
+	ContainersTotal   *int      `json:"containers_total,omitempty"`
+	ContainersStopped *int      `json:"containers_stopped,omitempty"`
+	Images            *int      `json:"images,omitempty"`
+}
+
+// flatten copies the nested host figures into the flat fields.
+func (n *nodeInfo) flatten() {
+	u64 := func(m map[string]any, k string) uint64 { v, _ := m[k].(uint64); return v }
+	f64 := func(m map[string]any, k string) float64 { v, _ := m[k].(float64); return v }
+	n.CPUCount, _ = n.CPU["cores"].(int)
+	n.CPUPercent = f64(n.CPU, "usage_percent")
+	if _, ok := n.CPU["load1"]; ok {
+		n.Load = []float64{f64(n.CPU, "load1"), f64(n.CPU, "load5"), f64(n.CPU, "load15")}
+	}
+	n.MemoryTotalBytes, n.MemoryUsedBytes = u64(n.Memory, "total_bytes"), u64(n.Memory, "used_bytes")
+	n.DiskTotalBytes, n.DiskUsedBytes = u64(n.Disk, "total_bytes"), u64(n.Disk, "used_bytes")
 }
 
 func (s *Server) localNode(ctx context.Context) nodeInfo {
@@ -284,6 +312,11 @@ func (s *Server) localNode(ctx context.Context) nodeInfo {
 		Total   int   `json:"containers_total"`
 		CPUm    int64 `json:"cpu_millicores_used"`
 		Mem     int64 `json:"mem_used_bytes"`
+
+		DockerVersion string `json:"docker_version"`
+		HostTotal     int    `json:"containers_total_host"`
+		HostRunning   int    `json:"containers_running_host"`
+		Images        int    `json:"images"`
 	}
 	code, err := s.upstreamGet(ctx, "runtime", "/internal/runtime/stats", nil, &st)
 	if err != nil || code != http.StatusOK {
@@ -291,7 +324,12 @@ func (s *Server) localNode(ctx context.Context) nodeInfo {
 	} else {
 		n.Containers["running"], n.Containers["total"] = st.Running, st.Total
 		n.Containers["cpu_millicores_used"], n.Containers["mem_used_bytes"] = st.CPUm, st.Mem
+		// System health shows every container on the host (platform services included), not just tenant ones.
+		stopped := st.HostTotal - st.HostRunning
+		n.DockerVersion, n.ContainersRunning, n.ContainersTotal, n.ContainersStopped, n.Images =
+			st.DockerVersion, &st.HostRunning, &st.HostTotal, &stopped, &st.Images
 	}
+	n.flatten()
 	return n
 }
 
