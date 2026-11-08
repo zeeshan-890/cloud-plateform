@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # Build stage (runs in CI or build machine)
-FROM node:22-alpine AS builder
+FROM --platform=$BUILDPLATFORM node:22-alpine AS builder
 WORKDIR /app
 
 COPY package.json package-lock.json ./

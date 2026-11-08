@@ -382,6 +382,7 @@ services:
     build:
       <<: *go-build
       args: {<<: *go-build-args, SERVICE: gateway}
+    image: ${JP_IMAGE_REGISTRY:-ghcr.io/zeeshan-890/cloud-plateform}/gateway:${JP_IMAGE_TAG:-local}
     environment:
       <<: [*env-common, *env-data, *env-urls]
       PORT: "8000"
@@ -443,6 +444,7 @@ services:
     build:
       <<: *go-build
       args: {<<: *go-build-args, SERVICE: identity}
+    image: ${JP_IMAGE_REGISTRY:-ghcr.io/zeeshan-890/cloud-plateform}/identity:${JP_IMAGE_TAG:-local}
     environment:
       <<: [*env-common, *env-data, *env-urls]
       PORT: "8001"
@@ -464,6 +466,7 @@ services:
     build:
       <<: *go-build
       args: {<<: *go-build-args, SERVICE: organization}
+    image: ${JP_IMAGE_REGISTRY:-ghcr.io/zeeshan-890/cloud-plateform}/organization:${JP_IMAGE_TAG:-local}
     environment:
       <<: [*env-common, *env-data, *env-urls]
       PORT: "8002"
@@ -481,6 +484,7 @@ services:
     build:
       <<: *go-build
       args: {<<: *go-build-args, SERVICE: project}
+    image: ${JP_IMAGE_REGISTRY:-ghcr.io/zeeshan-890/cloud-plateform}/project:${JP_IMAGE_TAG:-local}
     environment:
       <<: [*env-common, *env-data, *env-urls]
       PORT: "8003"
@@ -497,6 +501,7 @@ services:
     build:
       <<: *go-build
       args: {<<: *go-build-args, SERVICE: notification}
+    image: ${JP_IMAGE_REGISTRY:-ghcr.io/zeeshan-890/cloud-plateform}/notification:${JP_IMAGE_TAG:-local}
     environment:
       <<: [*env-common, *env-urls]
       PORT: "8004"
@@ -522,6 +527,7 @@ services:
       dockerfile: Dockerfile
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-/api/v1}
+    image: ${JP_IMAGE_REGISTRY:-ghcr.io/zeeshan-890/cloud-plateform}/dashboard:${JP_IMAGE_TAG:-local}
     environment:
       PORT: "3000"
     ports:
@@ -566,6 +572,7 @@ services:
     build:
       <<: *go-build
       args: {<<: *go-build-args, SERVICE: repository}
+    image: ${JP_IMAGE_REGISTRY:-ghcr.io/zeeshan-890/cloud-plateform}/repository:${JP_IMAGE_TAG:-local}
     environment:
       <<: [*env-common, *env-data, *env-urls]
       PORT: "8005"
@@ -591,6 +598,7 @@ services:
     build:
       <<: *go-build
       args: {<<: *go-build-args, SERVICE: deployment}
+    image: ${JP_IMAGE_REGISTRY:-ghcr.io/zeeshan-890/cloud-plateform}/deployment:${JP_IMAGE_TAG:-local}
     environment:
       <<: [*env-common, *env-data, *env-urls]
       PORT: "8006"
@@ -609,6 +617,7 @@ services:
     build:
       <<: *go-build
       args: {<<: *go-build-args, SERVICE: build}
+    image: ${JP_IMAGE_REGISTRY:-ghcr.io/zeeshan-890/cloud-plateform}/build:${JP_IMAGE_TAG:-local}
     environment:
       <<: [*env-common, *env-data, *env-urls]
       PORT: "8007"
@@ -629,6 +638,7 @@ services:
       dockerfile: infra/docker/Dockerfile.worker
       args:
         <<: *go-build-args
+    image: ${JP_IMAGE_REGISTRY:-ghcr.io/zeeshan-890/cloud-plateform}/worker:${JP_IMAGE_TAG:-local}
     user: "10001:10001"
     group_add:
       - "${DOCKER_GID:?DOCKER_GID is required: group id owning /var/run/docker.sock (installer sets it; `stat -c %g /var/run/docker.sock`)}"
@@ -693,6 +703,7 @@ services:
     build:
       <<: *go-build
       args: {<<: *go-build-args, SERVICE: registry}
+    image: ${JP_IMAGE_REGISTRY:-ghcr.io/zeeshan-890/cloud-plateform}/registry:${JP_IMAGE_TAG:-local}
     environment:
       <<: [*env-common, *env-data, *env-urls]
       PORT: "8009"
@@ -719,6 +730,7 @@ services:
     build:
       <<: *go-build
       args: {<<: *go-build-args, SERVICE: runtime}
+    image: ${JP_IMAGE_REGISTRY:-ghcr.io/zeeshan-890/cloud-plateform}/runtime:${JP_IMAGE_TAG:-local}
     group_add:
       - "${DOCKER_GID:?DOCKER_GID is required: group id owning /var/run/docker.sock (installer sets it)}"
     environment:
@@ -777,6 +789,7 @@ services:
     build:
       <<: *go-build
       args: {<<: *go-build-args, SERVICE: scheduler}
+    image: ${JP_IMAGE_REGISTRY:-ghcr.io/zeeshan-890/cloud-plateform}/scheduler:${JP_IMAGE_TAG:-local}
     environment:
       <<: [*env-common, *env-data, *env-urls]
       PORT: "8011"
@@ -800,6 +813,7 @@ services:
     build:
       <<: *go-build
       args: {<<: *go-build-args, SERVICE: domain}
+    image: ${JP_IMAGE_REGISTRY:-ghcr.io/zeeshan-890/cloud-plateform}/domain:${JP_IMAGE_TAG:-local}
     environment:
       <<: [*env-common, *env-data, *env-urls]
       PORT: "8012"
@@ -829,6 +843,7 @@ services:
     build:
       <<: *go-build
       args: {<<: *go-build-args, SERVICE: certificate}
+    image: ${JP_IMAGE_REGISTRY:-ghcr.io/zeeshan-890/cloud-plateform}/certificate:${JP_IMAGE_TAG:-local}
     environment:
       <<: [*env-common, *env-data, *env-urls]
       PORT: "8013"
@@ -854,6 +869,7 @@ services:
     build:
       <<: *go-build
       args: {<<: *go-build-args, SERVICE: secret}
+    image: ${JP_IMAGE_REGISTRY:-ghcr.io/zeeshan-890/cloud-plateform}/secret:${JP_IMAGE_TAG:-local}
     environment:
       <<: [*env-common, *env-data, *env-urls]
       PORT: "8014"
@@ -876,6 +892,7 @@ services:
     build:
       <<: *go-build
       args: {<<: *go-build-args, SERVICE: logging}
+    image: ${JP_IMAGE_REGISTRY:-ghcr.io/zeeshan-890/cloud-plateform}/logging:${JP_IMAGE_TAG:-local}
     environment:
       <<: [*env-common, *env-data, *env-urls]
       PORT: "8015"
@@ -894,6 +911,7 @@ services:
     build:
       <<: *go-build
       args: {<<: *go-build-args, SERVICE: metrics}
+    image: ${JP_IMAGE_REGISTRY:-ghcr.io/zeeshan-890/cloud-plateform}/metrics:${JP_IMAGE_TAG:-local}
     environment:
       <<: [*env-common, *env-data, *env-urls]
       PORT: "8016"
@@ -915,6 +933,7 @@ services:
     build:
       <<: *go-build
       args: {<<: *go-build-args, SERVICE: storage}
+    image: ${JP_IMAGE_REGISTRY:-ghcr.io/zeeshan-890/cloud-plateform}/storage:${JP_IMAGE_TAG:-local}
     environment:
       <<: [*env-common, *env-data, *env-urls]
       PORT: "8017"
@@ -942,6 +961,7 @@ services:
     build:
       <<: *go-build
       args: {<<: *go-build-args, SERVICE: database}
+    image: ${JP_IMAGE_REGISTRY:-ghcr.io/zeeshan-890/cloud-plateform}/database:${JP_IMAGE_TAG:-local}
     environment:
       <<: [*env-common, *env-data, *env-urls]
       PORT: "8018"
@@ -958,6 +978,7 @@ services:
     build:
       <<: *go-build
       args: {<<: *go-build-args, SERVICE: addon}
+    image: ${JP_IMAGE_REGISTRY:-ghcr.io/zeeshan-890/cloud-plateform}/addon:${JP_IMAGE_TAG:-local}
     environment:
       <<: [*env-common, *env-data, *env-urls]
       PORT: "8021"
@@ -975,6 +996,7 @@ services:
     build:
       <<: *go-build
       args: {<<: *go-build-args, SERVICE: ai}
+    image: ${JP_IMAGE_REGISTRY:-ghcr.io/zeeshan-890/cloud-plateform}/ai:${JP_IMAGE_TAG:-local}
     environment:
       <<: [*env-common, *env-data, *env-urls]
       PORT: "8019"

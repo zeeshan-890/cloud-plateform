@@ -1,0 +1,85 @@
+name: Publish images
+
+# Builds every image once, on GitHub's servers, for linux/amd64 + linux/arm64 and publishes it to ghcr.io as
+#   ghcr.io/<owner>/<repo>/<service>:sha-<first 7 chars of the commit>   (and :latest)
+# install.sh / scripts/jp-up.sh --pull then download these instead of compiling 21 services on the target server
+# (minutes instead of tens of minutes). A commit whose images are missing is simply built from source.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE_PREFIX: ghcr.io/${{ github.repository }}
+
+jobs:
+  images:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: gateway,      file: infra/docker/Dockerfile.service, context: ., service: gateway }
+          - { name: identity,     file: infra/docker/Dockerfile.service, context: ., service: identity }
+          - { name: organization, file: infra/docker/Dockerfile.service, context: ., service: organization }
+          - { name: project,      file: infra/docker/Dockerfile.service, context: ., service: project }
+          - { name: notification, file: infra/docker/Dockerfile.service, context: ., service: notification }
+          - { name: repository,   file: infra/docker/Dockerfile.service, context: ., service: repository }
+          - { name: deployment,   file: infra/docker/Dockerfile.service, context: ., service: deployment }
+          - { name: build,        file: infra/docker/Dockerfile.service, context: ., service: build }
+          - { name: registry,     file: infra/docker/Dockerfile.service, context: ., service: registry }
+          - { name: runtime,      file: infra/docker/Dockerfile.service, context: ., service: runtime }
+          - { name: scheduler,    file: infra/docker/Dockerfile.service, context: ., service: scheduler }
+          - { name: domain,       file: infra/docker/Dockerfile.service, context: ., service: domain }
+          - { name: certificate,  file: infra/docker/Dockerfile.service, context: ., service: certificate }
+          - { name: secret,       file: infra/docker/Dockerfile.service, context: ., service: secret }
+          - { name: logging,      file: infra/docker/Dockerfile.service, context: ., service: logging }
+          - { name: metrics,      file: infra/docker/Dockerfile.service, context: ., service: metrics }
+          - { name: storage,      file: infra/docker/Dockerfile.service, context: ., service: storage }
+          - { name: database,     file: infra/docker/Dockerfile.service, context: ., service: database }
+          - { name: addon,        file: infra/docker/Dockerfile.service, context: ., service: addon }
+          - { name: ai,           file: infra/docker/Dockerfile.service, context: ., service: ai }
+          - { name: worker,       file: infra/docker/Dockerfile.worker,  context: ., service: "" }
+          - { name: dashboard,    file: apps/dashboard/Dockerfile,       context: apps/dashboard, service: "" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_PREFIX }}/${{ matrix.name }}
+          tags: |
+            type=sha,format=short
+            type=raw,value=latest
+      - name: build and push (amd64 + arm64)
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          build-args: |
+            SERVICE=${{ matrix.service }}
+            VERSION=${{ github.sha }}
+            COMMIT=${{ github.sha }}
+            NEXT_PUBLIC_API_URL=/api/v1
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}

@@ -531,7 +531,7 @@ start_stack() {
   log "sizing host"
   bash ./scripts/size-host.sh "$TIER"
   log "building and starting the stack (first build takes several minutes)"
-  bash ./scripts/jp-up.sh --size "$TIER"
+  bash ./scripts/jp-up.sh --pull --size "$TIER"
 }
 
 verify_stack() {
