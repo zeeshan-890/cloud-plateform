@@ -3,53 +3,85 @@
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Alert, PageHeader } from "@/components/ui/page";
-import { ApiError } from "@/lib/api";
+import { Input } from "@/components/ui/field";
+import { PageHeader, Panel } from "@/components/ui/panel";
+import { useToast } from "@/components/ui/toast";
+import { errorMessage, orgs, slugify } from "@/lib/api";
 import { useOrg } from "@/lib/org-context";
 
 export default function NewOrgPage() {
-  const { createOrg } = useOrg();
   const router = useRouter();
+  const toast = useToast();
+  const { orgs: existing, setCurrentOrgId, reload } = useOrg();
   const [name, setName] = useState("");
+  const [slug, setSlug] = useState("");
+  const [touched, setTouched] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [submitting, setSubmitting] = useState(false);
 
-  async function onSubmit(e: FormEvent) {
+  const submit = async (e: FormEvent) => {
     e.preventDefault();
-    setSubmitting(true);
+    setBusy(true);
     setError("");
     try {
-      await createOrg(name);
-      router.push("/projects");
+      const o = await orgs.create({ name: name.trim(), slug: slug || slugify(name) });
+      setCurrentOrgId(o.id);
+      reload();
+      toast.success("Organization created", o.name);
+      router.push("/projects/new");
     } catch (err) {
-      setError(
-        err instanceof ApiError ? err.message : "Failed to create organization",
-      );
+      setError(errorMessage(err));
     } finally {
-      setSubmitting(false);
+      setBusy(false);
     }
-  }
+  };
 
   return (
-    <div className="mx-auto max-w-lg animate-fade-up">
+    <>
       <PageHeader
         title="New organization"
-        description="Organizations hold projects, members, and billing."
+        eyebrow={existing.length === 0 ? "Step 1 of 2" : "Workspace"}
+        description="An organization owns projects and the people who work on them. You become its owner."
       />
-      <form onSubmit={onSubmit} className="flex flex-col gap-4">
-        {error ? <Alert>{error}</Alert> : null}
-        <Input
-          label="Organization name"
-          required
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="Acme Labs"
-        />
-        <Button type="submit" disabled={submitting} className="w-fit">
-          {submitting ? "Creating…" : "Create organization"}
-        </Button>
-      </form>
-    </div>
+      <Panel className="max-w-xl">
+        <form onSubmit={submit} className="flex flex-col gap-5">
+          <Input
+            label="Organization name"
+            required
+            value={name}
+            onChange={(e) => {
+              setName(e.target.value);
+              if (!touched) setSlug(slugify(e.target.value));
+            }}
+            data-testid="org-name"
+          />
+          <Input
+            label="Slug"
+            value={slug}
+            onChange={(e) => {
+              setTouched(true);
+              setSlug(e.target.value.toLowerCase());
+            }}
+            hint="Lowercase letters, numbers and dashes. Part of every project's system URL."
+            data-testid="org-slug"
+          />
+          {error && (
+            <p role="alert" className="error-text !mt-0">
+              {error}
+            </p>
+          )}
+          <div className="flex gap-3">
+            <Button type="submit" variant="primary" loading={busy} disabled={!name.trim()} data-testid="org-submit">
+              Create organization
+            </Button>
+            {existing.length > 0 && (
+              <Button variant="ghost" onClick={() => router.back()}>
+                Cancel
+              </Button>
+            )}
+          </div>
+        </form>
+      </Panel>
+    </>
   );
 }

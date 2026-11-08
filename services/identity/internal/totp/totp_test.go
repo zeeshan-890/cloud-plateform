@@ -67,7 +67,7 @@ func TestGenerateBackupCodes(t *testing.T) {
 		t.Fatalf("expected 8 codes, got %d", len(codes))
 	}
 	for _, c := range codes {
-		if len(c) != 9 || c[4] != '-' { // format xxxx-xxxx
+		if len(c) != 13 || c[6] != '-' { // format xxxxxx-xxxxxx
 			t.Errorf("invalid backup code format: %s", c)
 		}
 	}

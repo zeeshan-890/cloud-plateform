@@ -1,0 +1,14 @@
+{
+  "name": "jp-e2e-addon-probe",
+  "version": "1.0.0",
+  "private": true,
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "dependencies": {
+    "ioredis": "5.4.1",
+    "mongodb": "6.8.0",
+    "mysql2": "3.11.0",
+    "pg": "8.12.0",
+    "amqplib": "0.10.4"
+  }
+}

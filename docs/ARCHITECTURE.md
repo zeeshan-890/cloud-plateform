@@ -1,114 +1,87 @@
-# JP Target Product Architecture
+# Architecture
 
-> **Comprehensive architectural specification of the JP open-source self-hosted platform.**  
-> Defines the subsystem boundaries, request flow, control plane, node agent, orchestration, and persistence architecture.
+JP runs its control plane on one Docker host (additional servers can host whole projects, see [MULTI_SERVER.md](MULTI_SERVER.md)); that host runs the control plane (21 Go services + Postgres + Redis), the edge (Traefik),
+supporting stores (MinIO, image registry) and the tenants' containers. Everything is created by
+`infra/compose/docker-compose.yml`; tenant resources are created at runtime by the `runtime` service through the Docker API.
 
----
-
-## 1. Top-Level Architectural Boundaries
-
-JP combines the capabilities of modern PaaS platforms (Vercel, Render, Railway), container orchestrators, and server control panels. It is designed to scale gracefully from a low-overhead single-server deployment to a clustered multi-node infrastructure.
-
-```mermaid
-flowchart TB
-  subgraph Edge["Edge Ingress Tier"]
-    Traefik["Traefik v3.2 Edge Proxy (:80, :443, :8080)"]
-  end
-
-  subgraph Facade["Façade & Ingress Gateway"]
-    GW["gateway (:8000)"]
-  end
-
-  subgraph ControlPlane["Control Plane Layer"]
-    ID["identity (:8001)"]
-    ORG["organization (:8002)"]
-    PRJ["project (:8003)"]
-    NOTIF["notification (:8004)"]
-    REPO["repository (:8005)"]
-    DEP["deployment (:8006)"]
-    BLD["build (:8007)"]
-    REGAPI["registry-api (:8009)"]
-    DOM["domain (:8012)"]
-    CERT["certificate (:8013)"]
-    SEC["secret (:8014)"]
-    LOG["logging (:8015)"]
-    MET["metrics (:8016)"]
-    STOR["storage (:8017)"]
-    DB["database (:8018)"]
-    ADDON["addon (:8021)"]
-    AI["ai (:8019)"]
-    BILL["billing (:8020)"]
-  end
-
-  subgraph DataPlane["Data Plane & Execution Layer"]
-    WRK["worker × N (:8008)"]
-    OCI["registry:2 (:5000)"]
-    SCH["scheduler (:8011)"]
-    RT["runtime (:8010)"]
-    Agent["node-agent (Daemon)"]
-  end
-
-  subgraph Persistence["Persistence & Streaming Layer"]
-    PG[("PostgreSQL 16")]
-    Redis[("Redis 7 Streams")]
-    MinIO[("MinIO (:9000/:9001)")]
-  end
-
-  Traefik -->|/api/*| GW
-  Traefik -->|Dynamic Ingress| RT
-
-  GW --> ControlPlane
-  DEP & BLD --> Redis
-  Redis --> WRK & SCH & BILL
-  WRK --> OCI
-  SCH --> RT
-  RT --> Agent
-  STOR --> MinIO
-  ControlPlane --> PG
+```
+ internet --> Traefik :80/:443 --+--> /api/*   -> gateway :8000 --> 20 internal services (X-Internal-Token + JWT)
+                                 +--> /       -> dashboard :3000 (nginx, static Next.js export)
+                                 +--> Host(app) -> tenant containers on their own jp_p_<id> networks
 ```
 
----
+## Services
 
-## 2. Subsystem Responsibilities
+All listen on the compose network `jp`; only the gateway is reachable from the edge. Every service exposes `GET /healthz`
+and runs migrations from its own `migrations/` directory against the shared Postgres database at startup.
 
-### A. Edge Routing (Traefik v3.2)
-- Handles external HTTP (:80) and HTTPS (:443) traffic.
-- Exposes internal API traffic matching `PathPrefix('/api')` to `gateway:8000`.
-- Continuously watches `/etc/traefik/dynamic/` for dynamic project host ingress configurations synthesized by the `domain` service.
-- Terminates TLS with ACME Let's Encrypt automated challenge resolution.
+| Service | Port | Responsibility |
+|---|---|---|
+| gateway | 8000 | the only public API: JWT/PAT authentication, rate limits, CORS, request routing, platform settings, system pages |
+| identity | 8001 | users, sessions, MFA (TOTP), personal access tokens, bootstrap/registration policy |
+| organization | 8002 | organizations, members, roles, invitations |
+| project | 8003 | projects, `jp.yaml` desired state, project delete orchestration |
+| notification | 8004 | e-mail (SMTP) and in-app notifications |
+| repository | 8005 | GitHub App/token integration, webhooks, deploy keys |
+| deployment | 8006 | deployment records, strategies (rolling / blue-green), previews |
+| build | 8007 | build records and logs, queue producer |
+| worker | 8008 | consumes build jobs: `git clone`, `docker build`, push, Trivy scan |
+| registry (`registry-api`) | 8009 | image metadata; the image store itself is the `registry:2` container |
+| runtime | 8010 | creates/stops tenant containers, per-project networks, health gate, add-on containers |
+| scheduler | 8011 | cron jobs, preview/orphan-image cleanup |
+| domain | 8012 | hostnames, DNS verification, owns all Traefik routers (file provider) |
+| certificate | 8013 | certificate status/probing; issuance itself is Traefik's ACME |
+| secret | 8014 | encrypted secrets, the only holder of `SECRETS_MASTER_KEY` |
+| logging | 8015 | build/runtime log storage and search |
+| metrics | 8016 | metric ingestion/summary (reads Prometheus when the monitoring profile runs) |
+| storage | 8017 | buckets/objects on MinIO, quotas |
+| database | 8018 | managed databases (dedicated Postgres container per database) |
+| ai | 8019 | failure explanations and ops assistant (Gemini and OpenAI-compatible providers) |
+| addon | 8021 | add-on catalog (22 provisionable engines), provisioned as containers via runtime |
 
-### B. Façade Gateway (`gateway`)
-- Acts as the single public entry point for all API operations.
-- Intercepts requests, validates access tokens, and converts Personal Access Tokens (`jp_pat_*`) into short-lived JWTs via `identity:8001`.
-- Performs multi-tenant RBAC resolution against `organization:8002`, injecting `X-Org-Role`, `X-Org-ID`, `X-User-ID`, and `traceparent`.
-- Strips `/api/v1` path prefixes and dispatches to downstream internal services.
+Supporting containers: `traefik`, `docker-socket-proxy` (read-only Docker API for Traefik/Promtail), `postgres`, `redis`
+(password protected), `registry`, `minio`, `dashboard` (nginx), `init-volumes` (one-shot permission fix). Optional profile
+`monitoring`: prometheus, grafana, loki, tempo, promtail.
 
-### C. Control Plane Services
-- **identity (:8001):** User credentials, bcrypt password hashing, session revocation, PAT management, security audit logs.
-- **organization (:8002):** Multi-tenant organizations, invitations, team RBAC roles.
-- **project (:8003):** Project entities, `jp.yaml` desired state persistence, canonical hashing, and drift detection.
-- **repository (:8005):** GitHub App integrations, OAuth callbacks, repository associations, and HMAC webhook ingestion.
-- **deployment (:8006):** Deployment state machine, build coordination, and rollback orchestration.
-- **build (:8007):** Build records and log streaming API.
-- **secret (:8014):** Multi-environment AES-256-GCM envelope encryption with version history.
-- **domain (:8012) & certificate (:8013):** DNS verification and SSL/TLS certificate tracking.
-- **database (:8018) & addon (:8021):** One-click managed database and backing service provisioning.
-- **storage (:8017):** S3 object storage bucket and file management via MinIO.
-- **ai (:8019):** Tool-assisted diagnostic engine utilizing OpenAI API with heuristic fallback.
+## Trust boundaries and service-to-service auth
 
-### D. Data Plane & Orchestration
-- **worker (:8008):** Docker BuildKit execution daemon consuming `jp.build` from Redis Streams.
-- **registry:2 (:5000) & registry-api (:8009):** OCI image distribution and cataloging.
-- **scheduler (:8011):** Coordinates rolling/blue-green updates, garbage collection, and cron tasks.
-- **runtime (:8010):** Direct Docker Engine socket orchestrator.
-- **node-agent:** Minimal server agent executing authorized desired-state reconciliation.
+* Users and PATs authenticate at the gateway (short-lived JWT + refresh; claims include user id and platform-admin flag).
+* The gateway forwards to services with the user's identity. Services authorise through `packages/go-common/membership`,
+  which asks the organization service (fail closed) and enforces the access model: read = viewer+, create/update/deploy = member+,
+  destructive or sensitive = admin+, delete org / change roles = owner.
+* Service-to-service routes live under `/internal/*`, wrapped by `internalauth.Require` (constant-time check of the
+  `X-Internal-Token` header against `INTERNAL_TOKEN`). In production a missing token makes the service refuse to start.
+* Services never read each other's tables except through APIs. Tenant containers can reach none of this: they are not on `jp`.
 
----
+## Networks
 
-## 3. Operational Deployment Profiles
+| Network | Members | Notes |
+|---|---|---|
+| `jp` | all platform containers, Traefik | bridge |
+| `jp_socketproxy` | docker-socket-proxy, Traefik, Promtail | `internal: true` (no outbound) |
+| `jp_p_<project8>` | one project's app + add-on containers, plus Traefik | created by runtime; Traefik is attached with `docker network connect` (container `jp-traefik`, `TRAEFIK_CONTAINER`) |
 
-| Profile | Target Hardware | Included Components | Workload Strategy |
-|---|---|---|---|
-| **Lite** | 1 GB RAM, 0.5–1 CPU | Gateway, Identity, Org, Project, Deploy, Traefik, PostgreSQL, Redis | Remote builds, external object storage, bounded log retention, simulate mode fallback. |
-| **Standard** | 6–16 GB RAM, 4+ CPUs | Full Control Plane + Local Worker + Docker Registry + MinIO S3 + Addons | Local Docker BuildKit builds, local registry, local container runtime. |
-| **Cluster** | Multiple Nodes | Multi-Node Agent, External Managed PG/Redis, Distributed Workers | Cluster scheduling, capacity-aware workload placement, automated node recovery. |
+## Request flow: deploy
+
+1. Push webhook (or dashboard/CLI) -> repository (applies the connection's CD rules: branch, folder/path filters, skip markers, wait-for-CI) -> deployment creates a record and asks `build`. The worker builds the connection's root directory ([CONTINUOUS_DEPLOYMENT.md](CONTINUOUS_DEPLOYMENT.md)).
+2. `build` enqueues a job on Redis Streams; a `worker` replica (`WORKER_CONCURRENCY` jobs in parallel) clones the exact
+   commit, builds with the host Docker daemon, pushes to `127.0.0.1:5000/<org>/<project>:<tag>`. With `TRIVY_ENABLED=true` (default) the worker scans the pushed image with Trivy and records the result (HIGH/CRITICAL findings) on the build.
+3. `deployment` tells `runtime` to start the container on the project network. Secrets are fetched by runtime from
+   the secret service's internal env endpoint per request - runtime never holds the master key.
+4. Rolling: new container joins the same Traefik service (load-balanced), passes the HTTP health gate, then the old
+   one drains and stops. Blue/green: the new colour gets its own service name; after the health gate runtime asks `domain`
+   to atomically rewrite the routers to the new service, then the old colour is drained. A failed gate keeps the old
+   version running and marks the deployment `failed`.
+5. Traefik routes by `Host()` rules written only by the domain service to the file provider directory.
+
+## Data stores
+
+| Store | Used for | Persistence |
+|---|---|---|
+| Postgres 16 | all service tables | `postgres_data` volume |
+| Redis 7 (`requirepass`, AOF, `noeviction`) | build queue streams, rate limits, token revocation | `redis_data` |
+| MinIO | tenant storage buckets | `minio_data` |
+| registry:2 (delete enabled) | built images | `registry_data` |
+| Traefik | ACME state, generated routers | `traefik_acme`, `traefik_dynamic` |
+
+Ports and exposure: [OPERATIONS.md](OPERATIONS.md#ports). Security properties and limits: [SECURITY.md](SECURITY.md).

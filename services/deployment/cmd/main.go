@@ -8,14 +8,16 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jp-cloud/deployment/internal/handlers"
+	"github.com/jp-cloud/deployment/internal/store"
 	"github.com/jp-cloud/go-common/config"
+	"github.com/jp-cloud/go-common/internalauth"
 	jwtutil "github.com/jp-cloud/go-common/jwt"
 	"github.com/jp-cloud/go-common/logging"
+	"github.com/jp-cloud/go-common/membership"
 	"github.com/jp-cloud/go-common/middleware"
 	"github.com/jp-cloud/go-common/postgres"
 	redisx "github.com/jp-cloud/go-common/redis"
-	"github.com/jp-cloud/deployment/internal/handlers"
-	"github.com/jp-cloud/deployment/internal/store"
 )
 
 func main() {
@@ -51,24 +53,25 @@ func main() {
 
 	jm := jwtutil.NewManager(cfg.JWTSecret, cfg.JWTAccessTTL, cfg.JWTRefreshTTL)
 	h := &handlers.Handler{
-		Store:           store.New(pool),
-		JWT:             jm,
-		OrganizationURL: cfg.OrganizationURL,
-		BuildURL:        cfg.BuildURL,
-		RepositoryURL:   cfg.RepositoryURL,
-		RuntimeURL:      cfg.RuntimeURL,
-		DomainURL:       cfg.DomainURL,
-		PublicBaseURL:   cfg.PublicBaseURL,
-		HTTP:            &http.Client{Timeout: 15 * time.Second},
-		Log:             log,
-		Redis:           rdb,
+		Store:         store.New(pool),
+		JWT:           jm,
+		Authz:         membership.New(cfg.OrganizationURL, cfg.ProjectURL),
+		BuildURL:      cfg.BuildURL,
+		RepositoryURL: cfg.RepositoryURL,
+		RuntimeURL:    cfg.RuntimeURL,
+		DomainURL:     cfg.DomainURL,
+		RegistryURL:   cfg.RegistryURL,
+		PublicBaseURL: cfg.PublicBaseURL,
+		HTTP:          internalauth.NewClient(20 * time.Second),
+		Log:           log,
+		Redis:         rdb,
 	}
 
 	mux := http.NewServeMux()
 	h.Routes(mux)
 	handler := middleware.Chain(mux, middleware.RequestID, middleware.Logging(log), middleware.CORS(cfg.CORSOrigins))
 
-	srv := &http.Server{Addr: ":" + cfg.HTTPPort, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Addr: ":" + cfg.HTTPPort, Handler: handler, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 2 * time.Minute, IdleTimeout: 120 * time.Second}
 	go func() {
 		log.Info("deployment listening", "port", cfg.HTTPPort)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -83,4 +86,5 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
+	h.Wait()
 }

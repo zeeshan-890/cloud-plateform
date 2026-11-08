@@ -1,10 +1,13 @@
+# Promtail (monitoring profile): container logs -> Loki.
+# Containers are discovered through the READ-ONLY docker-socket-proxy (containers + networks only);
+# promtail never mounts /var/run/docker.sock.
 server:
   http_listen_port: 9080
   grpc_listen_port: 0
   log_level: warn
 
 positions:
-  filename: /tmp/positions.yaml
+  filename: /positions/positions.yaml
 
 clients:
   - url: http://loki:3100/loki/api/v1/push
@@ -12,7 +15,7 @@ clients:
 scrape_configs:
   - job_name: docker
     docker_sd_configs:
-      - host: unix:///var/run/docker.sock
+      - host: tcp://docker-socket-proxy:2375
         refresh_interval: 15s
     relabel_configs:
       - source_labels: ["__meta_docker_container_name"]
@@ -20,3 +23,7 @@ scrape_configs:
         target_label: container
       - source_labels: ["__meta_docker_container_label_com_docker_compose_service"]
         target_label: service
+      - source_labels: ["__meta_docker_container_label_jp_managed"]
+        target_label: jp_managed
+      - source_labels: ["__meta_docker_container_label_jp_project"]
+        target_label: jp_project

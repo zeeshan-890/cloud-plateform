@@ -1,48 +1,66 @@
-import { type ButtonHTMLAttributes, type ReactNode } from "react";
+"use client";
 
-type Variant = "primary" | "secondary" | "ghost" | "danger" | "success";
-type Size = "sm" | "md" | "lg";
+import Link from "next/link";
+import { forwardRef } from "react";
+import { cn } from "@/lib/cn";
+import { Spinner } from "./states";
 
-const variants: Record<Variant, string> = {
-  primary:
-    "bg-[#1E3A8A] text-white font-bold hover:bg-[#162456] shadow-sm transition-colors",
-  secondary:
-    "bg-white text-slate-700 border-2 border-slate-300 font-bold hover:bg-slate-50 hover:border-slate-400 hover:text-slate-900 shadow-sm transition-colors",
-  ghost:
-    "bg-transparent text-slate-700 font-semibold hover:bg-slate-200/70 hover:text-slate-900 transition-colors",
-  danger:
-    "bg-red-50 text-red-700 border-2 border-red-200 font-bold hover:bg-red-600 hover:text-white hover:border-red-600 shadow-sm transition-colors",
-  success:
-    "bg-emerald-50 text-emerald-800 border-2 border-emerald-300 font-bold hover:bg-emerald-600 hover:text-white hover:border-emerald-600 shadow-sm transition-colors",
-};
+type Variant = "default" | "primary" | "danger" | "ghost";
 
-const sizes: Record<Size, string> = {
-  sm: "h-8 px-3 text-xs rounded-lg",
-  md: "h-9 px-4 text-xs rounded-lg",
-  lg: "h-11 px-6 text-sm rounded-lg",
-};
-
-interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
+interface CommonProps {
   variant?: Variant;
-  size?: Size;
-  children: ReactNode;
+  size?: "md" | "sm";
+  icon?: boolean;
+  loading?: boolean;
 }
 
-export function Button({
-  variant = "primary",
-  size = "md",
-  className = "",
-  children,
-  disabled,
-  ...props
-}: ButtonProps) {
+function classes({ variant = "default", size = "md", icon }: CommonProps, extra?: string) {
+  return cn(
+    "btn",
+    variant === "primary" && "btn--primary",
+    variant === "danger" && "btn--danger",
+    variant === "ghost" && "btn--ghost",
+    size === "sm" && "btn--sm",
+    icon && "btn--icon",
+    extra,
+  );
+}
+
+export const Button = forwardRef<HTMLButtonElement, React.ButtonHTMLAttributes<HTMLButtonElement> & CommonProps>(function Button(
+  { variant, size, icon, loading, className, children, disabled, type = "button", ...rest },
+  ref,
+) {
   return (
     <button
-      className={`inline-flex items-center justify-center gap-1.5 whitespace-nowrap transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:ring-offset-1 disabled:pointer-events-none disabled:opacity-50 cursor-pointer ${variants[variant]} ${sizes[size]} ${className}`}
-      disabled={disabled}
-      {...props}
+      ref={ref}
+      type={type}
+      className={classes({ variant, size, icon }, className)}
+      disabled={disabled || loading}
+      aria-busy={loading || undefined}
+      {...rest}
     >
+      {loading && <Spinner size={16} />}
       {children}
     </button>
   );
+});
+
+export function LinkButton({
+  variant,
+  size,
+  icon,
+  className,
+  external,
+  ...rest
+}: React.ComponentProps<typeof Link> & CommonProps & { external?: boolean }) {
+  const cls = classes({ variant, size, icon }, className);
+  if (external) {
+    const { href, children, ...others } = rest as { href: string; children: React.ReactNode } & React.AnchorHTMLAttributes<HTMLAnchorElement>;
+    return (
+      <a href={href} className={cls} target="_blank" rel="noopener noreferrer" {...others}>
+        {children}
+      </a>
+    );
+  }
+  return <Link className={cls} {...rest} />;
 }

@@ -10,13 +10,13 @@ import (
 
 func TestMapCommitState(t *testing.T) {
 	cases := map[string]string{
-		"pending":  "pending",
-		"success":  "success",
-		"ready":    "success",
-		"failure":  "failure",
-		"failed":   "failure",
-		"error":    "failure",
-		"":         "pending",
+		"pending": "pending",
+		"success": "success",
+		"ready":   "success",
+		"failure": "failure",
+		"failed":  "failure",
+		"error":   "failure",
+		"":        "pending",
 	}
 	for in, want := range cases {
 		if got := mapCommitState(in); got != want {

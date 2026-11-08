@@ -10,27 +10,14 @@ distributor:
         grpc:
           endpoint: 0.0.0.0:4317
 
+compactor:
+  compaction:
+    block_retention: 72h
+
 storage:
   trace:
     backend: local
     local:
-      path: /tmp/tempo/blocks
+      path: /var/tempo/blocks
     wal:
-      path: /tmp/tempo/wal
-
-querier:
-  frontend_worker:
-    frontend_address: ""
-
-metrics_generator:
-  registry:
-    external_labels:
-      source: tempo
-  storage:
-    path: /tmp/tempo/generator
-    remote_write: []
-
-overrides:
-  defaults:
-    metrics_generator:
-      processors: []
+      path: /var/tempo/wal

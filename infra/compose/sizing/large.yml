@@ -1,73 +1,20 @@
-# Resource overlay: large (~16–32GB RAM / 8+ vCPU)
+# Resource overlay: large (16 - 32 GB RAM). Edit freely.
+# Applied by scripts/jp-up.sh after scripts/size-host.sh picks the tier (or: JP_SIZE=<tier>).
+# These are LIMITS (cgroup caps), not reservations. WORKER_REPLICAS / WORKER_CONCURRENCY come from .env.resources.
 services:
-  traefik:
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-          cpus: "1.0"
   postgres:
-    deploy:
-      resources:
-        limits:
-          memory: 2G
-          cpus: "2.0"
-  redis:
-    command: ["redis-server", "--save", "60", "1", "--maxmemory", "1gb", "--maxmemory-policy", "allkeys-lru"]
-    deploy:
-      resources:
-        limits:
-          memory: 1280M
-          cpus: "1.0"
-  gateway:
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-          cpus: "1.0"
-  identity:
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-          cpus: "1.0"
-  organization:
-    deploy:
-      resources:
-        limits:
-          memory: 384M
-          cpus: "0.75"
-  project:
-    deploy:
-      resources:
-        limits:
-          memory: 384M
-          cpus: "0.75"
-  worker:
-    environment:
-      WORKER_CONCURRENCY: "2"
     deploy:
       resources:
         limits:
           memory: 3G
           cpus: "2.0"
-  build:
+  redis:
+    environment:
+      REDIS_MAXMEMORY: 1024mb
     deploy:
       resources:
         limits:
-          memory: 512M
-          cpus: "1.0"
-  runtime:
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-          cpus: "1.0"
-  registry:
-    deploy:
-      resources:
-        limits:
-          memory: 512M
+          memory: 1280M
           cpus: "1.0"
   minio:
     deploy:
@@ -75,27 +22,59 @@ services:
         limits:
           memory: 1G
           cpus: "1.0"
+  worker:
+    environment:
+      GOMEMLIMIT: 2400MiB
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+          cpus: "3.0"
+  gateway:
+    environment:
+      GOMEMLIMIT: 299MiB
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+          cpus: "1.5"
+  identity:
+    environment:
+      GOMEMLIMIT: 299MiB
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+          cpus: "1.5"
+  runtime:
+    environment:
+      GOMEMLIMIT: 300MiB
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+          cpus: "1.0"
   prometheus:
     deploy:
       resources:
         limits:
           memory: 1G
-          cpus: "1.0"
+          cpus: "0.50"
   grafana:
     deploy:
       resources:
         limits:
           memory: 512M
-          cpus: "0.50"
+          cpus: "0.35"
   loki:
     deploy:
       resources:
         limits:
-          memory: 1G
-          cpus: "1.0"
+          memory: 768M
+          cpus: "0.50"
   tempo:
     deploy:
       resources:
         limits:
-          memory: 1G
-          cpus: "1.0"
+          memory: 768M
+          cpus: "0.50"

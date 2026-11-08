@@ -1,29 +1,25 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"log/slog"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
-	"github.com/jp-cloud/events"
 	"github.com/jp-cloud/go-common/config"
 	"github.com/jp-cloud/go-common/httpx"
+	"github.com/jp-cloud/go-common/internalauth"
 	"github.com/jp-cloud/go-common/logging"
 	"github.com/jp-cloud/go-common/middleware"
 	redisx "github.com/jp-cloud/go-common/redis"
+	"github.com/jp-cloud/worker/internal/builder"
+	"github.com/jp-cloud/worker/internal/redact"
+	"github.com/jp-cloud/worker/internal/scan"
+	"github.com/jp-cloud/worker/internal/worker"
 )
 
 func main() {
@@ -32,8 +28,23 @@ func main() {
 		panic(err)
 	}
 	log := logging.New(cfg.LogLevel)
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// BUILD_MODE: "docker" (default, real builds) or an explicit "simulate" (dev only).
+	mode := strings.ToLower(getEnv("BUILD_MODE", "docker"))
+	switch mode {
+	case "docker", "buildkit", "real":
+		mode = "docker"
+	case "simulate":
+		if strings.EqualFold(cfg.Env, "production") {
+			log.Error("BUILD_MODE=simulate is not allowed when JP_ENV=production")
+			os.Exit(1)
+		}
+	default:
+		log.Error("invalid BUILD_MODE", "mode", mode)
+		os.Exit(1)
+	}
 
 	rdb, err := redisx.Connect(ctx, cfg.RedisURL)
 	if err != nil {
@@ -42,556 +53,103 @@ func main() {
 	}
 	defer rdb.Close()
 
-	if err := events.EnsureGroup(ctx, rdb, events.TopicBuild, events.BuildConsumerGroup); err != nil {
-		log.Error("ensure group", "err", err)
+	hostname, _ := os.Hostname()
+	registryHost := strings.TrimRight(getEnv("REGISTRY_PUSH_URL", os.Getenv("REGISTRY_HOST")), "/")
+	registryHost = strings.TrimPrefix(strings.TrimPrefix(registryHost, "http://"), "https://")
+	if registryHost == "" {
+		log.Error("REGISTRY_HOST (or REGISTRY_PUSH_URL) is required: the address the HOST docker daemon uses to push and pull images")
 		os.Exit(1)
 	}
 
-	hostname, _ := os.Hostname()
-	concurrency := workerConcurrency()
-	w := &Worker{
-		BuildURL:      cfg.BuildURL,
-		DeploymentURL: cfg.DeploymentURL,
-		RegistryAPI:   strings.TrimRight(cfg.RegistryURL, "/"),
-		RegistryURL:   strings.TrimRight(getEnv("REGISTRY_PUSH_URL", getEnv("REGISTRY_HOST", "registry:5000")), "/"),
-		RepositoryURL: strings.TrimRight(getEnv("REPOSITORY_URL", "http://repository:8005"), "/"),
-		Simulate:      simulateBuild(),
-		HTTP:          &http.Client{Timeout: 30 * time.Second},
-		Log:           log,
-		Consumer:      getEnv("WORKER_NAME", firstNonEmpty(hostname, "worker-1")),
+	dk := builder.DefaultDocker()
+	trivyOn := config.GetEnvBool("TRIVY_ENABLED", true)
+	tcache := os.Getenv("TRIVY_CACHE_DIR")
+	red := redact.New(os.Getenv("GITHUB_TOKEN"), os.Getenv("REGISTRY_PASSWORD"))
+	w := &worker.Worker{
+		BuildURL:        strings.TrimRight(cfg.BuildURL, "/"),
+		DeploymentURL:   strings.TrimRight(cfg.DeploymentURL, "/"),
+		RepositoryURL:   strings.TrimRight(cfg.RepositoryURL, "/"),
+		RegistryAPI:     strings.TrimRight(cfg.RegistryURL, "/"),
+		RegistryHost:    registryHost,
+		RegistryCheck:   os.Getenv("REGISTRY_CHECK_URL"),
+		Simulate:        mode == "simulate",
+		HTTP:            internalauth.NewClient(30 * time.Second),
+		Log:             log,
+		Redactor:        red,
+		Docker:          dk,
+		WorkRoot:        getEnv("WORK_DIR", os.TempDir()),
+		MinFreeBytes:    uint64(envInt("WORKER_MIN_FREE_MB", 2048)) << 20,
+		MaxRepoBytes:    int64(envInt("WORKER_MAX_REPO_MB", 512)) << 20,
+		CloneTimeout:    envDur("WORKER_CLONE_TIMEOUT", 3*time.Minute),
+		BuildTimeout:    envDur("WORKER_BUILD_TIMEOUT", 15*time.Minute),
+		PushTimeout:     envDur("WORKER_PUSH_TIMEOUT", 5*time.Minute),
+		AllowedGitHosts: splitCSV(os.Getenv("GIT_ALLOWED_HOSTS")),
+	}
+	w.Scan = func(c context.Context, ref string) *scan.Summary {
+		return scan.Run(c, ref, scan.Options{Enabled: trivyOn, CacheDir: tcache, Timeout: envDur("TRIVY_TIMEOUT", 5*time.Minute)})
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", httpx.Healthz)
 	handler := middleware.Chain(mux, middleware.RequestID, middleware.Logging(log), middleware.CORS(cfg.CORSOrigins))
-	srv := &http.Server{Addr: ":" + cfg.HTTPPort, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Addr: ":" + cfg.HTTPPort, Handler: handler, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 10 * time.Second,
+		WriteTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}
 	go func() {
-		log.Info("worker listening", "port", cfg.HTTPPort, "simulate", w.Simulate, "concurrency", concurrency, "consumer", w.Consumer)
-		_ = srv.ListenAndServe()
+		log.Info("worker listening", "port", cfg.HTTPPort, "mode", mode, "consumer", consumerName(hostname), "trivy", trivyOn)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Error("server", "err", err)
+		}
 	}()
 
-	log.Info("worker consuming", "stream", events.TopicBuild, "group", events.BuildConsumerGroup, "concurrency", concurrency)
-	sem := make(chan struct{}, concurrency)
-	var wg sync.WaitGroup
-	for {
-		select {
-		case <-ctx.Done():
-			wg.Wait()
-			shutdownCtx, c := context.WithTimeout(context.Background(), 10*time.Second)
-			defer c()
-			_ = srv.Shutdown(shutdownCtx)
-			return
-		default:
-		}
-		// Claim up to concurrency messages per poll so parallel builds can start together.
-		msgs, err := events.ReadGroup(ctx, rdb, events.TopicBuild, events.BuildConsumerGroup, w.Consumer, int64(concurrency), 5*time.Second)
-		if err != nil {
-			if ctx.Err() != nil {
-				wg.Wait()
-				return
-			}
-			log.Error("read group", "err", err)
-			time.Sleep(2 * time.Second)
-			continue
-		}
-		for _, msg := range msgs {
-			env, err := events.ParseEnvelope(msg)
-			if err != nil {
-				log.Error("parse envelope", "err", err)
-				_ = events.Ack(ctx, rdb, events.TopicBuild, events.BuildConsumerGroup, msg.ID)
-				continue
-			}
-			sem <- struct{}{}
-			wg.Add(1)
-			go func(msgID string, env events.Envelope) {
-				defer wg.Done()
-				defer func() { <-sem }()
-				w.process(ctx, env)
-				_ = events.Ack(ctx, rdb, events.TopicBuild, events.BuildConsumerGroup, msgID)
-			}(msg.ID, env)
-		}
+	if err := w.Run(ctx, worker.RunConfig{
+		Redis: rdb, Consumer: consumerName(hostname), Concurrency: envInt("WORKER_CONCURRENCY", 1),
+		ClaimIdle: envDur("WORKER_CLAIM_IDLE", 10*time.Minute), DrainTimeout: envDur("WORKER_DRAIN_TIMEOUT", 10*time.Minute),
+		MaxAttempts: envInt("WORKER_MAX_ATTEMPTS", 3),
+	}); err != nil {
+		log.Error("worker stopped", "err", err)
 	}
+	sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_ = srv.Shutdown(sctx)
 }
 
-type Worker struct {
-	BuildURL      string
-	DeploymentURL string
-	RegistryAPI   string
-	RegistryURL   string
-	RepositoryURL string
-	Simulate      bool
-	HTTP          *http.Client
-	Log           *slog.Logger
-	Consumer      string
-}
-
-func (w *Worker) process(ctx context.Context, env events.Envelope) {
-	buildID, _ := env.Payload["build_id"].(string)
-	if buildID == "" {
-		w.Log.Error("missing build_id")
-		return
-	}
-	orgID, _ := env.Payload["org_id"].(string)
-	projectID, _ := env.Payload["project_id"].(string)
-	deploymentID, _ := env.Payload["deployment_id"].(string)
-	gitSHA, _ := env.Payload["git_sha"].(string)
-	gitBranch, _ := env.Payload["git_branch"].(string)
-	cloneURL, _ := env.Payload["clone_url"].(string)
-	fullName, _ := env.Payload["full_name"].(string)
-
-	token, _ := env.Payload["token"].(string)
-	if token == "" {
-		token = os.Getenv("GITHUB_TOKEN")
-	}
-	actualCloneURL := cloneURL
-	if token != "" && strings.HasPrefix(actualCloneURL, "https://github.com/") && !strings.Contains(actualCloneURL, "@") {
-		actualCloneURL = strings.Replace(actualCloneURL, "https://github.com/", "https://x-access-token:"+token+"@github.com/", 1)
-	}
-
-	w.Log.Info("claimed build", "build_id", buildID, "repo", fullName)
-	w.patchBuild(ctx, buildID, "running", "", "", "worker claimed job\n", "")
-
-	var logs strings.Builder
-	logs.WriteString("worker claimed job\n")
-
-	workDir, err := os.MkdirTemp("", "jp-build-*")
-	if err != nil {
-		w.fail(ctx, buildID, deploymentID, "temp dir: "+err.Error())
-		return
-	}
-	defer os.RemoveAll(workDir)
-
-	framework := "unknown"
-	if w.Simulate || cloneURL == "" {
-		logs.WriteString(fmt.Sprintf("simulated clone %s@%s (%s)\n", firstNonEmpty(fullName, "local"), gitSHA, gitBranch))
-		framework = detectFromName(fullName)
-		logs.WriteString("detected framework: " + framework + "\n")
-		writeSimulatedTree(workDir, framework)
-	} else {
-		logs.WriteString("cloning " + cloneURL + "\n")
-		w.patchBuild(ctx, buildID, "running", "", "", logs.String(), "")
-
-		var sshKeyFile string
-		if strings.HasPrefix(actualCloneURL, "git@") || strings.HasPrefix(actualCloneURL, "ssh://") {
-			privKey, err := w.fetchDeployKey(ctx, projectID)
-			if err != nil {
-				w.Log.Warn("failed to fetch deploy key for SSH clone", "project_id", projectID, "err", err)
-				logs.WriteString("warning: could not retrieve deploy key: " + err.Error() + "\n")
-			} else if privKey != "" {
-				tmpKey, err := os.CreateTemp("", "id_ed25519_*")
-				if err == nil {
-					_ = os.Chmod(tmpKey.Name(), 0o600)
-					_, _ = tmpKey.WriteString(privKey)
-					_ = tmpKey.Close()
-					sshKeyFile = tmpKey.Name()
-					defer os.Remove(sshKeyFile)
-					logs.WriteString("using project SSH deploy key\n")
-				}
-			}
-		}
-
-		if err := gitClone(ctx, actualCloneURL, gitBranch, gitSHA, workDir, sshKeyFile); err != nil {
-			logs.WriteString("clone failed: " + err.Error() + " — falling back to simulated tree\n")
-			framework = detectFromName(fullName)
-			writeSimulatedTree(workDir, framework)
-		} else {
-			framework = detectFramework(workDir)
-			logs.WriteString("clone ok; framework=" + framework + "\n")
-		}
-	}
-	w.patchBuild(ctx, buildID, "running", framework, "", logs.String(), "")
-
-	imageRef := fmt.Sprintf("%s/%s/%s:%s",
-		strings.TrimPrefix(strings.TrimPrefix(w.RegistryURL, "http://"), "https://"),
-		short(orgID), short(projectID), shortSHA(gitSHA))
-	if strings.HasPrefix(imageRef, "/") {
-		imageRef = "registry:5000" + imageRef
-	}
-
-	logs.WriteString("building image (simulate=" + fmt.Sprintf("%v", w.Simulate) + ")\n")
-	if !w.Simulate && dockerAvailable(ctx) {
-		ensureDockerfile(workDir, framework, &logs)
-		logs.WriteString("BuildKit build starting\n")
-		w.patchBuild(ctx, buildID, "running", framework, "", logs.String(), "")
-		if err := dockerBuild(ctx, workDir, imageRef, &logs); err != nil {
-			logs.WriteString("build failed: " + err.Error() + "\n")
-			w.fail(ctx, buildID, deploymentID, logs.String())
-			return
-		}
-		logs.WriteString("pushing " + imageRef + "\n")
-		if err := dockerPush(ctx, imageRef, &logs); err != nil {
-			logs.WriteString("push failed (tag recorded anyway): " + err.Error() + "\n")
-		}
-	} else {
-		logs.WriteString("simulated BuildKit steps:\n")
-		for _, step := range []string{
-			"[1/4] FROM alpine:3.20",
-			"[2/4] COPY . /app",
-			"[3/4] RUN build (" + framework + ")",
-			"[4/4] tagging " + imageRef,
-		} {
-			logs.WriteString(step + "\n")
-			time.Sleep(200 * time.Millisecond)
-			w.patchBuild(ctx, buildID, "running", framework, "", logs.String(), "")
-		}
-		logs.WriteString("simulated push ok\n")
-	}
-
-	logs.WriteString("build succeeded\n")
-	w.patchBuild(ctx, buildID, "succeeded", framework, imageRef, logs.String(), "")
-	w.registerImage(ctx, orgID, projectID, imageRef, framework, gitSHA)
-	if deploymentID != "" {
-		w.patchDeploy(ctx, deploymentID, "ready", "success", imageRef, "")
-	}
-	w.Log.Info("build succeeded", "build_id", buildID, "image", imageRef, "framework", framework)
-}
-
-func (w *Worker) fail(ctx context.Context, buildID, deploymentID, msg string) {
-	w.patchBuild(ctx, buildID, "failed", "", "", msg+"\n", msg)
-	if deploymentID != "" {
-		w.patchDeploy(ctx, deploymentID, "failed", "failure", "", msg)
-	}
-}
-
-func (w *Worker) registerImage(ctx context.Context, orgID, projectID, imageRef, framework, gitSHA string) {
-	if w.RegistryAPI == "" {
-		return
-	}
-	body, _ := json.Marshal(map[string]any{
-		"org_id": orgID, "project_id": projectID, "image_ref": imageRef,
-		"framework": framework, "git_sha": gitSHA,
-	})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		w.RegistryAPI+"/internal/images", bytes.NewReader(body))
-	if err != nil {
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := w.HTTP.Do(req)
-	if err != nil {
-		w.Log.Error("register image", "err", err)
-		return
-	}
-	_ = resp.Body.Close()
-}
-
-func (w *Worker) fetchDeployKey(ctx context.Context, projectID string) (string, error) {
-	if w.RepositoryURL == "" || projectID == "" {
-		return "", errors.New("repository URL or project ID missing")
-	}
-	url := fmt.Sprintf("%s/internal/projects/%s/deploy-key", w.RepositoryURL, projectID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return "", err
-	}
-	resp, err := w.HTTP.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("status %d", resp.StatusCode)
-	}
-	var data struct {
-		PrivateKey string `json:"private_key"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return "", err
-	}
-	return data.PrivateKey, nil
-}
-
-func (w *Worker) patchBuild(ctx context.Context, id, status, framework, imageRef, logs, errMsg string) {
-	body, _ := json.Marshal(map[string]any{
-		"status": status, "framework": framework, "image_ref": imageRef, "logs": logs, "error": errMsg,
-	})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		strings.TrimRight(w.BuildURL, "/")+"/internal/builds/"+id+"/status", bytes.NewReader(body))
-	if err != nil {
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := w.HTTP.Do(req)
-	if err != nil {
-		w.Log.Error("patch build", "err", err)
-		return
-	}
-	_ = resp.Body.Close()
-}
-
-func (w *Worker) patchDeploy(ctx context.Context, id, status, commitStatus, imageRef, errMsg string) {
-	body, _ := json.Marshal(map[string]any{
-		"status": status, "commit_status": commitStatus, "image_ref": imageRef, "error": errMsg,
-	})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		strings.TrimRight(w.DeploymentURL, "/")+"/internal/deployments/"+id+"/status", bytes.NewReader(body))
-	if err != nil {
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := w.HTTP.Do(req)
-	if err != nil {
-		w.Log.Error("patch deploy", "err", err)
-		return
-	}
-	_ = resp.Body.Close()
-}
-
-func gitClone(ctx context.Context, url, branch, sha, dir, sshKeyPath string) error {
-	args := []string{"clone", "--depth", "1"}
-	if branch != "" && branch != "HEAD" {
-		args = append(args, "--branch", branch)
-	}
-	args = append(args, url, dir)
-	cmd := exec.CommandContext(ctx, "git", args...)
-	env := append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-	if sshKeyPath != "" {
-		env = append(env, fmt.Sprintf("GIT_SSH_COMMAND=ssh -i %s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null", sshKeyPath))
-	}
-	cmd.Env = env
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		if branch != "" && branch != "HEAD" {
-			fallbackCmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", url, dir)
-			fallbackCmd.Env = env
-			fout, ferr := fallbackCmd.CombinedOutput()
-			if ferr == nil {
-				return checkoutSHA(ctx, sha, dir)
-			}
-			return fmt.Errorf("%w: %s (fallback: %s)", err, string(out), string(fout))
-		}
-		return fmt.Errorf("%w: %s", err, string(out))
-	}
-	return checkoutSHA(ctx, sha, dir)
-}
-
-func checkoutSHA(ctx context.Context, sha, dir string) error {
-	if sha == "" || sha == "HEAD" || sha == "latest" {
-		return nil
-	}
-	cmd := exec.CommandContext(ctx, "git", "checkout", sha)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-	_ = cmd.Run()
-	return nil
-}
-
-func ensureDockerfile(dir, framework string, logs *strings.Builder) {
-	dockerfilePath := filepath.Join(dir, "Dockerfile")
-	if _, err := os.Stat(dockerfilePath); err == nil {
-		logs.WriteString("using Dockerfile from repository\n")
-		return
-	}
-	for _, sub := range []string{"docker/Dockerfile", "deploy/Dockerfile", "Dockerfile.prod"} {
-		if _, err := os.Stat(filepath.Join(dir, sub)); err == nil {
-			logs.WriteString("using " + sub + "\n")
-			b, _ := os.ReadFile(filepath.Join(dir, sub))
-			_ = os.WriteFile(dockerfilePath, b, 0o644)
-			return
-		}
-	}
-	logs.WriteString("no Dockerfile found in repo; auto-generating build configuration for framework: " + framework + "\n")
-	var content string
-	switch framework {
-	case "next":
-		content = "FROM node:20-alpine AS builder\nWORKDIR /app\nCOPY package*.json ./\nRUN npm install --legacy-peer-deps || npm install\nCOPY . .\nRUN npm run build || true\nEXPOSE 3000\nENV PORT=3000\nCMD [\"npm\", \"start\"]\n"
-	case "react", "vue":
-		content = "FROM node:20-alpine AS builder\nWORKDIR /app\nCOPY package*.json ./\nRUN npm install --legacy-peer-deps || npm install\nCOPY . .\nRUN npm run build || true\nFROM nginx:alpine\nCOPY --from=builder /app/dist /usr/share/nginx/html\nCOPY --from=builder /app/build /usr/share/nginx/html\nEXPOSE 80\nCMD [\"nginx\", \"-g\", \"daemon off;\"]\n"
-	case "express", "node":
-		content = "FROM node:20-alpine\nWORKDIR /app\nCOPY package*.json ./\nRUN npm install || true\nCOPY . .\nEXPOSE 3000\nENV PORT=3000\nCMD [\"npm\", \"start\"]\n"
-	case "go":
-		content = "FROM golang:1.22-alpine AS builder\nWORKDIR /app\nCOPY . .\nRUN go mod download || true\nRUN CGO_ENABLED=0 go build -o /app/server . || CGO_ENABLED=0 go build -o /app/server ./cmd/...\nFROM alpine:3.20\nWORKDIR /app\nCOPY --from=builder /app/server /app/server\nEXPOSE 8080\nENV PORT=8080\nCMD [\"/app/server\"]\n"
-	case "fastapi", "python":
-		content = "FROM python:3.11-slim\nWORKDIR /app\nCOPY requirements*.txt ./\nRUN pip install --no-cache-dir -r requirements.txt || true\nCOPY . .\nEXPOSE 8000\nENV PORT=8000\nCMD [\"python\", \"-m\", \"http.server\", \"8000\"]\n"
-	default:
-		if _, err := os.Stat(filepath.Join(dir, "index.html")); err == nil {
-			content = "FROM nginx:alpine\nCOPY . /usr/share/nginx/html\nEXPOSE 80\nCMD [\"nginx\", \"-g\", \"daemon off;\"]\n"
-		} else {
-			content = "FROM alpine:3.20\nWORKDIR /app\nCOPY . .\nEXPOSE 8080\nCMD [\"sh\", \"-c\", \"echo 'App container running' && sleep infinity\"]\n"
-		}
-	}
-	_ = os.WriteFile(dockerfilePath, []byte(content), 0o644)
-	ignorePath := filepath.Join(dir, ".dockerignore")
-	if _, err := os.Stat(ignorePath); os.IsNotExist(err) {
-		_ = os.WriteFile(ignorePath, []byte(".git\nnode_modules\n.next\n"), 0o644)
-	}
-}
-
-func detectFramework(dir string) string {
-	checks := []struct {
-		file string
-		name string
-	}{
-		{"next.config.js", "next"},
-		{"next.config.mjs", "next"},
-		{"next.config.ts", "next"},
-		{"vite.config.ts", "react"},
-		{"vite.config.js", "vue"},
-		{"nuxt.config.ts", "vue"},
-		{"go.mod", "go"},
-		{"requirements.txt", "fastapi"},
-		{"pyproject.toml", "fastapi"},
-		{"package.json", "node"},
-	}
-	for _, c := range checks {
-		if _, err := os.Stat(filepath.Join(dir, c.file)); err == nil {
-			if c.name == "node" {
-				return detectFromPackageJSON(filepath.Join(dir, "package.json"))
-			}
-			return c.name
-		}
-	}
-	if _, err := os.Stat(filepath.Join(dir, "main.go")); err == nil {
-		return "go"
-	}
-	if _, err := os.Stat(filepath.Join(dir, "app.py")); err == nil {
-		return "fastapi"
-	}
-	return "unknown"
-}
-
-func detectFromPackageJSON(path string) string {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return "node"
-	}
-	s := string(b)
-	switch {
-	case strings.Contains(s, "\"next\""):
-		return "next"
-	case strings.Contains(s, "\"react\""):
-		return "react"
-	case strings.Contains(s, "\"vue\""):
-		return "vue"
-	case strings.Contains(s, "\"express\""):
-		return "express"
-	default:
-		return "node"
-	}
-}
-
-func detectFromName(fullName string) string {
-	n := strings.ToLower(fullName)
-	switch {
-	case strings.Contains(n, "next"):
-		return "next"
-	case strings.Contains(n, "react") || strings.Contains(n, "dashboard") || strings.Contains(n, "web"):
-		return "react"
-	case strings.Contains(n, "vue"):
-		return "vue"
-	case strings.Contains(n, "express"):
-		return "express"
-	case strings.Contains(n, "fastapi") || strings.Contains(n, "python"):
-		return "fastapi"
-	case strings.Contains(n, "go") || strings.Contains(n, "api-go"):
-		return "go"
-	default:
-		return "node"
-	}
-}
-
-func writeSimulatedTree(dir, framework string) {
-	_ = os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM alpine:3.20\nCMD [\"sleep\",\"infinity\"]\n"), 0o644)
-	switch framework {
-	case "next", "react", "vue", "express", "node":
-		_ = os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{"name":"app","dependencies":{"`+frameworkDep(framework)+`":"*"}}`), 0o644)
-	case "go":
-		_ = os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module app\n\ngo 1.22\n"), 0o644)
-	case "fastapi":
-		_ = os.WriteFile(filepath.Join(dir, "requirements.txt"), []byte("fastapi\nuvicorn\n"), 0o644)
-	}
-}
-
-func frameworkDep(f string) string {
-	switch f {
-	case "next":
-		return "next"
-	case "react":
-		return "react"
-	case "vue":
-		return "vue"
-	case "express":
-		return "express"
-	default:
-		return "node"
-	}
-}
-
-func dockerAvailable(ctx context.Context) bool {
-	cmd := exec.CommandContext(ctx, "docker", "info")
-	return cmd.Run() == nil
-}
-
-func dockerBuild(ctx context.Context, dir, imageRef string, logs *strings.Builder) error {
-	cmd := exec.CommandContext(ctx, "docker", "buildx", "build", "-t", imageRef, "--load", ".")
-	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
-	logs.Write(out)
-	return err
-}
-
-func dockerPush(ctx context.Context, imageRef string, logs *strings.Builder) error {
-	cmd := exec.CommandContext(ctx, "docker", "push", imageRef)
-	out, err := cmd.CombinedOutput()
-	logs.Write(out)
-	return err
-}
-
-func short(id string) string {
-	id = strings.ReplaceAll(id, "-", "")
-	if len(id) > 8 {
-		return id[:8]
-	}
-	if id == "" {
-		return "unknown"
-	}
-	return id
-}
-
-func shortSHA(sha string) string {
-	if sha == "" || sha == "HEAD" {
-		return "latest"
-	}
-	if len(sha) > 12 {
-		return sha[:12]
-	}
-	return sha
-}
-
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if strings.TrimSpace(v) != "" {
-			return v
-		}
-	}
-	return ""
-}
-
-func getEnv(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
+func consumerName(host string) string {
+	if v := os.Getenv("WORKER_NAME"); v != "" {
 		return v
 	}
-	return fallback
+	if host != "" {
+		return host
+	}
+	return "worker-1"
 }
 
-func simulateBuild() bool {
-	mode := strings.ToLower(getEnv("BUILD_MODE", ""))
-	if mode == "docker" || mode == "buildkit" || mode == "real" {
-		return false
+func getEnv(k, def string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
 	}
-	if mode == "simulate" {
-		return true
-	}
-	return config.GetEnvBool("SIMULATE_BUILD", true)
+	return def
 }
 
-func workerConcurrency() int {
-	n, err := strconv.Atoi(getEnv("WORKER_CONCURRENCY", "1"))
-	if err != nil || n < 1 {
-		return 1
+func envInt(k string, def int) int {
+	if n, err := strconv.Atoi(os.Getenv(k)); err == nil && n > 0 {
+		return n
 	}
-	if n > 16 {
-		return 16
+	return def
+}
+
+func envDur(k string, def time.Duration) time.Duration {
+	if d, err := time.ParseDuration(os.Getenv(k)); err == nil && d > 0 {
+		return d
 	}
-	return n
+	return def
+}
+
+func splitCSV(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }

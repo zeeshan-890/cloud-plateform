@@ -12,6 +12,9 @@ import (
 	"github.com/jp-cloud/jp/internal/config"
 )
 
+// maxResponseBytes caps what the CLI will buffer from any API response.
+const maxResponseBytes = 32 << 20
+
 type Client struct {
 	baseURL    string
 	httpClient *http.Client
@@ -37,6 +40,20 @@ type APIError struct {
 }
 
 func (e *APIError) Error() string {
+	switch e.Status {
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		if e.Message != "" {
+			return fmt.Sprintf("service unavailable (%d): %s - try again shortly", e.Status, e.Message)
+		}
+		return fmt.Sprintf("service unavailable (%d) - try again shortly", e.Status)
+	case http.StatusTooManyRequests:
+		return "too many requests - slow down and retry later"
+	case http.StatusForbidden:
+		if e.Message != "" {
+			return "permission denied: " + e.Message
+		}
+		return "permission denied"
+	}
 	if e.Message != "" {
 		if e.Code != "" {
 			return fmt.Sprintf("API error (%d/%s): %s", e.Status, e.Code, e.Message)
@@ -109,7 +126,7 @@ func (c *Client) doRawOnce(method, path string, body any, auth bool, allowRefres
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
 	}

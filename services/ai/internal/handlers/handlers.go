@@ -1,141 +1,398 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
+	"time"
 
+	"github.com/google/uuid"
+	"github.com/jp-cloud/ai/internal/crypt"
 	"github.com/jp-cloud/ai/internal/llm"
+	"github.com/jp-cloud/ai/internal/redact"
+	"github.com/jp-cloud/ai/internal/store"
 	"github.com/jp-cloud/go-common/httpx"
+	"github.com/jp-cloud/go-common/internalauth"
 	jwtutil "github.com/jp-cloud/go-common/jwt"
+	"github.com/jp-cloud/go-common/membership"
 	"github.com/jp-cloud/go-common/middleware"
-	"github.com/redis/go-redis/v9"
 )
 
+// Authz is implemented by *membership.Client.
+type Authz interface {
+	Require(w http.ResponseWriter, r *http.Request, orgID, userID string, min membership.Role) (membership.Role, bool)
+	RequireArea(w http.ResponseWriter, r *http.Request, orgID, projectID, userID string, area membership.Area, need membership.Level) (*membership.Access, bool)
+}
+
+// Chatter is implemented by *llm.Client.
+type Chatter interface {
+	Chat(ctx context.Context, cfg llm.Config, system, user string) (string, error)
+}
+
+// Limiter rate limits LLM calls per organisation.
+type Limiter interface {
+	Allow(ctx context.Context, orgID string) (bool, error)
+}
+
+// Tools are the platform services the assistant reads project data from.
+type Tools struct {
+	HTTP          *http.Client
+	BuildURL      string
+	DeploymentURL string
+	RuntimeURL    string
+	LoggingURL    string
+}
+
 type Handler struct {
-	JWT             *jwtutil.Manager
-	OrganizationURL string
-	BuildURL        string
-	LoggingURL      string
-	DeploymentURL   string
-	RuntimeURL      string
-	LLM             *llm.Client
-	Redis           *redis.Client
-	HTTP            *http.Client
-	Log             *slog.Logger
+	Store        store.Store
+	Box          *crypt.Box // nil: per-org keys cannot be stored
+	LLM          Chatter
+	Limit        Limiter
+	Authz        Authz
+	JWT          *jwtutil.Manager
+	Platform     llm.Config // fallback when an org has no configuration (APIKey may be empty)
+	AllowPrivate bool       // AI_ALLOW_PRIVATE_BASE_URL
+	Tools        Tools
+	Log          *slog.Logger
+}
+
+const (
+	maxPrompt  = 4000
+	maxLogs    = 8000
+	maxContext = 20000
+)
+
+func (h *Handler) log() *slog.Logger {
+	if h.Log != nil {
+		return h.Log
+	}
+	return slog.Default()
 }
 
 func (h *Handler) Routes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		httpx.JSON(w, http.StatusOK, map[string]any{"status": "ok", "mode": h.LLM.Mode()})
-	})
+	mux.HandleFunc("GET /healthz", httpx.Healthz)
 	auth := middleware.BearerAuth(h.JWT)
-
-	mux.Handle("POST /orgs/{orgId}/projects/{projectId}/ai/explain", auth(http.HandlerFunc(h.Explain)))
-	mux.Handle("POST /orgs/{orgId}/projects/{projectId}/ai/analyze-logs", auth(http.HandlerFunc(h.AnalyzeLogs)))
-	mux.Handle("POST /orgs/{orgId}/projects/{projectId}/ai/overview-suggestions", auth(http.HandlerFunc(h.OverviewSuggestions)))
-	mux.Handle("POST /orgs/{orgId}/ai/ask", auth(http.HandlerFunc(h.Ask)))
+	p := "/orgs/{orgId}/projects/{projectId}/ai"
 	mux.Handle("GET /orgs/{orgId}/ai/status", auth(http.HandlerFunc(h.Status)))
 	mux.Handle("GET /orgs/{orgId}/ai/config", auth(http.HandlerFunc(h.GetConfig)))
 	mux.Handle("POST /orgs/{orgId}/ai/config", auth(http.HandlerFunc(h.SetConfig)))
+	mux.Handle("PUT /orgs/{orgId}/ai/config", auth(http.HandlerFunc(h.SetConfig)))
+	mux.Handle("DELETE /orgs/{orgId}/ai/config", auth(http.HandlerFunc(h.DeleteConfig)))
+	mux.Handle("POST /orgs/{orgId}/ai/ask", auth(http.HandlerFunc(h.Ask)))
+	mux.Handle("POST "+p+"/explain", auth(http.HandlerFunc(h.Explain)))
+	mux.Handle("POST "+p+"/analyze-logs", auth(http.HandlerFunc(h.AnalyzeLogs)))
+	mux.Handle("POST "+p+"/overview-suggestions", auth(http.HandlerFunc(h.OverviewSuggestions)))
 }
 
-func (h *Handler) requireMember(w http.ResponseWriter, r *http.Request, orgID, userID string) bool {
-	if h.OrganizationURL == "" {
-		return true
+func validID(s string) bool { _, err := uuid.Parse(s); return err == nil }
+
+// ------------------------------------------------------------------ configuration
+
+type resolved struct {
+	cfg    llm.Config
+	source string // org | platform | none
+}
+
+func (h *Handler) resolve(ctx context.Context, orgID string) (resolved, error) {
+	c, err := h.Store.Get(ctx, orgID)
+	if err == nil && len(c.EncryptedKey) > 0 {
+		if h.Box == nil {
+			return resolved{}, crypt.ErrNoKey
+		}
+		key, err := h.Box.Open(orgID, c.EncryptedKey)
+		if err != nil {
+			return resolved{}, err
+		}
+		return resolved{cfg: llm.Config{Provider: c.Provider, Model: c.Model, APIKey: key, BaseURL: c.BaseURL}, source: "org"}, nil
 	}
-	url := fmt.Sprintf("%s/internal/orgs/%s/members/%s", strings.TrimRight(h.OrganizationURL, "/"), orgID, userID)
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, url, nil)
-	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "internal", "membership check failed")
-		return false
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return resolved{}, err
 	}
-	resp, err := h.HTTP.Do(req)
-	if err != nil {
-		httpx.Error(w, http.StatusBadGateway, "bad_gateway", "organization service unavailable")
-		return false
+	if h.Platform.APIKey != "" {
+		return resolved{cfg: h.Platform, source: "platform"}, nil
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
-		httpx.Error(w, http.StatusForbidden, "forbidden", "not a member")
-		return false
+	return resolved{source: "none"}, nil
+}
+
+func mask4(k string) string {
+	if len(k) < 8 {
+		return ""
 	}
-	return resp.StatusCode == http.StatusOK
+	return k[len(k)-4:]
+}
+
+func (h *Handler) configView(ctx context.Context, orgID string) map[string]any {
+	out := map[string]any{"provider": "", "model": "", "has_key": false, "key_last4": "", "source": "none",
+		"platform_fallback": h.Platform.APIKey != "", "can_store_keys": h.Box != nil,
+		"providers": []string{llm.ProviderGemini, llm.ProviderOpenAI}}
+	if c, err := h.Store.Get(ctx, orgID); err == nil {
+		out["provider"], out["model"], out["base_url"] = c.Provider, c.Model, c.BaseURL
+		out["has_key"] = len(c.EncryptedKey) > 0
+		out["key_last4"] = c.KeyLast4
+		if len(c.EncryptedKey) > 0 {
+			out["source"] = "org"
+		}
+	}
+	if out["source"] == "none" && h.Platform.APIKey != "" {
+		out["source"], out["provider"], out["model"] = "platform", h.Platform.Provider, h.Platform.Model
+	}
+	if out["source"] == "none" {
+		out["mode"] = "heuristic"
+	} else {
+		out["mode"] = "llm"
+	}
+	return out
 }
 
 func (h *Handler) Status(w http.ResponseWriter, r *http.Request) {
-	uid := middleware.UserIDFrom(r.Context())
 	orgID := r.PathValue("orgId")
-	if !h.requireMember(w, r, orgID, uid) {
+	if !validID(orgID) {
+		httpx.Error(w, http.StatusBadRequest, "bad_request", "invalid id")
 		return
 	}
-	httpx.JSON(w, http.StatusOK, map[string]any{
-		"mode":     h.LLM.Mode(),
-		"model":    h.LLM.Model,
-		"has_key":  h.LLM.HasKey(),
-		"tools":    []string{"build_logs", "runtime_logs", "deploy_events", "container_logs", "docker_inspect"},
-	})
+	if _, ok := h.Authz.Require(w, r, orgID, middleware.UserIDFrom(r.Context()), membership.Viewer); !ok {
+		return
+	}
+	v := h.configView(r.Context(), orgID)
+	v["has_key"] = v["source"] != "none"
+	v["tools"] = []string{"build_logs", "deployments", "runtime_logs"}
+	httpx.JSON(w, http.StatusOK, v)
 }
 
 func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
-	uid := middleware.UserIDFrom(r.Context())
 	orgID := r.PathValue("orgId")
-	if !h.requireMember(w, r, orgID, uid) {
+	if !validID(orgID) {
+		httpx.Error(w, http.StatusBadRequest, "bad_request", "invalid id")
 		return
 	}
-	masked := ""
-	if len(h.LLM.GeminiKeys) > 0 {
-		k := h.LLM.GeminiKeys[0]
-		if len(k) > 10 {
-			masked = k[:6] + "..." + k[len(k)-4:]
-		} else {
-			masked = "***"
-		}
+	if _, ok := h.Authz.Require(w, r, orgID, middleware.UserIDFrom(r.Context()), membership.Viewer); !ok {
+		return
 	}
-	httpx.JSON(w, http.StatusOK, map[string]any{
-		"mode":       h.LLM.Mode(),
-		"model":      h.LLM.Model,
-		"has_key":    h.LLM.HasKey(),
-		"masked_key": masked,
-		"provider":   "gemini",
-	})
+	v := h.configView(r.Context(), orgID)
+	if v["key_last4"] != "" {
+		v["masked_key"] = "****" + v["key_last4"].(string)
+	}
+	httpx.JSON(w, http.StatusOK, v)
 }
 
+// SetConfig stores the org's provider/model/key. Admin+ only; the key is encrypted and never returned.
 func (h *Handler) SetConfig(w http.ResponseWriter, r *http.Request) {
-	uid := middleware.UserIDFrom(r.Context())
 	orgID := r.PathValue("orgId")
-	if !h.requireMember(w, r, orgID, uid) {
+	uid := middleware.UserIDFrom(r.Context())
+	if !validID(orgID) {
+		httpx.Error(w, http.StatusBadRequest, "bad_request", "invalid id")
+		return
+	}
+	if _, ok := h.Authz.Require(w, r, orgID, uid, membership.Admin); !ok {
 		return
 	}
 	var req struct {
-		GeminiKey string `json:"gemini_key"`
+		Provider  string `json:"provider"`
 		Model     string `json:"model"`
+		APIKey    string `json:"api_key"`
+		BaseURL   string `json:"base_url"`
+		GeminiKey string `json:"gemini_key"` // legacy field
 	}
 	if err := httpx.Decode(r, &req); err != nil {
 		httpx.Error(w, http.StatusBadRequest, "invalid_body", "invalid JSON")
 		return
 	}
-	if req.Model == "" {
-		req.Model = "gemini-3.5-flash-lite"
+	existing, getErr := h.Store.Get(r.Context(), orgID)
+	have := getErr == nil
+	if req.APIKey == "" && req.GeminiKey != "" {
+		req.APIKey = req.GeminiKey
+		if req.Provider == "" {
+			req.Provider = llm.ProviderGemini
+		}
 	}
-	h.LLM.SetConfig(req.GeminiKey, "", req.Model)
-	if h.Redis != nil {
-		_ = h.Redis.HSet(r.Context(), "jp:ai:config", "gemini_key", req.GeminiKey, "model", req.Model).Err()
+	provider := strings.ToLower(strings.TrimSpace(req.Provider))
+	if provider == "" && have {
+		provider = existing.Provider
 	}
-	httpx.JSON(w, http.StatusOK, map[string]any{
-		"status": "updated",
-		"mode":   h.LLM.Mode(),
-		"model":  h.LLM.Model,
-	})
+	if provider == "" {
+		provider = llm.ProviderGemini
+	}
+	if !llm.ValidProvider(provider) {
+		httpx.Error(w, http.StatusBadRequest, "validation_error", "provider must be gemini or openai")
+		return
+	}
+	model := strings.TrimSpace(req.Model)
+	if model == "" {
+		if have && existing.Provider == provider && existing.Model != "" {
+			model = existing.Model
+		} else {
+			model = llm.DefaultModel(provider)
+		}
+	}
+	if !llm.ValidModel(model) {
+		httpx.Error(w, http.StatusBadRequest, "validation_error", "invalid model name")
+		return
+	}
+	baseURL := ""
+	if provider == llm.ProviderOpenAI {
+		b, err := llm.ValidateBaseURL(firstNonEmpty(req.BaseURL, func() string {
+			if have && existing.Provider == provider {
+				return existing.BaseURL
+			}
+			return ""
+		}()), h.AllowPrivate)
+		if err != nil {
+			httpx.Error(w, http.StatusBadRequest, "validation_error", err.Error())
+			return
+		}
+		baseURL = b
+	}
+	cfg := &store.Config{OrgID: orgID, Provider: provider, Model: model, BaseURL: baseURL, UpdatedBy: uid}
+	key := strings.TrimSpace(req.APIKey)
+	switch {
+	case key != "":
+		if len(key) < 8 || len(key) > 512 || strings.ContainsAny(key, " \t\r\n\x00") {
+			httpx.Error(w, http.StatusBadRequest, "validation_error", "api_key looks invalid")
+			return
+		}
+		if h.Box == nil {
+			httpx.Error(w, http.StatusServiceUnavailable, "encryption_unconfigured", "the platform has no AI_ENC_KEY/SECRETS_MASTER_KEY; organisation keys cannot be stored")
+			return
+		}
+		sealed, err := h.Box.Seal(orgID, key)
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, "internal", "encryption failed")
+			return
+		}
+		cfg.EncryptedKey, cfg.KeyLast4 = sealed, mask4(key)
+	case have && existing.Provider == provider:
+		cfg.EncryptedKey, cfg.KeyLast4 = existing.EncryptedKey, existing.KeyLast4 // keep the key, change model only
+	case have:
+		httpx.Error(w, http.StatusBadRequest, "validation_error", "changing the provider requires a new api_key")
+		return
+	}
+	if err := h.Store.Put(r.Context(), cfg); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "internal", "could not save configuration")
+		return
+	}
+	v := h.configView(r.Context(), orgID)
+	v["status"] = "updated"
+	httpx.JSON(w, http.StatusOK, v)
+}
+
+func (h *Handler) DeleteConfig(w http.ResponseWriter, r *http.Request) {
+	orgID := r.PathValue("orgId")
+	if !validID(orgID) {
+		httpx.Error(w, http.StatusBadRequest, "bad_request", "invalid id")
+		return
+	}
+	if _, ok := h.Authz.Require(w, r, orgID, middleware.UserIDFrom(r.Context()), membership.Admin); !ok {
+		return
+	}
+	if err := h.Store.Delete(r.Context(), orgID); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "internal", "delete failed")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func firstNonEmpty(v ...string) string {
+	for _, s := range v {
+		if strings.TrimSpace(s) != "" {
+			return strings.TrimSpace(s)
+		}
+	}
+	return ""
+}
+
+// ------------------------------------------------------------------ completions
+
+type answer struct {
+	Text    string
+	Mode    string // llm | heuristic
+	Source  string
+	Model   string
+	Prov    string
+	Warning string
+}
+
+func (a answer) meta(m map[string]any) map[string]any {
+	m["mode"], m["source"], m["model"], m["provider"] = a.Mode, a.Source, a.Model, a.Prov
+	if a.Warning != "" {
+		m["warning"] = a.Warning
+	}
+	if a.Mode == "heuristic" {
+		m["notice"] = "Keyword based analysis - no AI model answered. Configure a provider in Settings > AI."
+	}
+	return m
+}
+
+// complete runs the LLM (when configured) with redacted input and falls back to a clearly labelled heuristic.
+func (h *Handler) complete(ctx context.Context, orgID, system, user, heuristicInput string) (answer, error) {
+	res, err := h.resolve(ctx, orgID)
+	if err != nil {
+		h.log().Error("ai config", "org", orgID, "err", err)
+		return answer{}, err
+	}
+	if res.source == "none" {
+		return answer{Text: llm.HeuristicExplain(heuristicInput), Mode: "heuristic", Source: "none"}, nil
+	}
+	if h.Limit != nil {
+		ok, err := h.Limit.Allow(ctx, orgID)
+		if err != nil {
+			return answer{}, fmt.Errorf("rate limiter unavailable")
+		}
+		if !ok {
+			return answer{}, errRateLimited
+		}
+	}
+	cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	text, err := h.LLM.Chat(cctx, res.cfg, system, user)
+	if err != nil || strings.TrimSpace(text) == "" {
+		msg := "empty response"
+		if err != nil {
+			msg = err.Error()
+		}
+		h.log().Warn("llm call failed", "org", orgID, "provider", res.cfg.Provider, "err", msg)
+		return answer{Text: llm.HeuristicExplain(heuristicInput), Mode: "heuristic", Source: res.source,
+			Model: res.cfg.Model, Prov: res.cfg.Provider, Warning: "the AI provider failed: " + redact.Text(msg)}, nil
+	}
+	return answer{Text: text, Mode: "llm", Source: res.source, Model: res.cfg.Model, Prov: res.cfg.Provider}, nil
+}
+
+var errRateLimited = errors.New("rate limited")
+
+func (h *Handler) writeCompleteErr(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, errRateLimited):
+		httpx.Error(w, http.StatusTooManyRequests, "rate_limited", "AI request limit reached for this organisation; try again in a minute")
+	case errors.Is(err, crypt.ErrNoKey):
+		httpx.Error(w, http.StatusServiceUnavailable, "encryption_unconfigured", err.Error())
+	default:
+		httpx.Error(w, http.StatusBadGateway, "ai_error", err.Error())
+	}
+}
+
+// project authorizes a project-scoped AI endpoint on the given area (logs:view for log analysis).
+func (h *Handler) project(w http.ResponseWriter, r *http.Request, area membership.Area) (orgID, projectID string, acc *membership.Access, ok bool) {
+	orgID, projectID = r.PathValue("orgId"), r.PathValue("projectId")
+	if !validID(orgID) || !validID(projectID) {
+		httpx.Error(w, http.StatusBadRequest, "bad_request", "invalid id")
+		return
+	}
+	acc, ok = h.Authz.RequireArea(w, r, orgID, projectID, middleware.UserIDFrom(r.Context()), area, membership.LevelView)
+	return
 }
 
 func (h *Handler) Ask(w http.ResponseWriter, r *http.Request) {
-	uid := middleware.UserIDFrom(r.Context())
 	orgID := r.PathValue("orgId")
-	if !h.requireMember(w, r, orgID, uid) {
+	if !validID(orgID) {
+		httpx.Error(w, http.StatusBadRequest, "bad_request", "invalid id")
+		return
+	}
+	if _, ok := h.Authz.Require(w, r, orgID, middleware.UserIDFrom(r.Context()), membership.Viewer); !ok {
 		return
 	}
 	var req struct {
@@ -146,27 +403,32 @@ func (h *Handler) Ask(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusBadRequest, "validation_error", "prompt required")
 		return
 	}
-	ctxBundle := h.gatherTools(r, orgID, req.ProjectID, "", "")
-	userMsg := req.Prompt + "\n\n--- gathered system context ---\n" + ctxBundle
-	system := "You are an intelligent Cloud Platform Assistant powered by Google Gemini 3.5 Flash Lite. Explain architecture, diagnose issues, and suggest concrete fixes based on real gathered platform state. Be concise and friendly."
-	answer, mode, err := h.LLM.Chat(r.Context(), system, userMsg)
+	ctxBundle := "(no project selected)"
+	if req.ProjectID != "" {
+		if !validID(req.ProjectID) {
+			httpx.Error(w, http.StatusBadRequest, "bad_request", "invalid project_id")
+			return
+		}
+		// the project must belong to this org and the caller must be allowed to see it
+		acc, ok := h.Authz.RequireArea(w, r, orgID, req.ProjectID, middleware.UserIDFrom(r.Context()), membership.AreaLogs, membership.LevelView)
+		if !ok {
+			return
+		}
+		ctxBundle = h.gather(r, orgID, req.ProjectID, acc, "", "")
+	}
+	system := "You are the assistant of a self-hosted cloud platform. Diagnose issues and suggest concrete fixes based only on the supplied context. Be concise."
+	user := redact.Prepare(req.Prompt, maxPrompt) + "\n\n--- project context ---\n" + ctxBundle
+	a, err := h.complete(r.Context(), orgID, system, user, ctxBundle)
 	if err != nil {
-		httpx.Error(w, http.StatusBadGateway, "ai_error", err.Error())
+		h.writeCompleteErr(w, err)
 		return
 	}
-	httpx.JSON(w, http.StatusOK, map[string]any{
-		"answer":  answer,
-		"mode":    mode,
-		"model":   h.LLM.Model,
-		"context": truncate(ctxBundle, 4000),
-	})
+	httpx.JSON(w, http.StatusOK, a.meta(map[string]any{"answer": a.Text, "context": redact.Truncate(ctxBundle, 4000)}))
 }
 
 func (h *Handler) Explain(w http.ResponseWriter, r *http.Request) {
-	uid := middleware.UserIDFrom(r.Context())
-	orgID := r.PathValue("orgId")
-	projectID := r.PathValue("projectId")
-	if !h.requireMember(w, r, orgID, uid) {
+	orgID, projectID, acc, ok := h.project(w, r, membership.AreaLogs)
+	if !ok {
 		return
 	}
 	var req struct {
@@ -175,33 +437,24 @@ func (h *Handler) Explain(w http.ResponseWriter, r *http.Request) {
 		Prompt       string `json:"prompt"`
 	}
 	_ = httpx.Decode(r, &req)
-
-	ctxBundle := h.gatherTools(r, orgID, projectID, req.DeploymentID, req.BuildID)
-	prompt := req.Prompt
-	if prompt == "" {
-		prompt = "Explain why this deployment or build failed and how to resolve it."
-	}
-	userMsg := prompt + "\n\n--- platform context ---\n" + ctxBundle
-	system := "You are a DevOps and Deployment Diagnostic AI powered by Google Gemini 3.5 Flash Lite. Analyze build steps, error logs, and container state to identify root cause and precise resolution steps."
-	answer, mode, err := h.LLM.Chat(r.Context(), system, userMsg)
-	if err != nil {
-		httpx.Error(w, http.StatusBadGateway, "ai_error", err.Error())
+	if (req.DeploymentID != "" && !validID(req.DeploymentID)) || (req.BuildID != "" && !validID(req.BuildID)) {
+		httpx.Error(w, http.StatusBadRequest, "bad_request", "invalid deployment_id or build_id")
 		return
 	}
-	httpx.JSON(w, http.StatusOK, map[string]any{
-		"explanation": answer,
-		"mode":        mode,
-		"model":       h.LLM.Model,
-		"tools_used":  []string{"build_logs", "runtime_logs", "deploy_events"},
-		"context":     truncate(ctxBundle, 4000),
-	})
+	ctxBundle := h.gather(r, orgID, projectID, acc, req.DeploymentID, req.BuildID)
+	prompt := firstNonEmpty(req.Prompt, "Explain why this deployment or build failed and how to resolve it.")
+	system := "You are a DevOps diagnostic assistant. Analyse build steps, error logs and container state to find the root cause and give precise resolution steps."
+	a, err := h.complete(r.Context(), orgID, system, redact.Prepare(prompt, maxPrompt)+"\n\n--- platform context ---\n"+ctxBundle, ctxBundle)
+	if err != nil {
+		h.writeCompleteErr(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, a.meta(map[string]any{"explanation": a.Text, "tools_used": []string{"build_logs", "deployments", "runtime_logs"}, "context": redact.Truncate(ctxBundle, 4000)}))
 }
 
 func (h *Handler) AnalyzeLogs(w http.ResponseWriter, r *http.Request) {
-	uid := middleware.UserIDFrom(r.Context())
-	orgID := r.PathValue("orgId")
-	projectID := r.PathValue("projectId")
-	if !h.requireMember(w, r, orgID, uid) {
+	orgID, projectID, acc, ok := h.project(w, r, membership.AreaLogs)
+	if !ok {
 		return
 	}
 	var req struct {
@@ -210,167 +463,118 @@ func (h *Handler) AnalyzeLogs(w http.ResponseWriter, r *http.Request) {
 		BuildID string `json:"build_id"`
 	}
 	_ = httpx.Decode(r, &req)
-
-	logs := req.Logs
-	auth := r.Header.Get("Authorization")
-	if strings.TrimSpace(logs) == "" {
-		if req.Source == "build" && req.BuildID != "" {
-			logs = h.fetchText(r, auth, fmt.Sprintf("%s/orgs/%s/projects/%s/builds/%s/logs",
-				strings.TrimRight(h.BuildURL, "/"), orgID, projectID, req.BuildID))
-		} else if h.RuntimeURL != "" {
-			logs = h.fetchJSON(r, auth, fmt.Sprintf("%s/orgs/%s/projects/%s/runtime/logs?tail=150",
-				strings.TrimRight(h.RuntimeURL, "/"), orgID, projectID))
-		}
-	}
-
-	system := "You are an expert Cloud SRE and DevOps Engineer powered by Google Gemini 3.5 Flash Lite. " +
-		"Analyze the provided live container stdout/stderr or build stream. " +
-		"Identify any errors or warnings (e.g., ECONNREFUSED for databases, SMTP authentication errors, missing ENV vars, OOM, port conflicts). " +
-		"Break down: 1. Root Cause Analysis 2. Exact Error Signatures 3. Step-by-Step Fix Instructions (code or env var changes). Be clear and structured."
-
-	userMsg := fmt.Sprintf("Analyze these application logs for project %s:\n\n```\n%s\n```\nProvide a comprehensive diagnosis and fix recommendations.", projectID, truncate(logs, 8000))
-
-	answer, mode, err := h.LLM.Chat(r.Context(), system, userMsg)
-	if err != nil {
-		httpx.Error(w, http.StatusBadGateway, "ai_error", err.Error())
+	if req.BuildID != "" && !validID(req.BuildID) {
+		httpx.Error(w, http.StatusBadRequest, "bad_request", "invalid build_id")
 		return
 	}
-
-	httpx.JSON(w, http.StatusOK, map[string]any{
-		"analysis": answer,
-		"mode":     mode,
-		"model":    h.LLM.Model,
-	})
+	logs := req.Logs
+	if strings.TrimSpace(logs) == "" {
+		if req.Source == "build" && req.BuildID != "" && acc.Level(membership.AreaBuilds).AtLeast(membership.LevelView) {
+			logs = h.fetchText(r, fmt.Sprintf("%s/orgs/%s/projects/%s/builds/%s/logs", base(h.Tools.BuildURL), orgID, projectID, req.BuildID))
+		} else if h.Tools.RuntimeURL != "" {
+			logs = h.fetchText(r, fmt.Sprintf("%s/orgs/%s/projects/%s/runtime/logs?tail=150", base(h.Tools.RuntimeURL), orgID, projectID))
+		}
+	}
+	logs = redact.Prepare(logs, maxLogs)
+	system := "You are a cloud SRE. Analyse the application or build logs. Give: 1. Root cause 2. Exact error signatures 3. Step-by-step fix (code or env var changes). Be structured and brief."
+	user := fmt.Sprintf("Analyse these logs for project %s:\n\n```\n%s\n```", projectID, logs)
+	a, err := h.complete(r.Context(), orgID, system, user, logs)
+	if err != nil {
+		h.writeCompleteErr(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, a.meta(map[string]any{"analysis": a.Text}))
 }
 
 func (h *Handler) OverviewSuggestions(w http.ResponseWriter, r *http.Request) {
-	uid := middleware.UserIDFrom(r.Context())
-	orgID := r.PathValue("orgId")
-	projectID := r.PathValue("projectId")
-	if !h.requireMember(w, r, orgID, uid) {
+	orgID, projectID, acc, ok := h.project(w, r, membership.AreaOverview)
+	if !ok {
 		return
 	}
-
-	ctxBundle := h.gatherTools(r, orgID, projectID, "", "")
-
-	system := "You are a Senior Cloud Architect & Site Reliability Engineer powered by Google Gemini 3.5 Flash Lite. " +
-		"Review the project state (deployments, running container, listening port, domain SSL, and logs). " +
-		"Produce a clean, crisp health audit: 1. Current Health & Potential Bottlenecks (highlight any warnings in logs) 2. Reliability & Secrets Configuration (suggest attached add-ons or envs if missing) 3. Next Actionable Improvements. Keep it encouraging and structured."
-
-	userMsg := fmt.Sprintf("Review the state of project %s and provide operational suggestions:\n\n%s", projectID, truncate(ctxBundle, 8000))
-
-	answer, mode, err := h.LLM.Chat(r.Context(), system, userMsg)
+	ctxBundle := h.gather(r, orgID, projectID, acc, "", "")
+	system := "You are a senior SRE. Review the project state and give: 1. current health and bottlenecks 2. reliability and secrets/config suggestions 3. next improvements. Be structured and brief."
+	a, err := h.complete(r.Context(), orgID, system, "Review project "+projectID+":\n\n"+redact.Truncate(ctxBundle, maxContext), ctxBundle)
 	if err != nil {
-		httpx.Error(w, http.StatusBadGateway, "ai_error", err.Error())
+		h.writeCompleteErr(w, err)
 		return
 	}
-
-	httpx.JSON(w, http.StatusOK, map[string]any{
-		"suggestions": answer,
-		"mode":        mode,
-		"model":       h.LLM.Model,
-	})
+	httpx.JSON(w, http.StatusOK, a.meta(map[string]any{"suggestions": a.Text}))
 }
 
-func (h *Handler) gatherTools(r *http.Request, orgID, projectID, deploymentID, buildID string) string {
+// ------------------------------------------------------------------ tools (read only, ONE project)
+
+func base(s string) string { return strings.TrimRight(s, "/") }
+
+// gather reads deployments, build logs and runtime logs of exactly this project. Every id in the URLs is a
+// validated UUID, requests are signed with the internal token and carry the caller's own Authorization so
+// the target service re-checks membership. All text is redacted before it can reach an LLM.
+func (h *Handler) gather(r *http.Request, orgID, projectID string, acc *membership.Access, deploymentID, buildID string) string {
 	var parts []string
-	auth := r.Header.Get("Authorization")
-
-	if projectID != "" {
-		deploys := h.fetchJSON(r, auth, fmt.Sprintf("%s/orgs/%s/projects/%s/deployments",
-			strings.TrimRight(h.DeploymentURL, "/"), orgID, projectID))
-		parts = append(parts, "### Recent deployments\n"+deploys)
-
-		if deploymentID == "" {
-			var wrap struct {
-				Deployments []struct {
-					ID      string  `json:"id"`
-					Status  string  `json:"status"`
-					BuildID *string `json:"build_id"`
-					Error   string  `json:"error"`
-				} `json:"deployments"`
-			}
-			_ = json.Unmarshal([]byte(deploys), &wrap)
+	pre := fmt.Sprintf("/orgs/%s/projects/%s", orgID, projectID)
+	if h.Tools.DeploymentURL != "" && acc.Level(membership.AreaDeployments).AtLeast(membership.LevelView) {
+		deploys := h.fetch(r, base(h.Tools.DeploymentURL)+pre+"/deployments")
+		parts = append(parts, "### Recent deployments\n"+redact.Prepare(deploys, 3000))
+		var wrap struct {
+			Deployments []struct {
+				ID      string  `json:"id"`
+				Status  string  `json:"status"`
+				BuildID *string `json:"build_id"`
+				Error   string  `json:"error"`
+			} `json:"deployments"`
+		}
+		if deploymentID == "" && json.Unmarshal([]byte(deploys), &wrap) == nil {
 			for _, d := range wrap.Deployments {
-				if d.Status == "failed" {
+				if d.Status == "failed" && validID(d.ID) {
 					deploymentID = d.ID
-					if buildID == "" && d.BuildID != nil {
+					if buildID == "" && d.BuildID != nil && validID(*d.BuildID) {
 						buildID = *d.BuildID
 					}
-					parts = append(parts, fmt.Sprintf("Selected failed deployment %s error=%s", d.ID, d.Error))
+					parts = append(parts, fmt.Sprintf("Selected failed deployment %s error=%s", d.ID, redact.Text(d.Error)))
 					break
 				}
 			}
 		}
-
+	}
+	if h.Tools.BuildURL != "" && acc.Level(membership.AreaBuilds).AtLeast(membership.LevelView) {
 		if buildID != "" {
-			logs := h.fetchText(r, auth, fmt.Sprintf("%s/orgs/%s/projects/%s/builds/%s/logs",
-				strings.TrimRight(h.BuildURL, "/"), orgID, projectID, buildID))
-			parts = append(parts, "### Build logs\n"+truncate(logs, 6000))
+			logs := h.fetchText(r, base(h.Tools.BuildURL)+pre+"/builds/"+url.PathEscape(buildID)+"/logs")
+			parts = append(parts, "### Build logs\n"+redact.Prepare(logs, 6000))
 		} else {
-			builds := h.fetchJSON(r, auth, fmt.Sprintf("%s/orgs/%s/projects/%s/builds",
-				strings.TrimRight(h.BuildURL, "/"), orgID, projectID))
-			parts = append(parts, "### Recent builds\n"+truncate(builds, 3000))
-			var wrap struct {
-				Builds []struct {
-					ID     string `json:"id"`
-					Status string `json:"status"`
-				} `json:"builds"`
-			}
-			_ = json.Unmarshal([]byte(builds), &wrap)
-			for _, b := range wrap.Builds {
-				if b.Status == "failed" {
-					logs := h.fetchText(r, auth, fmt.Sprintf("%s/orgs/%s/projects/%s/builds/%s/logs",
-						strings.TrimRight(h.BuildURL, "/"), orgID, projectID, b.ID))
-					parts = append(parts, "### Failed build logs\n"+truncate(logs, 6000))
-					break
-				}
-			}
-		}
-
-		if h.RuntimeURL != "" {
-			rtLogs := h.fetchJSON(r, auth, fmt.Sprintf("%s/orgs/%s/projects/%s/runtime/logs?tail=60",
-				strings.TrimRight(h.RuntimeURL, "/"), orgID, projectID))
-			parts = append(parts, "### Live Container Logs\n"+truncate(rtLogs, 5000))
-		} else {
-			rtLogs := h.fetchJSON(r, auth, fmt.Sprintf("%s/orgs/%s/projects/%s/logs?source=runtime&limit=50",
-				strings.TrimRight(h.LoggingURL, "/"), orgID, projectID))
-			parts = append(parts, "### Runtime logs\n"+truncate(rtLogs, 4000))
+			builds := h.fetch(r, base(h.Tools.BuildURL)+pre+"/builds")
+			parts = append(parts, "### Recent builds\n"+redact.Prepare(builds, 3000))
 		}
 	}
-
-	if h.Redis != nil {
-		msgs, err := h.Redis.XRevRangeN(r.Context(), "jp.deploy", "+", "-", 20).Result()
-		if err == nil && len(msgs) > 0 {
-			var buf strings.Builder
-			buf.WriteString("### Recent deploy stream events\n")
-			for _, m := range msgs {
-				buf.WriteString(fmt.Sprintf("- %s %v\n", m.ID, m.Values))
-			}
-			parts = append(parts, buf.String())
-		}
+	canLogs := acc.Level(membership.AreaLogs).AtLeast(membership.LevelView)
+	if h.Tools.RuntimeURL != "" && canLogs {
+		rt := h.fetch(r, base(h.Tools.RuntimeURL)+pre+"/runtime/logs?tail=60")
+		parts = append(parts, "### Live container logs\n"+redact.Prepare(rt, 5000))
+	} else if h.Tools.LoggingURL != "" && canLogs {
+		lg := h.fetch(r, base(h.Tools.LoggingURL)+pre+"/logs?source=runtime&limit=50")
+		parts = append(parts, "### Runtime logs\n"+redact.Prepare(lg, 4000))
 	}
-
 	if len(parts) == 0 {
-		return "(no project context; answer generally)"
+		return "(no project data available)"
 	}
-	return strings.Join(parts, "\n\n")
+	return redact.Truncate(strings.Join(parts, "\n\n"), maxContext)
 }
 
-func (h *Handler) fetchJSON(r *http.Request, auth, url string) string {
-	if url == "" || h.HTTP == nil {
-		return "(unavailable)"
+func (h *Handler) fetch(r *http.Request, target string) string {
+	hc := h.Tools.HTTP
+	if hc == nil {
+		hc = internalauth.NewClient(15 * time.Second)
 	}
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, url, nil)
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		return "(error)"
 	}
-	if auth != "" {
-		req.Header.Set("Authorization", auth)
+	if a := r.Header.Get("Authorization"); a != "" {
+		req.Header.Set("Authorization", a)
 	}
-	resp, err := h.HTTP.Do(req)
+	resp, err := hc.Do(req)
 	if err != nil {
-		return "(unreachable: " + err.Error() + ")"
+		return "(unreachable)"
 	}
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
@@ -380,8 +584,8 @@ func (h *Handler) fetchJSON(r *http.Request, auth, url string) string {
 	return string(b)
 }
 
-func (h *Handler) fetchText(r *http.Request, auth, url string) string {
-	raw := h.fetchJSON(r, auth, url)
+func (h *Handler) fetchText(r *http.Request, target string) string {
+	raw := h.fetch(r, target)
 	var wrap struct {
 		Logs string `json:"logs"`
 	}
@@ -389,11 +593,4 @@ func (h *Handler) fetchText(r *http.Request, auth, url string) string {
 		return wrap.Logs
 	}
 	return raw
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[len(s)-n:]
 }

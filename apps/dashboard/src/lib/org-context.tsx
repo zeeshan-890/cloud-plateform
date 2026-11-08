@@ -1,115 +1,88 @@
 "use client";
 
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useState,
-  type ReactNode,
-} from "react";
-import { api } from "@/lib/api";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef } from "react";
+import { orgs, type Org, type Role } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
-import {
-  getCurrentOrgId,
-  setCurrentOrgId,
-  clearCurrentOrgId,
-} from "@/lib/storage";
-import type { Org } from "@/lib/types";
+import { useStoredValue } from "@/lib/persist";
+import { useResource } from "@/lib/use-resource";
+import type { ApiError } from "@/lib/api/http";
+import { atLeast } from "@/lib/rbac";
+import { orgAccess, type OrgAccess } from "@/lib/access";
 
 interface OrgContextValue {
   orgs: Org[];
   currentOrg: Org | null;
+  /** caller's role in the current org (undefined while unknown) */
+  role: Role | undefined;
+  /** platform administrator (first bootstrapped user) */
+  isPlatformAdmin: boolean;
+  can: (min: Role) => boolean;
+  /** what this user may see: built from /auth/me memberships */
+  access: OrgAccess;
+  /** member/viewer with explicit per-project grants */
+  restricted: boolean;
   loading: boolean;
-  setOrg: (orgId: string) => void;
-  refreshOrgs: () => Promise<void>;
-  createOrg: (name: string) => Promise<Org>;
+  error: ApiError | undefined;
+  setCurrentOrgId: (id: string) => void;
+  reload: () => void;
 }
 
-const OrgContext = createContext<OrgContextValue | null>(null);
+const Ctx = createContext<OrgContextValue | null>(null);
 
-export function OrgProvider({ children }: { children: ReactNode }) {
-  const { user } = useAuth();
-  const [orgs, setOrgs] = useState<Org[]>([]);
-  const [currentOrg, setCurrentOrg] = useState<Org | null>(null);
-  const [loading, setLoading] = useState(true);
+export function OrgProvider({ children }: { children: React.ReactNode }) {
+  const { user, refreshUser } = useAuth();
+  const [storedId, setStoredId] = useStoredValue("jp_current_org");
+  const list = useResource(user ? `orgs:${user.id}` : null, (signal) => orgs.list({ signal }));
 
-  const refreshOrgs = useCallback(async () => {
-    if (!user) {
-      setOrgs([]);
-      setCurrentOrg(null);
-      return;
-    }
-    const list = await api.listOrgs();
-    setOrgs(list);
-    const saved = getCurrentOrgId();
-    const match = list.find((o) => o.id === saved) || list[0] || null;
-    if (match) {
-      setCurrentOrgId(match.id);
-      setCurrentOrg(match);
-    } else {
-      clearCurrentOrgId();
-      setCurrentOrg(null);
-    }
-  }, [user]);
+  const orgList = list.data;
+  const currentOrg = useMemo(() => {
+    if (!orgList || orgList.length === 0) return null;
+    return orgList.find((o) => o.id === storedId) ?? orgList[0];
+  }, [orgList, storedId]);
 
+  // Role may be missing from the list payload; fall back to the members endpoint.
+  const needMembers = !!currentOrg && !currentOrg.role && !!user;
+  const members = useResource(needMembers && currentOrg ? `members:${currentOrg.id}` : null, (signal) =>
+    orgs.members(currentOrg!.id, { signal }),
+  );
+  const role: Role | undefined =
+    currentOrg?.role ?? members.data?.find((m) => m.user_id === user?.id)?.role;
+
+  const access = useMemo(() => orgAccess(user, currentOrg?.id), [user, currentOrg?.id]);
+
+  // The cached user can predate an org/project created or granted after sign-in. Access stays closed until the
+  // membership data arrives, so refresh it (once per org id and per project count change) when it is missing.
+  const refreshedFor = useRef<string | null>(null);
+  const orgId = currentOrg?.id;
+  const hasMembership = !!user?.memberships?.some((m) => m.org_id === orgId);
   useEffect(() => {
-    let mounted = true;
-    (async () => {
-      setLoading(true);
-      try {
-        await refreshOrgs();
-      } catch {
-        if (mounted) {
-          setOrgs([]);
-          setCurrentOrg(null);
-        }
-      } finally {
-        if (mounted) setLoading(false);
-      }
-    })();
-    return () => {
-      mounted = false;
-    };
-  }, [refreshOrgs]);
+    if (!user || !orgId || hasMembership || refreshedFor.current === orgId) return;
+    refreshedFor.current = orgId;
+    void refreshUser().catch(() => undefined);
+  }, [user, orgId, hasMembership, refreshUser]);
+  const can = useCallback((min: Role) => atLeast(role, min), [role]);
 
-  const setOrg = useCallback(
-    (orgId: string) => {
-      const match = orgs.find((o) => o.id === orgId) || null;
-      if (match) {
-        setCurrentOrgId(match.id);
-        setCurrentOrg(match);
-      }
-    },
-    [orgs],
-  );
-
-  const createOrg = useCallback(async (name: string) => {
-    const org = await api.createOrg({ name });
-    setOrgs((prev) => [...prev, org]);
-    setCurrentOrgId(org.id);
-    setCurrentOrg(org);
-    return org;
-  }, []);
-
-  const value = useMemo(
+  const value = useMemo<OrgContextValue>(
     () => ({
-      orgs,
+      orgs: orgList ?? [],
       currentOrg,
-      loading,
-      setOrg,
-      refreshOrgs,
-      createOrg,
+      role,
+      isPlatformAdmin: !!user?.is_admin,
+      can,
+      access,
+      restricted: access.known && !access.full,
+      loading: list.loading,
+      error: list.error,
+      setCurrentOrgId: setStoredId,
+      reload: list.reload,
     }),
-    [orgs, currentOrg, loading, setOrg, refreshOrgs, createOrg],
+    [orgList, currentOrg, role, user?.is_admin, can, access, list.loading, list.error, list.reload, setStoredId],
   );
-
-  return <OrgContext.Provider value={value}>{children}</OrgContext.Provider>;
+  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 
-export function useOrg() {
-  const ctx = useContext(OrgContext);
-  if (!ctx) throw new Error("useOrg must be used within OrgProvider");
-  return ctx;
+export function useOrg(): OrgContextValue {
+  const v = useContext(Ctx);
+  if (!v) throw new Error("useOrg must be used inside OrgProvider");
+  return v;
 }

@@ -6,7 +6,6 @@ use (
 	./packages/go-common
 	./services/ai
 	./services/addon
-	./services/billing
 	./services/build
 	./services/certificate
 	./services/database
@@ -16,6 +15,7 @@ use (
 	./services/identity
 	./services/logging
 	./services/metrics
+	./services/node
 	./services/notification
 	./services/organization
 	./services/project

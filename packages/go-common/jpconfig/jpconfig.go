@@ -3,6 +3,7 @@ package jpconfig
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -157,4 +158,41 @@ func DriftStub(desired, applied map[string]any) (drift bool, details []string) {
 		}
 	}
 	return drift, details
+}
+
+// Drift compares a desired config against the applied one across ALL top-level keys (not just a
+// fixed subset) using canonical JSON equality, and reports each differing key.
+func Drift(desired, applied map[string]any) (drift bool, details []string) {
+	if applied == nil {
+		return true, []string{"no applied config"}
+	}
+	seen := map[string]bool{}
+	keys := []string{}
+	for k := range desired {
+		seen[k] = true
+		keys = append(keys, k)
+	}
+	for k := range applied {
+		if !seen[k] {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		d, dok := desired[k]
+		a, aok := applied[k]
+		switch {
+		case dok && !aok:
+			details = append(details, k+": present in desired, missing in applied")
+		case !dok && aok:
+			details = append(details, k+": present in applied, missing in desired")
+		default:
+			db, _ := json.Marshal(d)
+			ab, _ := json.Marshal(a)
+			if string(db) != string(ab) {
+				details = append(details, k+": differs")
+			}
+		}
+	}
+	return len(details) > 0, details
 }

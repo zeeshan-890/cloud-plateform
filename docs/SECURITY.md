@@ -1,57 +1,89 @@
-# JP Security Architecture & Policy Specification
+# Security model and threat model
 
-> **Security, Cryptography, Identity, and Container Hardening Standards for JP.**
+This document states what JP protects, how, and - just as important - what it does **not** protect. Read it before letting
+untrusted people deploy code on your server.
 
----
+## Assets and actors
 
-## 1. Identity & Access Control
+| Asset | Why it matters |
+|---|---|
+| Host root | the platform needs the Docker socket; whoever controls it controls the host |
+| `.env` (`SECRETS_MASTER_KEY`, `JWT_SECRET`, `INTERNAL_TOKEN`, DB/Redis passwords) | compromise = full platform compromise |
+| Platform Postgres | users, organizations, encrypted secrets, domains |
+| Tenant secrets / data | per-project secrets, add-on and database volumes, MinIO buckets |
+| Other tenants' workloads | confidentiality and availability between projects |
 
-- **Password Cryptography:** All passwords hashed with bcrypt (`cost = 10`) using `golang.org/x/crypto/bcrypt`.
-- **JWT Architecture:** Dual-token model with HMAC-SHA256 (`HS256`):
-  - Access Token: Short lifetime (`15m`). Contains `user_id`, `email`, `name`, `type = "access"`.
-  - Refresh Token: Extended lifetime (`168h` / 7 days). Tracks `user_id` and random UUID `jti`.
-- **Session Revocation:** Every refresh check verifies that the session row in PostgreSQL has `revoked_at IS NULL`.
-- **Personal Access Tokens (PAT):** Tokens follow the format `jp_pat_<32_random_hex>`.
-  - Displayed **once** upon generation.
-  - Stored strictly as SHA-256 hashes (`token_hash`) with a visible prefix (`token_prefix`).
-- **Multi-Tenant RBAC:**
-  - Roles: `owner`, `admin`, `member`, `viewer`.
-  - Every project endpoint checks membership in the parent organization before processing.
+Actors: anonymous internet users; registered users (low-trust, may deploy arbitrary code); org admins; the platform admin
+(first account, trusted); a compromised tenant container (assume attacker-controlled code runs in it).
 
----
+## Controls
 
-## 2. Secrets Encryption at Rest
+**Edge.** Only Traefik publishes 80/443 (and the dashboard on 3000 in `--ip-only` mode). Traefik's API is *not* insecure: the
+dashboard is a router on a separate entrypoint bound to `127.0.0.1:8080` behind basic auth (use an SSH tunnel). TLS via ACME is
+enabled only when `TLS_ENABLED=true`; the HTTP->HTTPS redirect exists only then. Traefik reads Docker through `docker-socket-proxy`
+(containers + networks, GET only) instead of mounting the socket, with `exposedbydefault=false`. The `traefik_dynamic` volume is read-only for Traefik and
+writable only by `domain` and `certificate`.
 
-- **Envelope Encryption:** Secrets encrypted using **AES-256-GCM** authenticated encryption with associated data.
-- **Key Separation:** Managed via 32-byte `SECRETS_MASTER_KEY`.
-- **Nonce Strategy:** A unique, cryptographically random 12-byte nonce is generated for every write operation using `crypto/rand`.
-- **Zero-Plaintext Leak Rule:**
-  - Plaintext values are never returned by API endpoints.
-  - The API exposes only `value_hint` (e.g. `sk_l...4a9f`), version number, and timestamps.
-  - Decryption occurs only inside the internal container runtime when injecting environment variables into container instances.
+**Exposure.** Postgres, Redis, MinIO, Prometheus, Grafana, Loki, Tempo, the registry and the gateway publish only on
+`127.0.0.1` (most not at all in production). Redis requires a password; MinIO and Postgres credentials are random and required.
+`infra/compose/docker-compose.yml` contains no default secrets - compose fails if one is missing.
 
----
+**Authentication / authorisation.** Short-lived JWTs, rotating refresh sessions, TOTP MFA, hashed PATs, login rate limiting,
+token revocation list in Redis. Every project-scoped endpoint verifies org membership **and** that the project belongs to the org
+(`membership.RequireArea`, fail closed). Members see only granted projects and areas (see [ACCESS_CONTROL.md](ACCESS_CONTROL.md)).
+Registration is `invite` by default after the first admin. Service-to-service endpoints require `X-Internal-Token`.
 
-## 3. Host & Container Hardening
+**Secrets.** AES-256-GCM envelope encryption in the `secret` service; list endpoints return metadata and a hint only; plaintext
+reveal needs admin and writes an audit row. Runtime obtains the merged environment through an internal endpoint per deployment;
+preview deployments receive only `preview`/`all` secrets, never `production`. The master key exists in exactly the secret service
+(and the identity/ai services use their own separate keys).
 
-- **Docker Socket Isolation:** The Docker daemon socket (`/var/run/docker.sock`) is accessible **only** to the internal `worker` and `runtime` microservices over internal bridge networks. It is never exposed over TCP, to user applications, or to the public internet.
-- **Non-Root Execution:** Control plane services execute as unprivileged system users inside containers.
-- **Resource Constraints:** Every runtime container is launched with strict CPU limits and memory limits to prevent host denial of service.
+**Hostnames and routing.** Hostnames are validated with a strict RFC 1123 regex before any use; router files are produced with
+a YAML marshaller (no string concatenation) and written atomically; only verified domains get routers or certificates.
 
----
+**Webhooks and git.** Per-repository random webhook secrets (HMAC-SHA256), clone URLs restricted to https (or ssh with a deploy
+key), host must resolve to public addresses, no `-` option injection, tokens passed via `GIT_ASKPASS` never embedded in URLs, GitHub
+App callbacks verify a single-use `state`. The worker image pins github.com's SSH host keys (`infra/docker/github_known_hosts`).
 
-## 4. Network Security & Ingress
+**Containers (platform).** Go services run as uid 10001, read-only root filesystem, `cap_drop: ALL`, `no-new-privileges`, JSON log rotation,
+memory/CPU limits and `GOMEMLIMIT`. Images are built from pinned base images for amd64 and arm64.
 
-- **Private by Default:** Databases, Redis, MinIO, and internal microservices listen strictly on private Docker networks (`jp`).
-- **Controlled Exposure:** Only Traefik ports (`80`, `443`, `8080`) and local Docker registry (`5000`) are mapped to the host.
-- **Webhook Signature Verification:** GitHub webhooks are verified using HMAC-SHA256 (`X-Hub-Signature-256`) against `GITHUB_WEBHOOK_SECRET`.
-- **CORS Allowlist:** Cross-Origin Resource Sharing is restricted strictly to configured origins in `CORS_ORIGINS`.
+**Containers (tenants).** See [TENANT_ISOLATION.md](TENANT_ISOLATION.md).
 
----
+## The Docker socket (the big risk)
 
-## 5. Security Center (Planned Module 14)
+`runtime` and `worker` mount `/var/run/docker.sock`. Any process that can write to that socket can start a privileged container
+that mounts `/` - i.e. it is **root on the host**. Mitigations in place: both run as a non-root uid with only the socket's group;
+read-only root filesystems; no cap; they accept no code from tenants (tenant code runs in other containers, built by the daemon);
+all their inputs are validated (image references, names, resource ceilings `RUNTIME_MAX_*`); `/internal/*` needs the internal token.
+Residual risk: a remote-code-execution bug in `runtime` or `worker`, a leaked `INTERNAL_TOKEN`, or a malicious `Dockerfile`
+exploiting a Docker/BuildKit vulnerability gives host root. Keep Docker updated, keep the host dedicated to JP, and do not run JP
+for hostile tenants without additional isolation (gVisor/Kata/separate VMs), which JP does not provide.
 
-- Integrated vulnerability scanning for container images.
-- Outdated component detection.
-- Misconfiguration and public database exposure alerts.
-- Immutable security audit logging (`audit_logs` and `secret_audit`).
+## What is NOT protected
+
+* **Kernel-level isolation.** Tenants share the host kernel. A container escape (kernel/runc CVE) compromises everything.
+* **Build-time attacks.** `docker build` executes tenant `RUN` steps with network access. They can attack your LAN/metadata
+  services (169.254.169.254) and consume CPU/disk: builds are not egress-filtered and not covered by the compose memory limits.
+* **Resource exhaustion by tenants** beyond their per-container limits (disk in volumes/images, inode use, build cache, outbound bandwidth). Quotas for storage exist; disk quotas for images/volumes do not.
+* **Tenant egress.** Tenant containers have unrestricted outbound internet access and can reach whatever the host network
+  can reach (including cloud metadata endpoints). JP adds no egress filtering; add host firewall rules if that matters.
+  Loopback-only services (`127.0.0.1:...`) are not reachable from container networks, but do not rely on that for secrets.
+* **Secrets in process environment.** Project secrets are injected as container environment variables: anyone with `docker inspect` rights on the host or code execution in that container sees them.
+* **`INTERNAL_TOKEN` is one shared secret** for all services; a compromised service can call every other `/internal/*` endpoint.
+* **The monitoring stack** (Prometheus, Loki, Grafana) is single-tenant admin tooling; Loki holds container logs of all projects.
+* **Backups** contain `.env` in plaintext unless `BACKUP_PASSPHRASE` is set.
+* **Availability**: single node, no HA; the Postgres/Redis/MinIO containers are single instances.
+* **Supply chain**: images are pinned by tag, not by digest; Trivy scans tenant images when `TRIVY_ENABLED=true` and its vulnerability DB is reachable (HIGH and CRITICAL findings are reported on the build).
+
+## Hardening checklist for operators
+
+1. Keep `.env` at `chmod 600`, store a copy of `SECRETS_MASTER_KEY` offline.
+2. Use `REGISTRATION_MODE=invite` or `closed`; protect the first-admin step with `BOOTSTRAP_TOKEN`.
+3. Enable TLS (`--domain`) and set `HSTS_SECONDS=31536000` once it works.
+4. Restrict cloud security groups to 80/443 (and 22 from your IP).
+5. Run `scripts/backup.sh` on a schedule and test `scripts/restore.sh`.
+6. Update regularly (`scripts/upgrade.sh`); watch the `govulncheck` CI job.
+7. Treat the platform admin account as root of the server.
+
+Reporting vulnerabilities: open a private security advisory on the GitHub repository.

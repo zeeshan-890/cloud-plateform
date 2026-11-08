@@ -1,168 +1,69 @@
-# JP Cloud Platform — Operations, Observability & Runbooks
+# Operations
 
-This guide covers operational monitoring, health checks, metrics, alerting thresholds, log aggregation, and emergency incident runbooks for the JP Open-Source Self-Hosted Cloud Platform.
+All commands run from the checkout (default `~/cloud-plateform`). `scripts/jp-compose.sh` is `docker compose` with the correct
+`-f`/`--env-file` arguments for this install.
 
----
+## Ports
 
-## 1. Observability Architecture
+| Port | Bind | What | Public? |
+|---|---|---|---|
+| 80, 443 | `0.0.0.0` (`HTTP_BIND`/`HTTPS_BIND`) | Traefik | yes |
+| 3000 | `127.0.0.1` (`0.0.0.0` with `--ip-only`) | dashboard (nginx) | only in `--ip-only` |
+| 8000 | `127.0.0.1` | gateway (used by health checks) | no |
+| 8080 | `127.0.0.1` | Traefik dashboard, basic auth (`admin` / `TRAEFIK_DASHBOARD_PASSWORD` in `.env`) | no, SSH tunnel |
+| 5000 | `127.0.0.1` | image registry (no auth; the host Docker daemon pushes/pulls here) | no |
+| 9090 / 3001 / 3100 / 3200 / 4317 / 4318 | `127.0.0.1` | Prometheus / Grafana / Loki / Tempo / OTLP (monitoring profile) | no |
+| 5432, 6379, 9000, 9001 | not published | Postgres, Redis, MinIO API/console | no (dev override publishes on `127.0.0.1`) |
+| 8001-8021 | not published | Go services on the `jp` network | no |
 
-The platform follows a zero-telemetry, fully self-hosted observability model:
-- **Metrics**: Prometheus pulls `/metrics` endpoints from all 22 microservices, Traefik edge router, and node-agents.
-- **Visuals**: Pre-provisioned Grafana dashboards for cluster capacity, container runtimes, API latency, and queue lag.
-- **Logs**: Structured JSON logs written to container stdout, collected via Docker log driver or Vector sidecar, indexed locally.
-- **Tracing / Correlation**: Every incoming HTTP request is assigned a `UUIDv4` request ID (`X-Request-ID`), forwarded downstream across all microservices and logged in Redis Stream event envelopes.
+Use SSH tunnels for the loopback ports: `ssh -L 8080:127.0.0.1:8080 server`.
 
----
+## Day to day
 
-## 2. Health Checks & Probes
-
-Every microservice exposes standard health endpoints:
-
-| Endpoint | Purpose | Success Criteria | Behavior on Failure |
-| :--- | :--- | :--- | :--- |
-| `GET /healthz` | Liveness & Readiness | HTTP 200 `{"status":"ok"}` | Docker restart / Traefik pulls from pool |
-| `GET /metrics` | Prometheus Metrics Scrape | HTTP 200 Prometheus text format | Alerting triggered for scrape failure |
-
-### Docker Healthcheck Example
-```yaml
-healthcheck:
-  test: ["CMD", "wget", "-qO-", "http://localhost:8001/healthz"]
-  interval: 10s
-  timeout: 3s
-  retries: 3
-  start_period: 5s
-```
-
----
-
-## 3. Metrics Dictionary
-
-Prometheus scrapes core runtime and business metrics across services:
-
-### HTTP & Gateway Metrics
-- `http_requests_total{service="gateway",status="200",method="POST"}`: Total requests handled by service and response code.
-- `http_request_duration_seconds{service="deploy",quantile="0.99"}`: Latency percentiles (p50, p95, p99).
-- `http_requests_in_flight{service="auth"}`: Current concurrent requests.
-
-### Event Bus & Worker Metrics
-- `redis_stream_length{stream="jp.build"}`: Number of pending events in stream.
-- `redis_consumer_group_lag{stream="jp.build",group="jp-workers"}`: Unprocessed builds in queue.
-- `build_duration_seconds{status="success"}`: Build pipeline execution time.
-
-### System & Infrastructure Metrics
-- `node_cpu_utilization_ratio`: CPU usage per node.
-- `node_memory_utilization_ratio`: Memory usage per node.
-- `node_disk_available_bytes{mount="/"}`: Free disk space.
-- `docker_container_count{status="running"}`: Active tenant containers.
-
----
-
-## 4. Alerting Thresholds & Rules
-
-| Alert Rule | Metric Condition | Severity | Action Triggered |
-| :--- | :--- | :--- | :--- |
-| **HighApiErrorRate** | `sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m])) > 0.02` | Critical | Page on-call, check error logs |
-| **BuildQueueStalled** | `redis_consumer_group_lag{stream="jp.build"} > 10` for 10m | Warning | Scale worker replicas or restart worker pool |
-| **LowDiskSpace** | `node_disk_available_bytes / node_disk_size_bytes < 0.15` | Critical | Trigger volume expansion or docker prune |
-| **HighMemoryPressure** | `node_memory_utilization_ratio > 0.88` for 5m | Warning | Evict non-essential caches, schedule scale-out |
-| **CertExpiringSoon** | `cert_expiry_timestamp - time() < 14*86400` | Warning | Force ACME renewal job |
-| **NodeHeartbeatMissing** | `time() - node_last_seen_timestamp > 45` | Critical | Evacuate workload, mark node `unhealthy` |
-
----
-
-## 5. Operations Runbooks
-
-### Runbook 1: Build Worker Stalled / Queue Backlog
-**Symptoms**: Deployments stuck in `queued` state; Redis lag on `jp.build` growing.
-**Diagnosis**:
-1. Check running worker containers:
-   ```bash
-   docker ps --filter "name=worker"
-   ```
-2. Inspect worker logs for hung container builds or Docker socket timeouts:
-   ```bash
-   docker logs --tail 100 jp-cloud-worker-1
-   ```
-**Resolution**:
-1. Restart the worker service:
-   ```bash
-   docker compose restart worker
-   ```
-2. If concurrency limit is saturated, scale worker replicas:
-   ```bash
-   docker compose up -d --scale worker=3
-   ```
-
----
-
-### Runbook 2: Docker Disk Exhaustion (No Space Left on Device)
-**Symptoms**: Container start failures; `write /var/lib/docker/...: no space left on device`.
-**Diagnosis**:
 ```bash
-df -h
-docker system df
+scripts/jp-compose.sh ps
+scripts/jp-compose.sh logs -f --tail=100 gateway
+scripts/jp-compose.sh restart runtime
+scripts/jp-up.sh --monitoring            # start/enable Prometheus, Grafana, Loki, Tempo, Promtail (persisted)
+scripts/jp-up.sh --no-monitoring
+scripts/size-host.sh medium              # force a sizing tier, then scripts/jp-up.sh
+docker ps --filter label=jp.managed=true # all tenant containers
 ```
-**Resolution**:
-1. Run emergency Docker prune for dangling build caches and stopped containers:
-   ```bash
-   docker system prune -af --volumes=false
-   docker builder prune -af
-   ```
-2. Remove orphaned builder cache artifacts older than 48 hours:
-   ```bash
-   docker builder prune --filter "until=48h" -f
-   ```
-3. Expand underlying host EBS/NVMe volume.
 
----
+Grafana: set `GRAFANA_DOMAIN` to route it through Traefik (its own login protects it; anonymous access is off) or tunnel to
+`127.0.0.1:3001`. Prometheus scrapes Prometheus itself, Traefik (`:8082`) and the JP metrics service; other services expose health only.
 
-### Runbook 3: Redis Stream Poison Message Recovery
-**Symptoms**: A corrupted event payload causes worker panics repeatedly on the same message ID.
-**Diagnosis**:
-```bash
-docker logs jp-cloud-worker-1 | grep "panic"
-```
-**Resolution**:
-1. Identify the pending message ID:
-   ```bash
-   docker exec -it jp-cloud-redis-1 redis-cli XPENDING jp.build jp-workers
-   ```
-2. Acknowledge and drop the poison message ID:
-   ```bash
-   docker exec -it jp-cloud-redis-1 redis-cli XACK jp.build jp-workers <MESSAGE_ID>
-   ```
+## Sizing
 
----
+`scripts/size-host.sh` picks `small`/`medium`/`large`/`xlarge` from RAM and writes `.env.resources` (worker replicas and concurrency +
+the overlay in `infra/compose/sizing/`). Limits are cgroup caps for platform containers; tenant containers have their own limits and
+builds run in the host daemon outside these caps. Details: `infra/compose/sizing/README.md`.
 
-### Runbook 4: Emergency Workload Rollback
-**Symptoms**: A newly deployed commit has caused application crash loops or high 500 errors.
-**Resolution**:
-1. List previous successful releases via CLI:
-   ```bash
-   jp deploy list --project <PROJECT_ID>
-   ```
-2. Trigger instant rollback to the previous deployment ID:
-   ```bash
-   jp deploy rollback <DEPLOY_ID> --project <PROJECT_ID>
-   ```
-   *Traefik switches traffic instantaneously to the prior healthy container with zero downtime.*
+## Upgrade, backup, restore
 
----
+[BACKUP_RESTORE.md](BACKUP_RESTORE.md). `scripts/upgrade.sh` takes a backup, pulls, builds, restarts services one by one waiting for
+health, and rolls back code and images if one fails. Database migrations are forward-only: a rollback restores previous *code*; if a
+migration is incompatible, restore the pre-upgrade backup.
 
-### Runbook 5: SSL Certificate Renewal Failure
-**Symptoms**: Dashboard alerts `CertExpiringSoon` or ACME challenge failures.
-**Diagnosis**:
-1. Check Traefik logs for Let's Encrypt challenge status:
-   ```bash
-   docker logs jp-cloud-traefik-1 | grep "acme"
-   ```
-2. Verify public DNS A-record points directly to the server public IP:
-   ```bash
-   dig +short your-domain.com
-   ```
-**Resolution**:
-1. Ensure port 80 is not blocked by external cloud firewalls (AWS Security Groups, Hetzner Firewall, UFW).
-2. Trigger manual certificate reissue via API or CLI:
-   ```bash
-   jp domains renew your-domain.com --project <PROJECT_ID>
-   ```
+## Rotating secrets
+
+| Secret | How |
+|---|---|
+| `JWT_SECRET` | change in `.env`, `scripts/jp-compose.sh up -d` - all users are logged out |
+| `INTERNAL_TOKEN` | change in `.env`, recreate all services (`up -d`) |
+| `POSTGRES_PASSWORD`, `REDIS_PASSWORD` | change inside the datastore first (`ALTER USER`, `CONFIG SET requirepass`), then `.env`, then `up -d` |
+| `SECRETS_MASTER_KEY` | rotation is supported by the secret service: set `SECRETS_KEY_VERSION=2`, move the old key to `SECRETS_MASTER_KEY_PREVIOUS`, put the new key in `SECRETS_MASTER_KEY`, `up -d secret`, POST the internal endpoint `/internal/rotate-master-key` (with `X-Internal-Token`, from inside the `jp` network) to re-encrypt rows, then remove `*_PREVIOUS`. Never just replace the key: stored secrets become unreadable |
+| Traefik dashboard | `openssl passwd -apr1` -> `TRAEFIK_DASHBOARD_AUTH` (single quotes!) |
+
+## Troubleshooting
+
+| Symptom | Look at |
+|---|---|
+| container restarting | `scripts/jp-compose.sh logs --tail=80 <svc>`; most often a missing/invalid env value (services refuse to start in production without `INTERNAL_TOKEN`/strong `JWT_SECRET`) |
+| gateway returns 502 `{"error":...}` | the upstream service named in the message is down: `ps`, then its logs |
+| deploy stuck at "building" | `logs worker`; Docker daemon reachable? (`DOCKER_GID`), disk full (`docker system df`) |
+| deploy fails at health gate | the app must answer HTTP on its configured port within the timeout; old version keeps running |
+| disk full | `docker system df`, `docker image prune -a --filter until=168h` (scheduler already prunes orphan images after `ORPHAN_IMAGE_TTL`), prune build cache `docker builder prune` |
+| Traefik shows no router for an app | domain verified? project has a running deployment? `ls` of the `traefik_dynamic` volume |
+| "network jp_p_xxxx not found" for Traefik | runtime reconciles on start; `restart runtime` |
+| need a DB shell | `scripts/jp-compose.sh exec postgres psql -U jp jp` |

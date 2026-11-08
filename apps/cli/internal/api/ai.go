@@ -1,6 +1,7 @@
 package api
 
 import (
+	"net/url"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -75,8 +76,23 @@ func (c *Client) GetProjectConfig(orgID, projectID string) (map[string]any, erro
 	return out, nil
 }
 
-func (c *Client) ConfigDrift(orgID, projectID string) (map[string]any, error) {
+// ConfigDrift compares a desired config map with the applied one (key by key).
+func (c *Client) ConfigDrift(orgID, projectID string, desired map[string]any) (map[string]any, error) {
 	path := fmt.Sprintf("/orgs/%s/projects/%s/config/drift", orgID, projectID)
+	raw, err := c.doRaw(http.MethodPost, path, map[string]any{"config": desired}, true)
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("decode drift: %w", err)
+	}
+	return out, nil
+}
+
+// ConfigDriftHash compares the applied config hash with a desired sha256.
+func (c *Client) ConfigDriftHash(orgID, projectID, hash string) (map[string]any, error) {
+	path := fmt.Sprintf("/orgs/%s/projects/%s/config/drift?desired_hash=%s", orgID, projectID, url.QueryEscape(hash))
 	raw, err := c.doRaw(http.MethodGet, path, nil, true)
 	if err != nil {
 		return nil, err
@@ -88,20 +104,3 @@ func (c *Client) ConfigDrift(orgID, projectID string) (map[string]any, error) {
 	return out, nil
 }
 
-type BillingUsage struct {
-	Usage  []map[string]any `json:"usage"`
-	PlanID string           `json:"plan_id"`
-}
-
-func (c *Client) BillingUsage(orgID string) (*BillingUsage, error) {
-	path := fmt.Sprintf("/orgs/%s/billing/usage", orgID)
-	raw, err := c.doRaw(http.MethodGet, path, nil, true)
-	if err != nil {
-		return nil, err
-	}
-	var out BillingUsage
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, fmt.Errorf("decode billing: %w", err)
-	}
-	return &out, nil
-}

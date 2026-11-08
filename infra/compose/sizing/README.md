@@ -1,21 +1,20 @@
-# Adaptive host sizing for jp
-#
-# Tiers (auto-detected from RAM, or set JP_SIZE manually):
-#   small   < 6 GB   — 1 worker, concurrency 1, tight limits (4GB VPS class)
-#   medium  6–16 GB  — scale worker×2, concurrency 2, monitoring OK
-#   large   16–32 GB — worker×4, concurrency 2, docker builds recommended
-#   xlarge  32+ GB   — worker×8, concurrency 4, full stack
-#
-# Usage:
-#   .\scripts\size-host.ps1          # writes .env.resources
-#   .\scripts\jp-up.ps1 -Profiles platform,ui
-#   ./scripts/size-host.sh && ./scripts/jp-up.sh platform,ui
+# Resource overlays
 
-| Tier | RAM guide | Worker replicas | Concurrency / worker | Suggested profiles |
-|------|-----------|-----------------|----------------------|--------------------|
-| small | ~4 GB | 1 | 1 | core + platform (skip monitoring) |
-| medium | ~8–16 GB | 2 | 2 | platform + ui + data |
-| large | ~16–32 GB | 4 | 2 | platform + ui + data + monitoring |
-| xlarge | 32 GB+ | 8 | 4 | all profiles |
+`scripts/size-host.sh` reads the host RAM/CPU and writes `.env.resources` with `JP_SIZE`, `WORKER_REPLICAS`,
+`WORKER_CONCURRENCY` and `COMPOSE_SIZING_FILE`. `scripts/jp-up.sh` then adds the matching overlay on top of
+`infra/compose/docker-compose.yml`.
 
-Override files live in this directory: `small.yml`, `medium.yml`, `large.yml`, `xlarge.yml`.
+| Tier   | Host RAM  | Worker replicas x concurrency | Notes |
+|--------|-----------|-------------------------------|-------|
+| small  | < 6 GB    | 1 x 1                         | the base file's limits; leave monitoring off |
+| medium | 6 - 16 GB | 1 x 2                         | Oracle A1 11 GB test box lands here |
+| large  | 16 - 32 GB| 2 x 2                         | |
+| xlarge | 32 GB+    | 2 x 4                         | |
+
+Minimum supported host is 4 GB RAM / 2 vCPU (all 21 Go services + Postgres + Redis + MinIO + registry + Traefik run
+by default; limits sum to ~5 GB but real use at idle is ~1.8 GB). Memory limits are cgroup caps; tenant
+containers and `docker build` run in the host Docker daemon and are NOT covered by these limits - each tenant
+container gets its own limit from `jp.yaml` (default 512 MB / 1 CPU).
+
+Each overlay only changes `deploy.resources.limits` (and `GOMEMLIMIT` / `REDIS_MAXMEMORY` so the Go runtime and
+Redis stay below their cgroup cap instead of being OOM-killed).

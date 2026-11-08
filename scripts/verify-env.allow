@@ -1,0 +1,9 @@
+# "<service-dir> <VAR>" or "* <VAR>": variables read by code that are intentionally NOT set by compose.
+gateway OPENAI_API_KEY          # only reports whether a platform key exists; AI keys are configured on the ai service
+gateway STATIC_DIR              # gateway serves no static files in compose (dashboard has its own nginx)
+* GITHUB_WEBHOOK_SECRET         # shared config.Load field; only the repository service validates webhooks
+* OTEL_SERVICE_NAME             # optional; defaults to the service name
+identity SECRETS_MASTER_KEY     # legacy fallback for IDENTITY_ENC_KEY; deliberately not passed
+ai SECRETS_MASTER_KEY           # fallback for AI_ENC_KEY; deliberately not passed
+gateway NODE_AGENT_DIR           # node agent binaries baked into the gateway image (/app/agents)
+runtime RUNTIME_SELF_CONTAINER   # dev only: lets the runtime join project networks directly instead of using the prober sidecar

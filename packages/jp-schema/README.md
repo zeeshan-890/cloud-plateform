@@ -1,19 +1,15 @@
-# jp.yaml schema
+# jp-schema
 
-JSON Schema (draft 2020-12) for the `jp.yaml` project manifest.
+`jp.schema.json` describes `jp.yaml` (read from the repository root by the build worker).
 
-## Validate
+Honoured by the platform:
 
-- CLI: `jp deploy` / `jp config apply` validates against this schema before POSTing desired state.
-- Project service: `PUT /orgs/{orgId}/projects/{projectId}/config` re-validates on apply.
-- Dashboard: Config / drift stub reads last-applied config from the project service.
+| Key | Effect |
+|-----|--------|
+| `runtime`, `build.dockerfile`, `build.context`, `build.command`, `build.env` | picks / confines the Dockerfile and build context (paths must stay inside the repo); `build.env` are plain build args, never secrets |
+| `deploy.port`, `deploy.healthcheck`, `deploy.health_timeout_seconds`, `deploy.replicas`, `deploy.restart`, `deploy.strategy`, `deploy.env`, `env` | passed to the runtime: container port + `PORT` env, health gate path/timeout, replicas, restart policy, rolling or blue_green |
+| `resources.memory`, `resources.cpus` | container limits (defaults 512MB / 1 CPU, clamped by the platform) |
+| `security.block_on_critical` | fail the build when Trivy finds CRITICAL vulnerabilities (or cannot scan) |
 
-## Key fields
-
-| Field | Notes |
-|-------|--------|
-| `name` | lowercase slug |
-| `runtime` | `nodejs` \| `python` \| `go` \| `docker` \| `static` (aliases `node` / `node22`) |
-| `deploy.strategy` | `rolling` (default) or `blue_green` |
-| `deploy.replicas` | 1–10 |
-| `domains` | hostnames for Traefik |
+Not in jp.yaml: `previews.allow_forks` is a per-repository setting chosen when the repository is connected (a fork can never be
+trusted to enable itself), and fork previews never receive secrets.

@@ -32,13 +32,13 @@ func GenerateSecret() (string, error) {
 func GenerateBackupCodes(count int) ([]string, error) {
 	codes := make([]string, count)
 	for i := 0; i < count; i++ {
-		bytes := make([]byte, 5)
+		bytes := make([]byte, 6)
 		if _, err := rand.Read(bytes); err != nil {
 			return nil, err
 		}
-		// Format: xxxx-xxxx
+		// Format: xxxxxx-xxxxxx (48 bits of entropy)
 		s := fmt.Sprintf("%x", bytes)
-		codes[i] = fmt.Sprintf("%s-%s", s[:4], s[4:8])
+		codes[i] = fmt.Sprintf("%s-%s", s[:6], s[6:12])
 	}
 	return codes, nil
 }
@@ -76,6 +76,28 @@ func GenerateCode(secret string, t time.Time) (string, error) {
 	code %= 1000000
 
 	return fmt.Sprintf("%06d", code), nil
+}
+
+// NormalizeBackupCode canonicalises user input for hashing.
+func NormalizeBackupCode(code string) string {
+	return strings.ToLower(strings.TrimSpace(code))
+}
+
+// ValidateStep is Validate that also returns the matching time step so callers can reject
+// replays of the same code within its validity window.
+func ValidateStep(code, secret string, t time.Time) (int64, bool) {
+	code = strings.TrimSpace(code)
+	if len(code) != Digits {
+		return 0, false
+	}
+	for delta := -1; delta <= 1; delta++ {
+		checkTime := t.Add(time.Duration(delta) * StepDuration)
+		expected, err := GenerateCode(secret, checkTime)
+		if err == nil && hmac.Equal([]byte(code), []byte(expected)) {
+			return checkTime.Unix() / int64(StepDuration.Seconds()), true
+		}
+	}
+	return 0, false
 }
 
 // Validate checks whether a code is valid for the secret at time t (with +/- 1 step drift tolerance).

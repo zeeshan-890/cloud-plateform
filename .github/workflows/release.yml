@@ -3,66 +3,123 @@ name: Release
 on:
   push:
     tags:
-      - 'v*.*.*'
+      - "v*.*.*"
 
 permissions:
   contents: write
   packages: write
+  id-token: write # cosign keyless signing (only used when repository variable COSIGN_ENABLED == 'true')
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/${{ github.repository }}
 
 jobs:
-  build-and-publish:
-    name: Build & Publish Release Artifacts
+  images:
+    name: Image ${{ matrix.name }} (amd64 + arm64)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: gateway,      file: infra/docker/Dockerfile.service, context: ., service: gateway }
+          - { name: identity,     file: infra/docker/Dockerfile.service, context: ., service: identity }
+          - { name: organization, file: infra/docker/Dockerfile.service, context: ., service: organization }
+          - { name: project,      file: infra/docker/Dockerfile.service, context: ., service: project }
+          - { name: notification, file: infra/docker/Dockerfile.service, context: ., service: notification }
+          - { name: repository,   file: infra/docker/Dockerfile.service, context: ., service: repository }
+          - { name: deployment,   file: infra/docker/Dockerfile.service, context: ., service: deployment }
+          - { name: build,        file: infra/docker/Dockerfile.service, context: ., service: build }
+          - { name: registry,     file: infra/docker/Dockerfile.service, context: ., service: registry }
+          - { name: runtime,      file: infra/docker/Dockerfile.service, context: ., service: runtime }
+          - { name: scheduler,    file: infra/docker/Dockerfile.service, context: ., service: scheduler }
+          - { name: domain,       file: infra/docker/Dockerfile.service, context: ., service: domain }
+          - { name: certificate,  file: infra/docker/Dockerfile.service, context: ., service: certificate }
+          - { name: secret,       file: infra/docker/Dockerfile.service, context: ., service: secret }
+          - { name: logging,      file: infra/docker/Dockerfile.service, context: ., service: logging }
+          - { name: metrics,      file: infra/docker/Dockerfile.service, context: ., service: metrics }
+          - { name: storage,      file: infra/docker/Dockerfile.service, context: ., service: storage }
+          - { name: database,     file: infra/docker/Dockerfile.service, context: ., service: database }
+          - { name: addon,        file: infra/docker/Dockerfile.service, context: ., service: addon }
+          - { name: ai,           file: infra/docker/Dockerfile.service, context: ., service: ai }
+          - { name: worker,       file: infra/docker/Dockerfile.worker,  context: ., service: "" }
+          - { name: dashboard,    file: apps/dashboard/Dockerfile,       context: apps/dashboard, service: "" }
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
         with:
-          registry: ghcr.io
+          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata (tags, labels)
+      - name: metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ${{ env.IMAGE_PREFIX }}/${{ matrix.name }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha
-
-      - name: Build and push multi-arch service image
-        uses: docker/build-push-action@v5
+      - name: build and push (multi-arch, with SBOM + provenance attestations)
+        id: build
+        uses: docker/build-push-action@v6
         with:
-          context: .
-          file: infra/docker/Dockerfile.service
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          build-args: |
+            SERVICE=${{ matrix.service }}
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
           platforms: linux/amd64,linux/arm64
           push: true
+          sbom: true
+          provenance: mode=max
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-
-      - name: Generate SBOM
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+      - name: standalone SPDX SBOM
         uses: anchore/sbom-action@v0
         with:
-          image: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
-          output-file: sbom.spdx.json
+          image: ${{ env.IMAGE_PREFIX }}/${{ matrix.name }}@${{ steps.build.outputs.digest }}
+          format: spdx-json
+          output-file: sbom-${{ matrix.name }}.spdx.json
+          upload-artifact: true
+          upload-artifact-retention: 90
+      - name: install cosign
+        if: ${{ vars.COSIGN_ENABLED == 'true' }}
+        uses: sigstore/cosign-installer@v3
+      - name: sign image (keyless)
+        if: ${{ vars.COSIGN_ENABLED == 'true' }}
+        run: cosign sign --yes "${IMAGE_PREFIX}/${{ matrix.name }}@${{ steps.build.outputs.digest }}"
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+  release:
+    name: GitHub release
+    needs: images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: bundle deployment files
+        run: |
+          tar czf jp-cloud-deploy-${{ github.ref_name }}.tar.gz install.sh uninstall.sh .env.example infra scripts
+          sha256sum jp-cloud-deploy-${{ github.ref_name }}.tar.gz install.sh install.ps1 uninstall.sh uninstall.ps1 > SHA256SUMS
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "*sbom*"
+          path: sboms
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
         with:
           files: |
-            sbom.spdx.json
             install.sh
             install.ps1
+            uninstall.sh
+            uninstall.ps1
+            jp-cloud-deploy-${{ github.ref_name }}.tar.gz
+            SHA256SUMS
+            sboms/*.json
           generate_release_notes: true
           draft: false
-          prerelease: false
+          prerelease: ${{ contains(github.ref_name, '-') }}

@@ -62,3 +62,8 @@ redis-data/
 .tmp/
 .claude/
 .cursor/
+
+# Backups / restore artifacts
+backups/
+.env.pre-restore
+.env.resources

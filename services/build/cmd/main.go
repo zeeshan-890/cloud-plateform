@@ -8,14 +8,15 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jp-cloud/build/internal/handlers"
+	"github.com/jp-cloud/build/internal/store"
 	"github.com/jp-cloud/go-common/config"
 	jwtutil "github.com/jp-cloud/go-common/jwt"
 	"github.com/jp-cloud/go-common/logging"
+	"github.com/jp-cloud/go-common/membership"
 	"github.com/jp-cloud/go-common/middleware"
 	"github.com/jp-cloud/go-common/postgres"
 	redisx "github.com/jp-cloud/go-common/redis"
-	"github.com/jp-cloud/build/internal/handlers"
-	"github.com/jp-cloud/build/internal/store"
 )
 
 func main() {
@@ -51,18 +52,17 @@ func main() {
 
 	jm := jwtutil.NewManager(cfg.JWTSecret, cfg.JWTAccessTTL, cfg.JWTRefreshTTL)
 	h := &handlers.Handler{
-		Store:           store.New(pool),
-		JWT:             jm,
-		OrganizationURL: cfg.OrganizationURL,
-		Redis:           rdb,
-		HTTP:            &http.Client{Timeout: 5 * time.Second},
+		Store: store.New(pool),
+		JWT:   jm,
+		Authz: membership.New(cfg.OrganizationURL, cfg.ProjectURL),
+		Redis: rdb,
 	}
 
 	mux := http.NewServeMux()
 	h.Routes(mux)
 	handler := middleware.Chain(mux, middleware.RequestID, middleware.Logging(log), middleware.CORS(cfg.CORSOrigins))
 
-	srv := &http.Server{Addr: ":" + cfg.HTTPPort, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Addr: ":" + cfg.HTTPPort, Handler: handler, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 120 * time.Second}
 	go func() {
 		log.Info("build listening", "port", cfg.HTTPPort)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {

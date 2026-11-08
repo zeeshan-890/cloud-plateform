@@ -55,9 +55,11 @@ var applyCmd = &cobra.Command{
 	},
 }
 
+var driftHash string
+
 var driftCmd = &cobra.Command{
 	Use:   "drift",
-	Short: "Show config drift stub for a project",
+	Short: "Compare local jp.yaml (or a given hash) with the config applied to a project",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		client, cfg, err := newClient()
 		if err != nil {
@@ -72,13 +74,27 @@ var driftCmd = &cobra.Command{
 		if applyProjectID == "" {
 			return fmt.Errorf("--project is required")
 		}
-		out, err := client.ConfigDrift(cfg.CurrentOrgID, applyProjectID)
+		var out map[string]any
+		if driftHash != "" {
+			out, err = client.ConfigDriftHash(cfg.CurrentOrgID, applyProjectID, driftHash)
+		} else {
+			m, _, lerr := loadLocalJPYAML()
+			if lerr != nil {
+				return lerr
+			}
+			if verr := jpconfig.Validate(m); verr != nil {
+				return fmt.Errorf("jp.yaml validation failed: %w", verr)
+			}
+			out, err = client.ConfigDrift(cfg.CurrentOrgID, applyProjectID, m.ToMap())
+		}
 		if err != nil {
 			return err
 		}
-		fmt.Printf("drift: %v (stub=%v)\n", out["drift"], out["stub"])
-		if d, ok := out["details"]; ok {
-			fmt.Printf("details: %v\n", d)
+		fmt.Printf("drift: %v (method: %v)\n", out["drift"], out["method"])
+		if d, ok := out["details"].([]any); ok {
+			for _, x := range d {
+				fmt.Printf("  - %v\n", x)
+			}
 		}
 		return nil
 	},
@@ -104,5 +120,6 @@ func loadLocalJPYAML() (*jpconfig.Manifest, string, error) {
 func init() {
 	applyCmd.Flags().StringVar(&applyProjectID, "project", "", "Project ID")
 	driftCmd.Flags().StringVar(&applyProjectID, "project", "", "Project ID")
+	driftCmd.Flags().StringVar(&driftHash, "hash", "", "Compare against this sha256 of jp.yaml instead of the local file")
 	rootCmd.AddCommand(applyCmd, driftCmd)
 }

@@ -7,6 +7,8 @@ servers:
   - url: http://localhost:8000/api/v1
     description: Local gateway
 tags:
+  - name: Users
+  - name: System
   - name: Auth
   - name: Orgs
   - name: Projects
@@ -26,8 +28,44 @@ tags:
   - name: Queues
   - name: Config
   - name: AI
-  - name: Billing
 paths:
+  /auth/bootstrap/status:
+    get:
+      tags: [Auth]
+      summary: Is the platform initialised, and which registration mode applies
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  initialized: { type: boolean }
+                  registration: { type: string, enum: [closed, invite, open] }
+  /auth/bootstrap:
+    post:
+      tags: [Auth]
+      summary: Create the first platform administrator (only while uninitialised)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, name, password]
+              properties:
+                email: { type: string, format: email }
+                name: { type: string }
+                password: { type: string, minLength: 8, maxLength: 72 }
+      responses:
+        "201":
+          description: Created (user is_admin = true)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthResponse" }
+        "403":
+          $ref: "#/components/responses/Error"
   /auth/register:
     post:
       tags: [Auth]
@@ -43,6 +81,7 @@ paths:
                 email: { type: string, format: email }
                 password: { type: string, minLength: 8 }
                 name: { type: string }
+                invite_token: { type: string, description: "Required when REGISTRATION_MODE=invite; must belong to this email" }
       responses:
         "201":
           description: Created
@@ -56,24 +95,35 @@ paths:
   /auth/login:
     post:
       tags: [Auth]
-      summary: Login
+      summary: Login (two steps when MFA is enabled)
+      description: |
+        Step 1: send email + password. If the account has MFA enabled the response is
+        `{mfa_required: true, mfa_token}` (token is single-use, valid 5 minutes, max 5 attempts).
+        Step 2: send `mfa_token` + `totp_code` (a TOTP or a backup code) - the password is not resent.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [email, password]
               properties:
-                email: { type: string, format: email }
+                login: { type: string, description: "username or e-mail" }
+                email: { type: string, format: email, description: "legacy spelling of login" }
                 password: { type: string }
+                mfa_token: { type: string }
+                totp_code: { type: string }
       responses:
         "200":
-          description: OK
+          description: Tokens, or an MFA challenge
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/AuthResponse" }
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/AuthResponse"
+                  - $ref: "#/components/schemas/MFAChallenge"
         "401":
+          $ref: "#/components/responses/Error"
+        "429":
           $ref: "#/components/responses/Error"
   /auth/refresh:
     post:
@@ -99,12 +149,114 @@ paths:
   /auth/logout:
     post:
       tags: [Auth]
-      summary: Logout current session
+      summary: Log out - revokes the access token, its session and the refresh token
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refresh_token: { type: string }
+                all: { type: boolean, description: "Sign out every session" }
+      responses:
+        "204":
+          description: No Content
+  /auth/logout-all:
+    post:
+      tags: [Auth]
+      summary: Revoke every session and token of the caller
       security: [{ bearerAuth: [] }]
       responses:
-        "204": { description: No Content }
+        "204":
+          description: No Content
+  /auth/password:
+    post:
+      tags: [Auth]
+      summary: Change password (revokes all sessions)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, new_password]
+              properties:
+                current_password: { type: string }
+                new_password: { type: string, minLength: 8, maxLength: 72 }
+      responses:
+        "200":
+          description: Password changed; sign in again
         "401":
           $ref: "#/components/responses/Error"
+  /auth/mfa/setup:
+    post:
+      tags: [Auth]
+      summary: Start TOTP enrolment (when MFA is already enabled a current `code` is required)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                code: { type: string }
+      responses:
+        "200":
+          description: Secret and otpauth URI
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  secret: { type: string }
+                  otpauth_uri: { type: string }
+        "409":
+          $ref: "#/components/responses/Error"
+  /auth/mfa/enable:
+    post:
+      tags: [Auth]
+      summary: Confirm enrolment with a TOTP code; returns one-time backup codes
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled: { type: boolean }
+                  backup_codes:
+                    type: array
+                    items: { type: string }
+  /auth/mfa/disable:
+    post:
+      tags: [Auth]
+      summary: Disable MFA (requires a valid TOTP or backup code)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string }
+      responses:
+        "200":
+          description: OK
   /auth/me:
     get:
       tags: [Auth]
@@ -256,6 +408,17 @@ paths:
                 type: object
                 properties:
                   org: { $ref: "#/components/schemas/Org" }
+    delete:
+      tags: [Orgs]
+      summary: Delete organization (owner only; deletes all projects first)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+      responses:
+        "204":
+          description: No Content
+        "502":
+          description: Some projects could not be cleaned up; the organization was kept
   /orgs/{orgId}/invites:
     post:
       tags: [Orgs]
@@ -281,6 +444,29 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Invite" }
+    get:
+      tags: [Orgs]
+      summary: List pending invitations (admin+)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+      responses:
+        "200":
+          description: OK
+  /orgs/{orgId}/invites/{inviteId}:
+    delete:
+      tags: [Orgs]
+      summary: Revoke an invitation (admin+)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - name: inviteId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204":
+          description: No Content
   /orgs/invites/accept:
     post:
       tags: [Orgs]
@@ -305,6 +491,173 @@ paths:
                 properties:
                   org: { $ref: "#/components/schemas/Org" }
                   role: { type: string }
+  /orgs/{orgId}/users:
+    post:
+      tags: [Users]
+      summary: Create an admin-managed user (org owner/admin; only an owner can create admins)
+      description: |
+        `password` is optional - when omitted the server generates one and returns it ONCE as `generated_password`.
+        `must_change_password` defaults to true (the first login only yields a limited token).
+        Username: lowercase `[a-z0-9._-]{3,32}`, globally unique. Grants: `{project_id, preset|areas, secrets_reveal}`.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, username]
+              properties:
+                name: { type: string }
+                username: { type: string }
+                email: { type: string, format: email }
+                password: { type: string }
+                role: { type: string, enum: [admin, member, viewer] }
+                must_change_password: { type: boolean }
+                grants:
+                  type: array
+                  items: { $ref: "#/components/schemas/GrantRequest" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { type: object }
+                  generated_password: { type: string, description: "Shown once" }
+        "409":
+          $ref: "#/components/responses/Error"
+    get:
+      tags: [Users]
+      summary: List members with status, last login and grants (admin+)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+      responses:
+        "200":
+          description: OK
+  /orgs/{orgId}/users/{userId}:
+    patch:
+      tags: [Users]
+      summary: Rename / disable (managed users) or change role
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                disabled: { type: boolean, description: "Disabling revokes all sessions immediately" }
+                role: { type: string, enum: [owner, admin, member, viewer] }
+      responses:
+        "200":
+          description: OK
+    delete:
+      tags: [Users]
+      summary: Delete a user (managed accounts are deleted and all sessions revoked)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204":
+          description: No Content
+        "409":
+          $ref: "#/components/responses/Error"
+  /orgs/{orgId}/users/{userId}/grants:
+    put:
+      tags: [Users]
+      summary: Replace the project grants of a restricted user
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                grants:
+                  type: array
+                  items: { $ref: "#/components/schemas/GrantRequest" }
+      responses:
+        "200":
+          description: OK
+  /orgs/{orgId}/users/{userId}/reset-password:
+    post:
+      tags: [Users]
+      summary: Reset a managed user's password (returned once; forces a change; revokes sessions)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: OK
+  /orgs/{orgId}/users/{userId}/sessions:
+    get:
+      tags: [Users]
+      summary: Active sessions of a managed user
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: OK
+  /orgs/{orgId}/users/{userId}/sessions/{sessionId}:
+    delete:
+      tags: [Users]
+      summary: Revoke one session of a managed user
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204":
+          description: No Content
+  /orgs/{orgId}/access-presets:
+    get:
+      tags: [Users]
+      summary: Areas, levels and grant presets (viewer, developer, operator, project_admin, custom)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+      responses:
+        "200":
+          description: OK
   /orgs/{orgId}/members:
     get:
       tags: [Orgs]
@@ -323,6 +676,46 @@ paths:
                   members:
                     type: array
                     items: { $ref: "#/components/schemas/Member" }
+  /orgs/{orgId}/members/{userId}:
+    patch:
+      tags: [Orgs]
+      summary: Change a member's role (owner only; the last owner cannot be demoted)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role: { type: string, enum: [owner, admin, member, viewer] }
+      responses:
+        "200":
+          description: OK
+        "409":
+          $ref: "#/components/responses/Error"
+    delete:
+      tags: [Orgs]
+      summary: Remove a member (or leave the organization yourself)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204":
+          description: No Content
+        "409":
+          $ref: "#/components/responses/Error"
   /orgs/{orgId}/projects:
     get:
       tags: [Projects]
@@ -1015,7 +1408,7 @@ paths:
   /orgs/{orgId}/projects/{projectId}/logs:
     get:
       tags: [Logs]
-      summary: Query ingested logs (optional build log merge)
+      summary: Query logs newest-first (limit max 500; paginate with before / next_before)
       security: [{ bearerAuth: [] }]
       parameters:
         - $ref: "#/components/parameters/orgId"
@@ -1062,7 +1455,7 @@ paths:
   /orgs/{orgId}/projects/{projectId}/metrics:
     get:
       tags: [Metrics]
-      summary: Project metrics summary (simulate seeds samples)
+      summary: Latest value per metric (or ?name= for one series). Response carries mode live|simulate
       security: [{ bearerAuth: [] }]
       parameters:
         - $ref: "#/components/parameters/orgId"
@@ -1092,18 +1485,6 @@ paths:
       responses:
         "201":
           description: Created
-  /orgs/{orgId}/projects/{projectId}/metrics/targets:
-    get:
-      tags: [Metrics]
-      summary: List scrape targets / Prometheus SD annotations
-      security: [{ bearerAuth: [] }]
-      parameters:
-        - $ref: "#/components/parameters/orgId"
-        - $ref: "#/components/parameters/projectId"
-      responses:
-        "200":
-          description: OK
-
   /orgs/{orgId}/projects/{projectId}/storage/bucket:
     get:
       tags: [Storage]
@@ -1458,14 +1839,36 @@ paths:
   /orgs/{orgId}/projects/{projectId}/config/drift:
     get:
       tags: [Config]
-      summary: Config drift stub
+      summary: Compare the applied config hash with ?desired_hash
       security: [{ bearerAuth: [] }]
       parameters:
         - $ref: "#/components/parameters/orgId"
         - $ref: "#/components/parameters/projectId"
+        - name: desired_hash
+          in: query
+          required: true
+          schema: { type: string }
       responses:
         "200":
-          description: OK
+          description: "{drift, method: hash-compare, applied_hash, details}"
+    post:
+      tags: [Config]
+      summary: Compare a desired config body key-by-key with the applied config
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/orgId"
+        - $ref: "#/components/parameters/projectId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                config: { type: object }
+      responses:
+        "200":
+          description: "{drift, method: config-compare, details}"
   /orgs/{orgId}/projects/{projectId}/ai/explain:
     post:
       tags: [AI]
@@ -1516,73 +1919,80 @@ paths:
       responses:
         "200":
           description: OK
-  /billing/plans:
+  /system/settings:
     get:
-      tags: [Billing]
-      summary: List billing plans
+      tags: [System]
+      summary: Effective non-secret platform configuration + editable settings (platform admin)
       security: [{ bearerAuth: [] }]
       responses:
         "200":
           description: OK
-  /orgs/{orgId}/billing/plans:
-    get:
-      tags: [Billing]
-      summary: List billing plans (org-scoped)
+        "403":
+          $ref: "#/components/responses/Error"
+    patch:
+      tags: [System]
+      summary: Persist SMTP / AI-key settings (platform admin; secrets are write-only)
       security: [{ bearerAuth: [] }]
-      parameters:
-        - $ref: "#/components/parameters/orgId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "Keys: smtp_host, smtp_port, smtp_username, smtp_password, smtp_from, smtp_tls, ai_openai_api_key, ai_openrouter_api_key, ai_gemini_api_key, ai_base_url, ai_model. Empty string removes a key."
+              additionalProperties: { type: string }
       responses:
         "200":
           description: OK
-  /orgs/{orgId}/billing/usage:
+  /system/security:
     get:
-      tags: [Billing]
-      summary: Usage summary (stub meters)
+      tags: [System]
+      summary: Real security checks computed from live state (platform admin)
       security: [{ bearerAuth: [] }]
-      parameters:
-        - $ref: "#/components/parameters/orgId"
       responses:
         "200":
           description: OK
-  /orgs/{orgId}/billing/events:
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  checks:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        title: { type: string }
+                        status: { type: string, enum: [pass, warn, fail] }
+                        detail: { type: string }
+                  summary: { type: object, additionalProperties: { type: integer } }
+  /system/cluster:
     get:
-      tags: [Billing]
-      summary: List usage events
+      tags: [System]
+      summary: The single local node - live CPU, memory, disk, container counts (platform admin)
       security: [{ bearerAuth: [] }]
-      parameters:
-        - $ref: "#/components/parameters/orgId"
       responses:
         "200":
           description: OK
+  /cluster/nodes:
+    get:
+      tags: [System]
+      summary: Node list (always exactly the local node; multi-node is not implemented)
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: OK
+  /system/maintenance/cleanup:
     post:
-      tags: [Billing]
-      summary: Ingest usage event
+      tags: [System]
+      summary: Prune jp-managed dangling images/containers via the runtime (platform admin)
       security: [{ bearerAuth: [] }]
-      parameters:
-        - $ref: "#/components/parameters/orgId"
-      responses:
-        "201":
-          description: Created
-  /orgs/{orgId}/billing/plan:
-    get:
-      tags: [Billing]
-      summary: Get org plan
-      security: [{ bearerAuth: [] }]
-      parameters:
-        - $ref: "#/components/parameters/orgId"
       responses:
         "200":
-          description: OK
-    put:
-      tags: [Billing]
-      summary: Set org plan
-      security: [{ bearerAuth: [] }]
-      parameters:
-        - $ref: "#/components/parameters/orgId"
-      responses:
-        "200":
-          description: OK
-
+          description: Result reported by the runtime
+        "502":
+          $ref: "#/components/responses/Error"
 components:
   securitySchemes:
     bearerAuth:
@@ -1626,7 +2036,29 @@ components:
         id: { type: string, format: uuid }
         email: { type: string }
         name: { type: string }
+        is_admin: { type: boolean }
+        username: { type: string }
+        managed: { type: boolean }
+        must_change_password: { type: boolean }
+        totp_enabled: { type: boolean }
         created_at: { type: string, format: date-time }
+    GrantRequest:
+      type: object
+      required: [project_id]
+      properties:
+        project_id: { type: string, format: uuid }
+        preset: { type: string, enum: [viewer, developer, operator, project_admin, custom] }
+        areas:
+          type: object
+          description: "area -> none|view|manage (custom preset). Areas: overview, deployments, builds, runtime, domains, secrets, addons, databases, storage, logs, metrics, repository, settings"
+          additionalProperties: { type: string, enum: [none, view, manage] }
+        secrets_reveal: { type: boolean, description: "May read plaintext secret values / add-on passwords" }
+    MFAChallenge:
+      type: object
+      properties:
+        mfa_required: { type: boolean }
+        mfa_token: { type: string }
+        expires_in: { type: integer }
     TokenPair:
       type: object
       properties:
@@ -1654,9 +2086,11 @@ components:
         token_prefix: { type: string }
         scopes:
           type: array
-          items: { type: string }
+          items: { type: string, enum: [read, write, admin] }
+          description: "read = GET only (the gateway rejects mutations); write = default; admin also unlocks platform-admin routes for admin users"
         created_at: { type: string, format: date-time }
         last_used_at: { type: string, format: date-time, nullable: true }
+        expires_at: { type: string, format: date-time, nullable: true }
     PATCreated:
       allOf:
         - $ref: "#/components/schemas/PAT"

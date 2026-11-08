@@ -3,8 +3,7 @@ package handlers
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -13,15 +12,18 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"os"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jp-cloud/events"
 	"github.com/jp-cloud/go-common/httpx"
+	"github.com/jp-cloud/go-common/internalauth"
 	jwtutil "github.com/jp-cloud/go-common/jwt"
+	"github.com/jp-cloud/go-common/membership"
 	"github.com/jp-cloud/go-common/middleware"
+	"github.com/jp-cloud/repository/internal/cd"
 	"github.com/jp-cloud/repository/internal/githubapp"
 	"github.com/jp-cloud/repository/internal/store"
 	"github.com/redis/go-redis/v9"
@@ -29,228 +31,288 @@ import (
 
 const installStateTTL = 10 * time.Minute
 
-type Handler struct {
-	Store           *store.Store
-	JWT             *jwtutil.Manager
-	OrganizationURL string
-	DeploymentURL   string
-	WebhookSecret   string
-	PublicBaseURL   string
-	DashboardURL    string
-	HTTP            *http.Client
-	Redis           *redis.Client
-	GitHub          *githubapp.Client
-	Log             *slog.Logger
+var (
+	fullNameRe = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,99})/[A-Za-z0-9._-]{1,100}$`)
+	branchRe   = regexp.MustCompile(`^[A-Za-z0-9._/-]{1,200}$`)
+)
+
+// Repo is the persistence used by the handlers (implemented by *store.Store).
+type Repo interface {
+	ListInstallations(ctx context.Context, orgID string) ([]store.Installation, error)
+	HasInstallation(ctx context.Context, orgID, installationID string) (bool, error)
+	UpsertInstallation(ctx context.Context, orgID, installationID, login string) (*store.Installation, error)
+	LatestInstallation(ctx context.Context, orgID string) (*store.Installation, error)
+	ConnectRepo(ctx context.Context, p store.ConnectParams) (*store.Repo, error)
+	ListRepos(ctx context.Context, orgID, projectID string) ([]store.Repo, error)
+	GetRepo(ctx context.Context, orgID, projectID, id string) (*store.Repo, error)
+	DeleteRepo(ctx context.Context, orgID, projectID, id string) error
+	UpdateCD(ctx context.Context, orgID, projectID, id string, s cd.Settings) (*store.Repo, error)
+	SetWebhookSecret(ctx context.Context, orgID, projectID, id, secret string) error
+	WebhookSecretOf(ctx context.Context, orgID, projectID, id string) (string, error)
+	FindForWebhook(ctx context.Context, fullName string) ([]store.WebhookRepo, error)
+	Credentials(ctx context.Context, repoID string) (*store.Repo, string, error)
+	InstallationForRepo(ctx context.Context, fullName string) (string, error)
+	DeleteProject(ctx context.Context, projectID string) (int64, error)
+	GetDeployKey(ctx context.Context, projectID string) (*store.DeployKey, error)
+	GetOrCreateDeployKey(ctx context.Context, orgID, projectID string) (*store.DeployKey, error)
+	RotateDeployKey(ctx context.Context, orgID, projectID string) (*store.DeployKey, error)
+	DeployKeyPrivate(ctx context.Context, projectID string) (string, error)
 }
+
+// Authorizer enforces org membership + project binding.
+type Authorizer interface {
+	Require(w http.ResponseWriter, r *http.Request, orgID, userID string, min membership.Role) (membership.Role, bool)
+	RequireArea(w http.ResponseWriter, r *http.Request, orgID, projectID, userID string, area membership.Area, need membership.Level) (*membership.Access, bool)
+}
+
+type Handler struct {
+	Store         Repo
+	JWT           *jwtutil.Manager
+	Authz         Authorizer
+	DeploymentURL string
+	// GlobalWebhookSecret verifies GitHub App level webhooks (optional, no default).
+	GlobalWebhookSecret string
+	PublicBaseURL       string
+	DashboardURL        string
+	GitHubAPI           string       // default https://api.github.com
+	HTTP                *http.Client // outbound to GitHub (not internal)
+	Internal            *http.Client // service-to-service (internalauth.NewClient)
+	Redis               *redis.Client
+	GitHub              *githubapp.Client
+	// StubMode is GITHUB_MODE=stub: only effective when no GitHub App is configured.
+	StubMode bool
+	Log      *slog.Logger
+}
+
+func (h *Handler) log() *slog.Logger {
+	if h.Log == nil {
+		return slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	return h.Log
+}
+
+func (h *Handler) api() string {
+	if h.GitHubAPI != "" {
+		return strings.TrimRight(h.GitHubAPI, "/")
+	}
+	return "https://api.github.com"
+}
+
+func (h *Handler) appConfigured() bool { return h.GitHub != nil && h.GitHub.Configured() }
+func (h *Handler) stub() bool          { return h.StubMode && !h.appConfigured() }
 
 func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /healthz", httpx.Healthz)
 	auth := middleware.BearerAuth(h.JWT)
+	u := func(f http.HandlerFunc) http.Handler { return auth(f) }
+	in := func(f http.HandlerFunc) http.Handler { return internalauth.Require(f) }
 
-	mux.Handle("POST /orgs/{orgId}/github/install/start", auth(http.HandlerFunc(h.InstallStart)))
-	mux.Handle("POST /orgs/{orgId}/github/install/callback", auth(http.HandlerFunc(h.InstallCallback)))
-	mux.Handle("GET /orgs/{orgId}/github/installations", auth(http.HandlerFunc(h.ListInstallations)))
-	mux.Handle("GET /orgs/{orgId}/github/repos", auth(http.HandlerFunc(h.ListAvailableRepos)))
+	mux.Handle("POST /orgs/{orgId}/github/install/start", u(h.InstallStart))
+	mux.Handle("POST /orgs/{orgId}/github/install/callback", u(h.InstallCallback))
+	mux.Handle("GET /orgs/{orgId}/github/installations", u(h.ListInstallations))
+	mux.Handle("GET /orgs/{orgId}/github/repos", u(h.ListAvailableRepos))
 
-	mux.Handle("POST /orgs/{orgId}/projects/{projectId}/repos", auth(http.HandlerFunc(h.ConnectRepo)))
-	mux.Handle("GET /orgs/{orgId}/projects/{projectId}/repos", auth(http.HandlerFunc(h.ListRepos)))
-	mux.Handle("DELETE /orgs/{orgId}/projects/{projectId}/repos/{repoId}", auth(http.HandlerFunc(h.DisconnectRepo)))
+	const p = "/orgs/{orgId}/projects/{projectId}"
+	mux.Handle("POST "+p+"/repos", u(h.ConnectRepo))
+	mux.Handle("GET "+p+"/repos", u(h.ListRepos))
+	mux.Handle("DELETE "+p+"/repos/{repoId}", u(h.DisconnectRepo))
+	mux.Handle("PATCH "+p+"/repos/{repoId}", u(h.UpdateRepoSettings))
+	mux.Handle("POST "+p+"/repos/{repoId}/webhook/rotate", u(h.RotateWebhookSecret))
+	mux.Handle("POST "+p+"/repos/{repoId}/webhook/install", u(h.InstallWebhook))
+	mux.Handle("GET "+p+"/repos/{repoId}/folders", u(h.RepoFolders))
+	mux.Handle("GET "+p+"/deploy-key", u(h.GetDeployKey))
+	mux.Handle("POST "+p+"/deploy-key/generate", u(h.RotateDeployKey))
 
-	// Deploy keys
-	mux.Handle("GET /orgs/{orgId}/projects/{projectId}/deploy-key", auth(http.HandlerFunc(h.GetDeployKey)))
-	mux.Handle("POST /orgs/{orgId}/projects/{projectId}/deploy-key/generate", auth(http.HandlerFunc(h.RotateDeployKey)))
-	mux.HandleFunc("GET /internal/projects/{projectId}/deploy-key", h.InternalGetDeployKey)
-
-	// Public webhook (HMAC verified)
+	// public: GitHub (signature verified per connection) and the App setup redirect (state verified)
 	mux.HandleFunc("POST /webhooks/github", h.GitHubWebhook)
-
-	// GitHub App setup redirect (public; state verified via Redis)
 	mux.HandleFunc("GET /github/setup", h.GitHubSetup)
 	mux.HandleFunc("GET /api/v1/github/setup", h.GitHubSetup)
 
-	// Internal: commit status for deployment service
-	mux.HandleFunc("POST /internal/github/commit-status", h.InternalCommitStatus)
+	mux.Handle("GET /internal/orgs/{orgId}/projects/{projectId}/repos", in(h.InternalListRepos))
+	mux.Handle("GET /internal/repos/{repoId}/clone-info", in(h.InternalCloneInfo))
+	mux.Handle("GET /internal/projects/{projectId}/deploy-key", in(h.InternalDeployKey))
+	mux.Handle("POST /internal/github/commit-status", in(h.InternalCommitStatus))
+	mux.Handle("DELETE /internal/projects/{projectId}", in(h.InternalDeleteProject))
 }
 
-func (h *Handler) requireMember(w http.ResponseWriter, r *http.Request, orgID, userID string) bool {
-	if h.OrganizationURL == "" {
-		return true
+// ---------------------------------------------------------------- auth helpers
+
+func (h *Handler) orgAuth(w http.ResponseWriter, r *http.Request, min membership.Role) (orgID, uid string, ok bool) {
+	orgID = r.PathValue("orgId")
+	if _, err := uuid.Parse(orgID); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "bad_request", "invalid organization id")
+		return
 	}
-	url := fmt.Sprintf("%s/internal/orgs/%s/members/%s", strings.TrimRight(h.OrganizationURL, "/"), orgID, userID)
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, url, nil)
-	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "internal", "membership check failed")
-		return false
+	if min != membership.Viewer && readOnly(r) {
+		httpx.Error(w, http.StatusForbidden, "forbidden", "read-only token")
+		return
 	}
-	resp, err := h.HTTP.Do(req)
-	if err != nil {
-		httpx.Error(w, http.StatusBadGateway, "bad_gateway", "organization service unavailable")
-		return false
+	uid = middleware.UserIDFrom(r.Context())
+	if _, ok = h.Authz.Require(w, r, orgID, uid, min); !ok {
+		return
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
-		httpx.Error(w, http.StatusForbidden, "forbidden", "not a member of this organization")
-		return false
-	}
-	if resp.StatusCode != http.StatusOK {
-		httpx.Error(w, http.StatusBadGateway, "bad_gateway", "organization service error")
-		return false
-	}
-	return true
+	return orgID, uid, true
 }
 
-func (h *Handler) appConfigured() bool {
-	return h.GitHub != nil && h.GitHub.Configured()
+func readOnly(r *http.Request) bool {
+	c, ok := middleware.ClaimsFrom(r.Context())
+	return ok && c.ReadOnly()
+}
+
+func (h *Handler) projAuth(w http.ResponseWriter, r *http.Request, min membership.Level) (orgID, projectID, uid string, acc *membership.Access, ok bool) {
+	orgID, projectID = r.PathValue("orgId"), r.PathValue("projectId")
+	for _, id := range []string{orgID, projectID} {
+		if _, err := uuid.Parse(id); err != nil {
+			httpx.Error(w, http.StatusBadRequest, "bad_request", "invalid id")
+			return
+		}
+	}
+	if min != membership.LevelView && readOnly(r) {
+		httpx.Error(w, http.StatusForbidden, "forbidden", "read-only token")
+		return
+	}
+	uid = middleware.UserIDFrom(r.Context())
+	if acc, ok = h.Authz.RequireArea(w, r, orgID, projectID, uid, membership.AreaRepository, min); !ok {
+		return
+	}
+	return orgID, projectID, uid, acc, true
+}
+
+func randHex(n int) string {
+	b := make([]byte, n)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// ---------------------------------------------------------------- installation flow
+
+func (h *Handler) saveState(ctx context.Context, state, orgID, userID string) error {
+	if h.Redis == nil {
+		return errors.New("state store unavailable")
+	}
+	payload, _ := json.Marshal(map[string]string{"org_id": orgID, "user_id": userID})
+	return h.Redis.Set(ctx, "jp:gh:install:"+state, payload, installStateTTL).Err()
+}
+
+// takeState atomically loads AND deletes the state (single use).
+func (h *Handler) takeState(ctx context.Context, state string) (orgID, userID string, ok bool) {
+	if h.Redis == nil || len(state) < 32 || len(state) > 128 {
+		return "", "", false
+	}
+	raw, err := h.Redis.GetDel(ctx, "jp:gh:install:"+state).Bytes()
+	if err != nil {
+		return "", "", false
+	}
+	var m map[string]string
+	if json.Unmarshal(raw, &m) != nil || m["org_id"] == "" {
+		return "", "", false
+	}
+	return m["org_id"], m["user_id"], true
 }
 
 func (h *Handler) InstallStart(w http.ResponseWriter, r *http.Request) {
-	uid := middleware.UserIDFrom(r.Context())
-	orgID := r.PathValue("orgId")
-	if !h.requireMember(w, r, orgID, uid) {
+	orgID, uid, ok := h.orgAuth(w, r, membership.Admin)
+	if !ok {
 		return
 	}
-	state := uuid.NewString()
-
+	if !h.appConfigured() && !h.stub() {
+		httpx.Error(w, http.StatusNotImplemented, "github_not_configured", "the GitHub App is not configured on this platform (GITHUB_APP_ID / key); connect repositories with a token or deploy key instead")
+		return
+	}
+	state := randHex(24)
+	if err := h.saveState(r.Context(), state, orgID, uid); err != nil {
+		httpx.Error(w, http.StatusServiceUnavailable, "unavailable", "cannot store install state")
+		return
+	}
 	if h.appConfigured() {
-		h.saveInstallState(r.Context(), state, orgID, uid)
-		httpx.JSON(w, http.StatusOK, map[string]any{
-			"install_url": h.GitHub.InstallURL(state),
-			"state":       state,
-			"mode":        "github_app",
-			"message":     "Open install_url to install the GitHub App, then return to the dashboard",
-		})
+		httpx.JSON(w, http.StatusOK, map[string]any{"install_url": h.GitHub.InstallURL(state), "state": state, "mode": "github_app"})
 		return
 	}
-
-	// Stub mode for local demos without App credentials
-	installURL := fmt.Sprintf("%s/api/v1/orgs/%s/github/install/callback?state=%s&stub=1",
-		strings.TrimRight(h.PublicBaseURL, "/"), orgID, state)
 	httpx.JSON(w, http.StatusOK, map[string]any{
-		"install_url": installURL,
-		"state":       state,
-		"mode":        "stub",
-		"message":     "Open install_url or POST /github/install/callback to complete the stub install",
-	})
+		"install_url": fmt.Sprintf("%s/api/v1/orgs/%s/github/install/callback", strings.TrimRight(h.PublicBaseURL, "/"), orgID),
+		"state":       state, "mode": "stub", "message": "GITHUB_MODE=stub: no real GitHub access (development only)"})
 }
 
+// InstallCallback completes an installation. The state is mandatory, single-use and bound
+// to this org AND this user; the installation must exist for our App (checked with the
+// App JWT) and must not belong to another organization.
 func (h *Handler) InstallCallback(w http.ResponseWriter, r *http.Request) {
-	uid := middleware.UserIDFrom(r.Context())
-	orgID := r.PathValue("orgId")
-	if !h.requireMember(w, r, orgID, uid) {
+	orgID, uid, ok := h.orgAuth(w, r, membership.Admin)
+	if !ok {
 		return
 	}
 	var req struct {
 		InstallationID string `json:"installation_id"`
-		AccountLogin   string `json:"account_login"`
 		State          string `json:"state"`
-		SetupAction    string `json:"setup_action"`
 	}
-	_ = httpx.Decode(r, &req)
-
-	if req.State != "" {
-		if stOrg, _, ok := h.loadInstallState(r.Context(), req.State); ok && stOrg != orgID {
-			httpx.Error(w, http.StatusBadRequest, "bad_request", "install state org mismatch")
-			return
-		}
-	}
-
-	if req.InstallationID == "" {
-		req.InstallationID = "stub-" + uuid.NewString()[:8]
-	}
-	if req.AccountLogin == "" {
-		if h.appConfigured() && !strings.HasPrefix(req.InstallationID, "stub-") {
-			if login, err := h.GitHub.GetInstallationAccount(r.Context(), req.InstallationID); err == nil && login != "" {
-				req.AccountLogin = login
-			}
-		}
-		if req.AccountLogin == "" {
-			req.AccountLogin = "stub-github-org"
-		}
-	}
-
-	inst, err := h.Store.UpsertInstallation(r.Context(), orgID, req.InstallationID, req.AccountLogin)
-	if errors.Is(err, store.ErrAlreadyExists) {
-		httpx.Error(w, http.StatusConflict, "conflict", "installation already exists")
+	if err := httpx.Decode(r, &req); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
-	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "internal", "failed to save installation")
+	stOrg, stUser, valid := h.takeState(r.Context(), req.State)
+	if !valid || stOrg != orgID || stUser != uid {
+		httpx.Error(w, http.StatusBadRequest, "invalid_state", "install state is missing, expired, already used or belongs to another session")
+		return
+	}
+	inst, status, msg := h.completeInstall(r.Context(), orgID, req.InstallationID)
+	if inst == nil {
+		httpx.Error(w, status, "install_failed", msg)
 		return
 	}
 	httpx.JSON(w, http.StatusCreated, map[string]any{"installation": inst})
 }
 
-// GitHubSetup handles GitHub App setup_url redirect: ?installation_id=&setup_action=&state=
+func (h *Handler) completeInstall(ctx context.Context, orgID, installationID string) (*store.Installation, int, string) {
+	login := ""
+	switch {
+	case h.appConfigured():
+		if !githubapp.ValidInstallationID(installationID) {
+			return nil, http.StatusBadRequest, "invalid installation_id"
+		}
+		l, err := h.GitHub.GetInstallationAccount(ctx, installationID)
+		if err != nil {
+			return nil, http.StatusBadRequest, "installation could not be verified with the GitHub App"
+		}
+		login = l
+	case h.stub():
+		installationID, login = "stub-"+randHex(4), "stub-github-org"
+	default:
+		return nil, http.StatusNotImplemented, "GitHub App not configured"
+	}
+	inst, err := h.Store.UpsertInstallation(ctx, orgID, installationID, login)
+	if errors.Is(err, store.ErrInstallationOwned) {
+		return nil, http.StatusConflict, "this installation is already linked to another organization"
+	}
+	if err != nil {
+		return nil, http.StatusInternalServerError, "failed to save installation"
+	}
+	return inst, 0, ""
+}
+
+// GitHubSetup is the App's setup_url redirect (browser, no JWT). The state ties it to the
+// org+user that started the flow; the installation is verified before saving.
 func (h *Handler) GitHubSetup(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	installationID := strings.TrimSpace(q.Get("installation_id"))
-	state := strings.TrimSpace(q.Get("state"))
-	setupAction := strings.TrimSpace(q.Get("setup_action"))
-
 	dash := strings.TrimRight(h.DashboardURL, "/")
 	if dash == "" {
-		dash = "http://localhost:3000"
+		dash = "/"
 	}
-
-	if installationID == "" {
-		http.Redirect(w, r, dash+"/git?error=missing_installation", http.StatusFound)
+	fail := func(code string) { http.Redirect(w, r, dash+"/git?error="+url.QueryEscape(code), http.StatusFound) }
+	orgID, _, ok := h.takeState(r.Context(), strings.TrimSpace(q.Get("state")))
+	if !ok {
+		fail("invalid_state")
 		return
 	}
-
-	orgID, userID, ok := h.loadInstallState(r.Context(), state)
-	if !ok || orgID == "" {
-		// Still try to show success page asking user to complete from dashboard
-		http.Redirect(w, r, fmt.Sprintf("%s/git?installation_id=%s&setup_action=%s&error=missing_state",
-			dash, url.QueryEscape(installationID), url.QueryEscape(setupAction)), http.StatusFound)
+	if inst, _, _ := h.completeInstall(r.Context(), orgID, strings.TrimSpace(q.Get("installation_id"))); inst == nil {
+		fail("install_failed")
 		return
 	}
-
-	login := ""
-	if h.appConfigured() {
-		if l, err := h.GitHub.GetInstallationAccount(r.Context(), installationID); err == nil {
-			login = l
-		}
-	}
-	if login == "" {
-		login = "github"
-	}
-	_, err := h.Store.UpsertInstallation(r.Context(), orgID, installationID, login)
-	if err != nil && !errors.Is(err, store.ErrAlreadyExists) {
-		http.Redirect(w, r, dash+"/git?error=save_failed", http.StatusFound)
-		return
-	}
-	_ = userID
 	http.Redirect(w, r, dash+"/git?installed=1", http.StatusFound)
 }
 
-func (h *Handler) saveInstallState(ctx context.Context, state, orgID, userID string) {
-	if h.Redis == nil || state == "" {
-		return
-	}
-	payload, _ := json.Marshal(map[string]string{"org_id": orgID, "user_id": userID})
-	_ = h.Redis.Set(ctx, "jp:gh:install:"+state, payload, installStateTTL).Err()
-}
-
-func (h *Handler) loadInstallState(ctx context.Context, state string) (orgID, userID string, ok bool) {
-	if h.Redis == nil || state == "" {
-		return "", "", false
-	}
-	raw, err := h.Redis.Get(ctx, "jp:gh:install:"+state).Bytes()
-	if err != nil {
-		return "", "", false
-	}
-	var m map[string]string
-	if json.Unmarshal(raw, &m) != nil {
-		return "", "", false
-	}
-	_ = h.Redis.Del(ctx, "jp:gh:install:"+state).Err()
-	return m["org_id"], m["user_id"], m["org_id"] != ""
-}
-
 func (h *Handler) ListInstallations(w http.ResponseWriter, r *http.Request) {
-	uid := middleware.UserIDFrom(r.Context())
-	orgID := r.PathValue("orgId")
-	if !h.requireMember(w, r, orgID, uid) {
+	orgID, _, ok := h.orgAuth(w, r, membership.Viewer)
+	if !ok {
 		return
 	}
 	list, err := h.Store.ListInstallations(r.Context(), orgID)
@@ -261,176 +323,256 @@ func (h *Handler) ListInstallations(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, map[string]any{"installations": list})
 }
 
-// ListAvailableRepos prefers installation repos, then GITHUB_TOKEN, then mock.
+// ListAvailableRepos lists the repositories of the org's own GitHub App installation.
 func (h *Handler) ListAvailableRepos(w http.ResponseWriter, r *http.Request) {
-	uid := middleware.UserIDFrom(r.Context())
-	orgID := r.PathValue("orgId")
-	if !h.requireMember(w, r, orgID, uid) {
+	orgID, _, ok := h.orgAuth(w, r, membership.Admin)
+	if !ok {
 		return
 	}
-
 	if h.appConfigured() {
 		if inst, err := h.Store.LatestInstallation(r.Context(), orgID); err == nil {
-			if repos, err := h.GitHub.ListInstallationRepos(r.Context(), inst.InstallationID); err == nil {
-				out := make([]map[string]any, 0, len(repos))
-				for _, repo := range repos {
-					out = append(out, map[string]any{
-						"full_name": repo.FullName, "clone_url": repo.CloneURL,
-						"default_branch": repo.DefaultBranch, "private": repo.Private,
-					})
-				}
-				httpx.JSON(w, http.StatusOK, map[string]any{"repos": out, "mode": "github_app"})
+			repos, err := h.GitHub.ListInstallationRepos(r.Context(), inst.InstallationID)
+			if err != nil {
+				httpx.Error(w, http.StatusBadGateway, "bad_gateway", "GitHub did not answer")
 				return
 			}
+			out := make([]map[string]any, 0, len(repos))
+			for _, repo := range repos {
+				out = append(out, map[string]any{"full_name": repo.FullName, "default_branch": repo.DefaultBranch, "private": repo.Private})
+			}
+			httpx.JSON(w, http.StatusOK, map[string]any{"repos": out, "mode": "github_app"})
+			return
 		}
 	}
-
-	if repos, ok := h.fetchGitHubRepos(r); ok {
-		httpx.JSON(w, http.StatusOK, map[string]any{"repos": repos, "mode": "github"})
-		return
-	}
-	httpx.JSON(w, http.StatusOK, map[string]any{
-		"mode": "direct",
-		"repos": []map[string]any{},
-	})
+	httpx.JSON(w, http.StatusOK, map[string]any{"repos": []map[string]any{}, "mode": "direct"})
 }
 
-func (h *Handler) fetchGitHubRepos(r *http.Request) ([]map[string]any, bool) {
-	token := strings.TrimSpace(r.URL.Query().Get("token"))
-	if token == "" {
-		token = strings.TrimSpace(r.Header.Get("X-GitHub-Token"))
-	}
-	if token == "" {
-		token = strings.TrimSpace(os.Getenv("GITHUB_TOKEN"))
-	}
-	if token == "" || h.HTTP == nil {
-		return nil, false
-	}
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, "https://api.github.com/user/repos?per_page=100&sort=updated", nil)
-	if err != nil {
-		return nil, false
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	resp, err := h.HTTP.Do(req)
-	if err != nil || resp.StatusCode != http.StatusOK {
-		if resp != nil {
-			_ = resp.Body.Close()
+// ---------------------------------------------------------------- connect / disconnect
+
+// parseFullName accepts owner/repo, https://github.com/owner/repo(.git) and git@github.com:owner/repo(.git).
+func parseFullName(in string) (string, error) {
+	in = strings.TrimSpace(in)
+	switch {
+	case strings.HasPrefix(in, "git@github.com:"):
+		in = strings.TrimPrefix(in, "git@github.com:")
+	case strings.HasPrefix(in, "ssh://git@github.com/"):
+		in = strings.TrimPrefix(in, "ssh://git@github.com/")
+	case strings.HasPrefix(in, "http://") || strings.HasPrefix(in, "https://"):
+		u, err := url.Parse(in)
+		if err != nil || u.User != nil || !strings.EqualFold(u.Hostname(), "github.com") {
+			return "", errors.New("only github.com repositories are supported")
 		}
-		return nil, false
+		in = strings.Trim(u.Path, "/")
+	}
+	in = strings.TrimSuffix(strings.Trim(in, "/"), ".git")
+	if !fullNameRe.MatchString(in) || strings.Contains(in, "..") {
+		return "", errors.New("full_name must be owner/repo")
+	}
+	return in, nil
+}
+
+type ghRepoInfo struct {
+	DefaultBranch string `json:"default_branch"`
+	Private       bool   `json:"private"`
+}
+
+// githubRepo fetches repository metadata, optionally with a token.
+func (h *Handler) githubRepo(ctx context.Context, fullName, token string) (*ghRepoInfo, int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, h.api()+"/repos/"+fullName, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	hc := h.HTTP
+	if hc == nil {
+		hc = &http.Client{Timeout: 15 * time.Second}
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return nil, 0, err
 	}
 	defer resp.Body.Close()
-	var raw []struct {
-		FullName      string `json:"full_name"`
-		CloneURL      string `json:"clone_url"`
-		DefaultBranch string `json:"default_branch"`
-		Private       bool   `json:"private"`
+	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		return nil, resp.StatusCode, nil
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
-		return nil, false
+	var info ghRepoInfo
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&info); err != nil {
+		return nil, resp.StatusCode, err
 	}
-	out := make([]map[string]any, 0, len(raw))
-	for _, repo := range raw {
-		out = append(out, map[string]any{
-			"full_name": repo.FullName, "clone_url": repo.CloneURL,
-			"default_branch": repo.DefaultBranch, "private": repo.Private,
-		})
-	}
-	return out, true
+	return &info, resp.StatusCode, nil
 }
 
+// ConnectRepo (admin+) connects a GitHub repository. The clone URL is always derived from
+// the verified full_name; tokens are stored encrypted and never echoed.
 func (h *Handler) ConnectRepo(w http.ResponseWriter, r *http.Request) {
-	uid := middleware.UserIDFrom(r.Context())
-	orgID := r.PathValue("orgId")
-	projectID := r.PathValue("projectId")
-	if !h.requireMember(w, r, orgID, uid) {
+	orgID, projectID, _, _, ok := h.projAuth(w, r, membership.LevelManage)
+	if !ok {
 		return
 	}
 	var req struct {
 		FullName       string `json:"full_name"`
-		CloneURL       string `json:"clone_url"`
 		DefaultBranch  string `json:"default_branch"`
 		InstallationID string `json:"installation_id"`
 		Token          string `json:"token"`
 		AuthType       string `json:"auth_type"`
+		AllowForks     bool   `json:"allow_forks"`
+		CloneURL       string `json:"clone_url"` // ignored: derived server-side
+		cdRequest
 	}
 	if err := httpx.Decode(r, &req); err != nil {
 		httpx.Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
-	req.FullName = strings.TrimSpace(req.FullName)
-	req.Token = strings.TrimSpace(req.Token)
-	req.AuthType = strings.TrimSpace(req.AuthType)
-
-	// Check if user entered an SSH URL (git@github.com:owner/repo.git or ssh://git@github.com/owner/repo.git)
-	if strings.HasPrefix(req.FullName, "git@github.com:") {
-		path := strings.TrimPrefix(req.FullName, "git@github.com:")
-		path = strings.TrimSuffix(path, ".git")
-		req.FullName = path
-		req.CloneURL = "git@github.com:" + path + ".git"
-		req.AuthType = "deploy_key"
-	} else if strings.HasPrefix(req.FullName, "ssh://git@github.com/") {
-		path := strings.TrimPrefix(req.FullName, "ssh://git@github.com/")
-		path = strings.TrimSuffix(path, ".git")
-		req.FullName = path
-		req.CloneURL = "git@github.com:" + path + ".git"
-		req.AuthType = "deploy_key"
-	} else if strings.HasPrefix(req.FullName, "http://") || strings.HasPrefix(req.FullName, "https://") {
-		parsed, err := url.Parse(req.FullName)
-		if err == nil {
-			path := strings.Trim(parsed.Path, "/")
-			path = strings.TrimSuffix(path, ".git")
-			if strings.Contains(path, "/") {
-				req.CloneURL = req.FullName
-				req.FullName = path
-			}
-		}
-	}
-
-	if req.FullName == "" || !strings.Contains(req.FullName, "/") {
-		httpx.Error(w, http.StatusBadRequest, "validation_error", "full_name required (owner/repo or repository URL)")
+	settings, err := req.cdRequest.apply(cd.Defaults())
+	if err != nil {
+		httpx.Error(w, http.StatusBadRequest, "validation_error", err.Error())
 		return
 	}
-	if req.DefaultBranch == "" {
-		req.DefaultBranch = "main"
+	full, err := parseFullName(firstNonEmpty(req.FullName, req.CloneURL))
+	if err != nil {
+		httpx.Error(w, http.StatusBadRequest, "validation_error", err.Error())
+		return
 	}
-	if req.AuthType == "deploy_key" || (req.Token == "" && strings.HasPrefix(req.CloneURL, "git@")) {
-		req.CloneURL = fmt.Sprintf("git@github.com:%s.git", req.FullName)
-	} else if req.Token != "" {
-		req.CloneURL = fmt.Sprintf("https://x-access-token:%s@github.com/%s.git", req.Token, req.FullName)
-	} else if req.CloneURL == "" {
-		req.CloneURL = "https://github.com/" + req.FullName + ".git"
+	req.Token = strings.TrimSpace(req.Token)
+	if strings.HasPrefix(strings.TrimSpace(req.FullName), "git@") && req.AuthType == "" {
+		req.AuthType = "deploy_key"
 	}
-	// Prefer GitHub installation_id from org if caller omitted it
-	if req.InstallationID == "" {
-		if inst, err := h.Store.LatestInstallation(r.Context(), orgID); err == nil {
-			req.InstallationID = inst.InstallationID
+	if req.AuthType == "" {
+		switch {
+		case req.Token != "":
+			req.AuthType = "token"
+		case req.InstallationID != "" || h.appConfigured():
+			req.AuthType = "app"
+		default:
+			req.AuthType = "none"
 		}
 	}
-	secret := h.WebhookSecret
-	if secret == "" {
-		secret = "dev-webhook-secret"
+	if req.DefaultBranch != "" && (!branchRe.MatchString(req.DefaultBranch) || strings.HasPrefix(req.DefaultBranch, "-") || strings.Contains(req.DefaultBranch, "..")) {
+		httpx.Error(w, http.StatusBadRequest, "validation_error", "invalid default_branch")
+		return
 	}
-	repo, err := h.Store.ConnectRepo(r.Context(), orgID, projectID, req.InstallationID, req.FullName, req.CloneURL, req.DefaultBranch, secret)
+	p := store.ConnectParams{OrgID: orgID, ProjectID: projectID, FullName: full, AuthType: req.AuthType, Branch: req.DefaultBranch,
+		CloneURL: "https://github.com/" + full + ".git", AllowForks: req.AllowForks, WebhookSecret: randHex(32), CD: settings}
+
+	switch req.AuthType {
+	case "app":
+		if !h.appConfigured() {
+			httpx.Error(w, http.StatusBadRequest, "validation_error", "GitHub App is not configured")
+			return
+		}
+		inst := req.InstallationID
+		if inst == "" {
+			li, err := h.Store.LatestInstallation(r.Context(), orgID)
+			if err != nil {
+				httpx.Error(w, http.StatusBadRequest, "validation_error", "install the GitHub App for this organization first")
+				return
+			}
+			inst = li.InstallationID
+		}
+		owned, err := h.Store.HasInstallation(r.Context(), orgID, inst)
+		if err != nil || !owned {
+			httpx.Error(w, http.StatusForbidden, "forbidden", "installation does not belong to this organization")
+			return
+		}
+		repos, err := h.GitHub.ListInstallationRepos(r.Context(), inst)
+		if err != nil {
+			httpx.Error(w, http.StatusBadGateway, "bad_gateway", "GitHub did not answer")
+			return
+		}
+		found := false
+		for _, rp := range repos {
+			if strings.EqualFold(rp.FullName, full) {
+				found = true
+				p.FullName = rp.FullName
+				if p.Branch == "" {
+					p.Branch = rp.DefaultBranch
+				}
+			}
+		}
+		if !found {
+			httpx.Error(w, http.StatusForbidden, "forbidden", "the GitHub App installation cannot access this repository")
+			return
+		}
+		p.InstallationID = inst
+	case "token":
+		if req.Token == "" {
+			httpx.Error(w, http.StatusBadRequest, "validation_error", "token required")
+			return
+		}
+		info, code, err := h.githubRepo(r.Context(), full, req.Token)
+		if err != nil {
+			httpx.Error(w, http.StatusBadGateway, "bad_gateway", "GitHub did not answer")
+			return
+		}
+		if info == nil {
+			httpx.Error(w, http.StatusBadRequest, "validation_error", fmt.Sprintf("the token cannot access %s (GitHub answered %d)", full, code))
+			return
+		}
+		p.Token = req.Token
+		if p.Branch == "" {
+			p.Branch = info.DefaultBranch
+		}
+	case "deploy_key":
+		p.CloneURL = "git@github.com:" + full + ".git"
+		if _, err := h.Store.GetOrCreateDeployKey(r.Context(), orgID, projectID); err != nil {
+			httpx.Error(w, http.StatusInternalServerError, "internal", "failed to prepare deploy key")
+			return
+		}
+	case "none":
+		info, _, err := h.githubRepo(r.Context(), full, "")
+		if err != nil {
+			httpx.Error(w, http.StatusBadGateway, "bad_gateway", "GitHub did not answer")
+			return
+		}
+		if info == nil || info.Private {
+			httpx.Error(w, http.StatusBadRequest, "validation_error", "repository not found or private: provide a token, deploy key or GitHub App")
+			return
+		}
+		if p.Branch == "" {
+			p.Branch = info.DefaultBranch
+		}
+	default:
+		httpx.Error(w, http.StatusBadRequest, "validation_error", "auth_type must be app, token, deploy_key or none")
+		return
+	}
+	if p.Branch == "" {
+		p.Branch = "main"
+	}
+	repo, err := h.Store.ConnectRepo(r.Context(), p)
 	if errors.Is(err, store.ErrAlreadyExists) {
-		httpx.Error(w, http.StatusConflict, "conflict", "repo already connected")
+		httpx.Error(w, http.StatusConflict, "conflict", "this repository is already connected to this project")
 		return
 	}
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, "internal", "failed to connect repo")
 		return
 	}
-	h.emit(r, events.TopicDeploy, events.TypeRepoConnected, uid, orgID, map[string]any{
-		"repo_id": repo.ID, "project_id": projectID, "full_name": repo.FullName,
+	h.emit(r.Context(), events.TopicDeploy, events.TypeRepoConnected, middleware.UserIDFrom(r.Context()), orgID, map[string]any{
+		"repo_id": repo.ID, "project_id": projectID, "full_name": repo.FullName})
+	httpx.JSON(w, http.StatusCreated, map[string]any{
+		"repo":           repo,
+		"webhook_secret": p.WebhookSecret, // shown exactly once
+		"webhook_url":    h.webhookURLFor(repo.ID),
+		"webhook_note":   "Add this secret to the GitHub webhook of the repository (content type application/json, events: push, pull_request, check_suite, workflow_run), or press Install webhook. It cannot be shown again.",
 	})
-	httpx.JSON(w, http.StatusCreated, map[string]any{"repo": repo})
+}
+
+func firstNonEmpty(v ...string) string {
+	for _, s := range v {
+		if strings.TrimSpace(s) != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 func (h *Handler) ListRepos(w http.ResponseWriter, r *http.Request) {
-	uid := middleware.UserIDFrom(r.Context())
-	orgID := r.PathValue("orgId")
-	projectID := r.PathValue("projectId")
-	if !h.requireMember(w, r, orgID, uid) {
+	orgID, projectID, _, _, ok := h.projAuth(w, r, membership.LevelView)
+	if !ok {
 		return
 	}
 	list, err := h.Store.ListRepos(r.Context(), orgID, projectID)
@@ -442,14 +584,16 @@ func (h *Handler) ListRepos(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) DisconnectRepo(w http.ResponseWriter, r *http.Request) {
-	uid := middleware.UserIDFrom(r.Context())
-	orgID := r.PathValue("orgId")
-	projectID := r.PathValue("projectId")
-	repoID := r.PathValue("repoId")
-	if !h.requireMember(w, r, orgID, uid) {
+	orgID, projectID, _, _, ok := h.projAuth(w, r, membership.LevelManage)
+	if !ok {
 		return
 	}
-	if err := h.Store.DeleteRepo(r.Context(), orgID, projectID, repoID); errors.Is(err, store.ErrNotFound) {
+	id := r.PathValue("repoId")
+	if _, err := uuid.Parse(id); err != nil {
+		httpx.Error(w, http.StatusNotFound, "not_found", "repo not found")
+		return
+	}
+	if err := h.Store.DeleteRepo(r.Context(), orgID, projectID, id); errors.Is(err, store.ErrNotFound) {
 		httpx.Error(w, http.StatusNotFound, "not_found", "repo not found")
 		return
 	} else if err != nil {
@@ -459,376 +603,207 @@ func (h *Handler) DisconnectRepo(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// ---------------------------------------------------------------- deploy keys
+
+func keyJSON(k *store.DeployKey) map[string]any {
+	return map[string]any{"deploy_key": map[string]any{"id": k.ID, "project_id": k.ProjectID, "public_key": k.PublicKey, "key_type": k.KeyType, "created_at": k.CreatedAt}}
+}
+
+// GetDeployKey returns the PUBLIC key (generated on first use by an admin).
+func (h *Handler) GetDeployKey(w http.ResponseWriter, r *http.Request) {
+	orgID, projectID, _, acc, ok := h.projAuth(w, r, membership.LevelView)
+	if !ok {
+		return
+	}
+	k, err := h.Store.GetDeployKey(r.Context(), projectID)
+	if errors.Is(err, store.ErrNotFound) {
+		if !acc.Level(membership.AreaRepository).AtLeast(membership.LevelManage) {
+			httpx.Error(w, http.StatusNotFound, "not_found", "no deploy key generated yet; ask an admin")
+			return
+		}
+		k, err = h.Store.GetOrCreateDeployKey(r.Context(), orgID, projectID)
+	}
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "internal", "failed to obtain deploy key")
+		return
+	}
+	httpx.JSON(w, http.StatusOK, keyJSON(k))
+}
+
+func (h *Handler) RotateDeployKey(w http.ResponseWriter, r *http.Request) {
+	orgID, projectID, _, _, ok := h.projAuth(w, r, membership.LevelManage)
+	if !ok {
+		return
+	}
+	k, err := h.Store.RotateDeployKey(r.Context(), orgID, projectID)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "internal", "failed to rotate deploy key")
+		return
+	}
+	httpx.JSON(w, http.StatusOK, keyJSON(k))
+}
+
+// ---------------------------------------------------------------- internal
+
+func (h *Handler) InternalListRepos(w http.ResponseWriter, r *http.Request) {
+	list, err := h.Store.ListRepos(r.Context(), r.PathValue("orgId"), r.PathValue("projectId"))
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "internal", "failed")
+		return
+	}
+	out := make([]map[string]any, 0, len(list))
+	for _, rp := range list {
+		out = append(out, map[string]any{"id": rp.ID, "full_name": rp.FullName, "default_branch": rp.DefaultBranch, "allow_forks": rp.AllowForks, "root_dir": rp.RootDir})
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"repos": out})
+}
+
+// InternalCloneInfo hands the worker what it needs to clone ONE connection: the clean URL
+// plus a short-lived credential. Only the worker (internal token) can call it.
+func (h *Handler) InternalCloneInfo(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("repoId")
+	if _, err := uuid.Parse(id); err != nil {
+		httpx.Error(w, http.StatusNotFound, "not_found", "repo not found")
+		return
+	}
+	repo, token, err := h.Store.Credentials(r.Context(), id)
+	if errors.Is(err, store.ErrNotFound) {
+		httpx.Error(w, http.StatusNotFound, "not_found", "repo not found")
+		return
+	}
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "internal", "failed to load credentials")
+		return
+	}
+	if o := r.URL.Query().Get("org_id"); o != "" && o != repo.OrgID {
+		httpx.Error(w, http.StatusNotFound, "not_found", "repo not found")
+		return
+	}
+	if p := r.URL.Query().Get("project_id"); p != "" && p != repo.ProjectID {
+		httpx.Error(w, http.StatusNotFound, "not_found", "repo not found")
+		return
+	}
+	out := map[string]any{"clone_url": repo.CloneURL, "auth_type": repo.AuthType, "full_name": repo.FullName, "default_branch": repo.DefaultBranch, "root_dir": repo.RootDir}
+	switch repo.AuthType {
+	case "app":
+		if repo.InstallationID == nil || !h.appConfigured() {
+			httpx.Error(w, http.StatusBadGateway, "bad_gateway", "GitHub App unavailable")
+			return
+		}
+		t, err := h.GitHub.InstallationToken(r.Context(), *repo.InstallationID)
+		if err != nil {
+			httpx.Error(w, http.StatusBadGateway, "bad_gateway", "cannot mint installation token")
+			return
+		}
+		out["token"] = t
+	case "token":
+		out["token"] = token
+	case "deploy_key":
+		key, err := h.Store.DeployKeyPrivate(r.Context(), repo.ProjectID)
+		if err != nil {
+			httpx.Error(w, http.StatusBadGateway, "bad_gateway", "deploy key unavailable")
+			return
+		}
+		out["private_key"] = key
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	httpx.JSON(w, http.StatusOK, out)
+}
+
+// InternalDeployKey is kept for the worker's older call path; internal token only.
+func (h *Handler) InternalDeployKey(w http.ResponseWriter, r *http.Request) {
+	pid := r.PathValue("projectId")
+	if _, err := uuid.Parse(pid); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "bad_request", "invalid project id")
+		return
+	}
+	k, err := h.Store.GetDeployKey(r.Context(), pid)
+	if errors.Is(err, store.ErrNotFound) {
+		httpx.Error(w, http.StatusNotFound, "not_found", "deploy key not found")
+		return
+	}
+	priv, perr := h.Store.DeployKeyPrivate(r.Context(), pid)
+	if err != nil || perr != nil {
+		httpx.Error(w, http.StatusInternalServerError, "internal", "failed to fetch deploy key")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	httpx.JSON(w, http.StatusOK, map[string]any{"public_key": k.PublicKey, "private_key": priv, "key_type": k.KeyType})
+}
+
 func (h *Handler) InternalCommitStatus(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		FullName       string `json:"full_name"`
-		SHA            string `json:"sha"`
-		State          string `json:"state"`
-		Description    string `json:"description"`
-		TargetURL      string `json:"target_url"`
-		InstallationID string `json:"installation_id"`
+		FullName    string `json:"full_name"`
+		SHA         string `json:"sha"`
+		State       string `json:"state"`
+		Description string `json:"description"`
+		TargetURL   string `json:"target_url"`
 	}
 	if err := httpx.Decode(r, &req); err != nil {
 		httpx.Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
-	req.FullName = strings.TrimSpace(req.FullName)
-	req.SHA = strings.TrimSpace(req.SHA)
-	if req.FullName == "" || req.SHA == "" || req.SHA == "HEAD" {
-		httpx.JSON(w, http.StatusOK, map[string]any{"ok": true, "skipped": true, "reason": "missing sha or repo"})
+	if !fullNameRe.MatchString(req.FullName) || !regexp.MustCompile(`^[0-9a-fA-F]{7,64}$`).MatchString(req.SHA) {
+		httpx.JSON(w, http.StatusOK, map[string]any{"ok": true, "skipped": true, "reason": "missing or invalid sha/repo"})
 		return
 	}
 	if !h.appConfigured() {
-		if h.Log != nil {
-			h.Log.Info("commit status skipped (app not configured)", "repo", req.FullName, "sha", req.SHA, "state", req.State)
-		}
 		httpx.JSON(w, http.StatusOK, map[string]any{"ok": true, "skipped": true, "reason": "app_not_configured"})
 		return
 	}
-	instID := req.InstallationID
-	if instID == "" {
-		if id, err := h.Store.ResolveInstallationIDForRepo(r.Context(), req.FullName, ""); err == nil {
-			instID = id
-		}
-	}
-	if instID == "" {
+	inst, err := h.Store.InstallationForRepo(r.Context(), req.FullName)
+	if err != nil {
 		httpx.JSON(w, http.StatusOK, map[string]any{"ok": true, "skipped": true, "reason": "no_installation"})
 		return
 	}
-	desc := req.Description
-	if desc == "" {
-		desc = "jp deployment " + req.State
+	if req.Description == "" {
+		req.Description = "jp deployment " + req.State
 	}
-	if err := h.GitHub.CreateCommitStatus(r.Context(), instID, req.FullName, req.SHA, req.State, desc, req.TargetURL); err != nil {
-		if h.Log != nil {
-			h.Log.Warn("commit status failed", "err", err, "repo", req.FullName, "sha", req.SHA)
-		}
-		httpx.JSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
+	if err := h.GitHub.CreateCommitStatus(r.Context(), inst, req.FullName, req.SHA, req.State, req.Description, req.TargetURL); err != nil {
+		h.log().Warn("commit status failed", "repo", req.FullName, "err", err)
+		httpx.JSON(w, http.StatusOK, map[string]any{"ok": false, "error": "GitHub rejected the status"})
 		return
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (h *Handler) GitHubWebhook(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 2<<20))
+func (h *Handler) InternalDeleteProject(w http.ResponseWriter, r *http.Request) {
+	pid := r.PathValue("projectId")
+	if _, err := uuid.Parse(pid); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "bad_request", "invalid project id")
+		return
+	}
+	n, err := h.Store.DeleteProject(r.Context(), pid)
 	if err != nil {
-		httpx.Error(w, http.StatusBadRequest, "bad_request", "failed to read body")
+		httpx.Error(w, http.StatusInternalServerError, "internal", "cleanup failed")
 		return
 	}
-	sig := r.Header.Get("X-Hub-Signature-256")
-	secret := h.WebhookSecret
-	if secret == "" {
-		secret = "dev-webhook-secret"
-	}
-	if !verifyGitHubSignature(secret, body, sig) {
-		httpx.Error(w, http.StatusUnauthorized, "unauthorized", "invalid webhook signature")
-		return
-	}
-	event := r.Header.Get("X-GitHub-Event")
-	switch event {
-	case "ping":
-		httpx.JSON(w, http.StatusOK, map[string]any{"ok": true, "pong": true})
-		return
-	case "push":
-		h.handlePushWebhook(w, r, body)
-		return
-	case "pull_request":
-		h.handlePullRequestWebhook(w, r, body)
-		return
-	default:
-		httpx.JSON(w, http.StatusOK, map[string]any{"ok": true, "ignored": event})
-	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"repos_removed": n})
 }
 
-func (h *Handler) handlePushWebhook(w http.ResponseWriter, r *http.Request, body []byte) {
-	var payload struct {
-		Ref        string `json:"ref"`
-		After      string `json:"after"`
-		Deleted    bool   `json:"deleted"`
-		Repository struct {
-			FullName      string `json:"full_name"`
-			CloneURL      string `json:"clone_url"`
-			DefaultBranch string `json:"default_branch"`
-		} `json:"repository"`
-		HeadCommit struct {
-			ID      string `json:"id"`
-			Message string `json:"message"`
-		} `json:"head_commit"`
-	}
-	if err := json.Unmarshal(body, &payload); err != nil {
-		httpx.Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
-		return
-	}
-	if payload.Deleted || strings.HasPrefix(payload.Ref, "refs/tags/") {
-		httpx.JSON(w, http.StatusOK, map[string]any{"ok": true, "ignored": "deleted_or_tag"})
-		return
-	}
-	repos, err := h.Store.FindReposByFullName(r.Context(), payload.Repository.FullName)
-	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "internal", "lookup failed")
-		return
-	}
-	sha := payload.After
-	if sha == "" || sha == "0000000000000000000000000000000000000000" {
-		sha = payload.HeadCommit.ID
-	}
-	branch := strings.TrimPrefix(payload.Ref, "refs/heads/")
-	created := 0
-	for _, repo := range repos {
-		defaultBranch := repo.DefaultBranch
-		if defaultBranch == "" {
-			defaultBranch = payload.Repository.DefaultBranch
-		}
-		if defaultBranch == "" {
-			defaultBranch = "main"
-		}
-		isPreview := !strings.EqualFold(branch, defaultBranch)
-		gitBranch := branch
-		message := payload.HeadCommit.Message
-		source := "webhook"
-		if isPreview {
-			gitBranch = "preview/" + branch
-			if !strings.Contains(strings.ToLower(message), "[preview]") {
-				message = "[preview] " + message
-			}
-			source = "webhook-preview"
-		}
-		if h.createDeployFromGit(r.Context(), repo, sha, gitBranch,
-			firstNonEmpty(payload.Repository.CloneURL, repo.CloneURL), message, source) {
-			created++
-		}
-	}
-	h.emit(r, events.TopicDeploy, events.TypeGitPush, "", "", map[string]any{
-		"full_name": payload.Repository.FullName, "sha": sha, "branch": branch,
-		"repos_matched": len(repos), "deployments_created": created,
-	})
-	httpx.JSON(w, http.StatusOK, map[string]any{
-		"ok": true, "repos_matched": len(repos), "deployments_created": created, "received_at": time.Now().UTC(),
-	})
-}
-
-func (h *Handler) handlePullRequestWebhook(w http.ResponseWriter, r *http.Request, body []byte) {
-	var payload struct {
-		Action      string `json:"action"`
-		Number      int    `json:"number"`
-		PullRequest struct {
-			Title string `json:"title"`
-			Head  struct {
-				SHA string `json:"sha"`
-				Ref string `json:"ref"`
-			} `json:"head"`
-			HTMLURL string `json:"html_url"`
-		} `json:"pull_request"`
-		Repository struct {
-			FullName string `json:"full_name"`
-			CloneURL string `json:"clone_url"`
-		} `json:"repository"`
-	}
-	if err := json.Unmarshal(body, &payload); err != nil {
-		httpx.Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
-		return
-	}
-	switch payload.Action {
-	case "opened", "synchronize", "reopened":
-		// create preview deploy
-	case "closed":
-		h.teardownPreviewPR(w, r, payload.Repository.FullName, payload.Number)
-		return
-	default:
-		httpx.JSON(w, http.StatusOK, map[string]any{"ok": true, "ignored": payload.Action})
-		return
-	}
-	repos, err := h.Store.FindReposByFullName(r.Context(), payload.Repository.FullName)
-	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "internal", "lookup failed")
-		return
-	}
-	sha := payload.PullRequest.Head.SHA
-	gitBranch := fmt.Sprintf("preview/pr-%d", payload.Number)
-	message := fmt.Sprintf("[preview] PR #%d: %s", payload.Number, payload.PullRequest.Title)
-	created := 0
-	for _, repo := range repos {
-		if h.createDeployFromGit(r.Context(), repo, sha, gitBranch,
-			firstNonEmpty(payload.Repository.CloneURL, repo.CloneURL), message, "webhook-preview") {
-			created++
-		}
-	}
-	h.emit(r, events.TopicDeploy, events.TypeGitPush, "", "", map[string]any{
-		"full_name": payload.Repository.FullName, "sha": sha, "branch": gitBranch,
-		"pr": payload.Number, "repos_matched": len(repos), "deployments_created": created, "preview": true,
-	})
-	httpx.JSON(w, http.StatusOK, map[string]any{
-		"ok": true, "preview": true, "pr": payload.Number,
-		"repos_matched": len(repos), "deployments_created": created,
-	})
-}
-
-func (h *Handler) teardownPreviewPR(w http.ResponseWriter, r *http.Request, fullName string, prNumber int) {
-	gitBranch := fmt.Sprintf("preview/pr-%d", prNumber)
-	repos, err := h.Store.FindReposByFullName(r.Context(), fullName)
-	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "internal", "lookup failed")
-		return
-	}
-	torn := 0
-	if h.DeploymentURL != "" && h.HTTP != nil {
-		for _, repo := range repos {
-			body, _ := json.Marshal(map[string]any{
-				"org_id": repo.OrgID, "project_id": repo.ProjectID,
-				"full_name": fullName, "git_branch": gitBranch,
-			})
-			req, err := http.NewRequestWithContext(r.Context(), http.MethodPost,
-				strings.TrimRight(h.DeploymentURL, "/")+"/internal/preview/teardown",
-				bytes.NewReader(body))
-			if err != nil {
-				continue
-			}
-			req.Header.Set("Content-Type", "application/json")
-			resp, err := h.HTTP.Do(req)
-			if err != nil {
-				continue
-			}
-			_ = resp.Body.Close()
-			if resp.StatusCode < 300 {
-				torn++
-			}
-		}
-	}
-	h.emit(r, events.TopicDeploy, events.TypeGitPush, "", "", map[string]any{
-		"full_name": fullName, "branch": gitBranch, "pr": prNumber,
-		"teardown": true, "repos_matched": len(repos), "teardown_calls": torn,
-	})
-	httpx.JSON(w, http.StatusOK, map[string]any{
-		"ok": true, "teardown": true, "pr": prNumber, "git_branch": gitBranch,
-		"repos_matched": len(repos), "teardown_calls": torn,
-	})
-}
-
-func (h *Handler) createDeployFromGit(ctx context.Context, repo store.Repo, sha, branch, cloneURL, message, source string) bool {
-	if h.DeploymentURL == "" || h.HTTP == nil {
-		return false
-	}
-	reqBody, _ := json.Marshal(map[string]any{
-		"org_id":     repo.OrgID,
-		"project_id": repo.ProjectID,
-		"repo_id":    repo.ID,
-		"git_sha":    sha,
-		"git_branch": branch,
-		"clone_url":  cloneURL,
-		"full_name":  repo.FullName,
-		"message":    message,
-		"source":     source,
-	})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		strings.TrimRight(h.DeploymentURL, "/")+"/internal/deployments/from-git",
-		strings.NewReader(string(reqBody)))
-	if err != nil {
-		return false
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := h.HTTP.Do(req)
-	if err != nil {
-		return false
-	}
-	_ = resp.Body.Close()
-	return resp.StatusCode < 300
-}
-
-func (h *Handler) emit(r *http.Request, topic, typ, actorID, orgID string, payload map[string]any) {
+func (h *Handler) emit(ctx context.Context, topic, typ, actorID, orgID string, payload map[string]any) {
 	if h.Redis == nil {
 		return
 	}
-	env := events.New(topic, typ, actorID, orgID, payload)
-	_, _ = events.PublishJSON(r.Context(), h.Redis, topic, env)
+	_, _ = events.PublishJSON(ctx, h.Redis, topic, events.New(topic, typ, actorID, orgID, payload))
 }
 
-func verifyGitHubSignature(secret string, body []byte, header string) bool {
-	if header == "" || !strings.HasPrefix(header, "sha256=") {
-		return false
-	}
-	mac := hmac.New(sha256.New, []byte(secret))
-	_, _ = mac.Write(body)
-	expected := "sha256=" + hex.EncodeToString(mac.Sum(nil))
-	return hmac.Equal([]byte(expected), []byte(header))
-}
-
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if strings.TrimSpace(v) != "" {
-			return v
-		}
-	}
-	return ""
-}
-
-func (h *Handler) GetDeployKey(w http.ResponseWriter, r *http.Request) {
-	uid := middleware.UserIDFrom(r.Context())
-	orgID := r.PathValue("orgId")
-	projectID := r.PathValue("projectId")
-	if !h.requireMember(w, r, orgID, uid) {
-		return
-	}
-	key, err := h.Store.GetOrCreateDeployKey(r.Context(), orgID, projectID)
+func (h *Handler) internalPost(ctx context.Context, path string, body any) (int, error) {
+	raw, _ := json.Marshal(body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(h.DeploymentURL, "/")+path, bytes.NewReader(raw))
 	if err != nil {
-		h.Log.Error("get or create deploy key", "err", err)
-		httpx.Error(w, http.StatusInternalServerError, "internal", "failed to obtain deploy key")
-		return
+		return 0, err
 	}
-	httpx.JSON(w, http.StatusOK, map[string]any{
-		"deploy_key": map[string]any{
-			"id":         key.ID,
-			"project_id": key.ProjectID,
-			"public_key": key.PublicKey,
-			"key_type":   key.KeyType,
-			"created_at": key.CreatedAt,
-		},
-	})
-}
-
-func (h *Handler) RotateDeployKey(w http.ResponseWriter, r *http.Request) {
-	uid := middleware.UserIDFrom(r.Context())
-	orgID := r.PathValue("orgId")
-	projectID := r.PathValue("projectId")
-	if !h.requireMember(w, r, orgID, uid) {
-		return
+	req.Header.Set("Content-Type", "application/json")
+	hc := h.Internal
+	if hc == nil {
+		hc = internalauth.NewClient(20 * time.Second)
 	}
-	key, err := h.Store.RotateDeployKey(r.Context(), orgID, projectID)
+	resp, err := hc.Do(req)
 	if err != nil {
-		h.Log.Error("rotate deploy key", "err", err)
-		httpx.Error(w, http.StatusInternalServerError, "internal", "failed to rotate deploy key")
-		return
+		return 0, err
 	}
-	httpx.JSON(w, http.StatusOK, map[string]any{
-		"deploy_key": map[string]any{
-			"id":         key.ID,
-			"project_id": key.ProjectID,
-			"public_key": key.PublicKey,
-			"key_type":   key.KeyType,
-			"created_at": key.CreatedAt,
-		},
-	})
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+	return resp.StatusCode, nil
 }
-
-func (h *Handler) InternalGetDeployKey(w http.ResponseWriter, r *http.Request) {
-	projectID := r.PathValue("projectId")
-	if projectID == "" {
-		httpx.Error(w, http.StatusBadRequest, "bad_request", "project_id required")
-		return
-	}
-	key, err := h.Store.GetDeployKeyByProject(r.Context(), projectID)
-	if errors.Is(err, store.ErrNotFound) {
-		httpx.Error(w, http.StatusNotFound, "not_found", "deploy key not found")
-		return
-	}
-	if err != nil {
-		h.Log.Error("internal get deploy key", "err", err)
-		httpx.Error(w, http.StatusInternalServerError, "internal", "failed to fetch deploy key")
-		return
-	}
-	httpx.JSON(w, http.StatusOK, map[string]any{
-		"public_key":  key.PublicKey,
-		"private_key": key.PrivateKey,
-		"key_type":    key.KeyType,
-	})
-}
-

@@ -1,27 +1,69 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1.7
+#
+# Generic image for every Go service EXCEPT the worker (see Dockerfile.worker).
+#
+#   docker buildx build -f infra/docker/Dockerfile.service --build-arg SERVICE=gateway \
+#       --platform linux/amd64,linux/arm64 -t jp/gateway .
+#
+# * Cross-compiles on the build host (no QEMU) for linux/amd64 and linux/arm64.
+# * Final image: alpine + ca-certificates + tzdata only. No git, no ssh, no docker CLI.
+# * Runs as uid 10001 (non-root). The two services that need the Docker socket
+#   (runtime, worker) get the socket's group via compose `group_add`, not root.
+# * Build is reproducible: `go mod download` + `-mod=readonly` (no `go mod tidy`).
 
-FROM golang:1.22-alpine AS build
-WORKDIR /src
-RUN apk add --no-cache git ca-certificates
-ENV GOCACHE=/tmp/go-cache
-ENV GOMODCACHE=/tmp/go-mod
+ARG GO_VERSION=1.22.12
+ARG ALPINE_VERSION=3.21
 
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine${ALPINE_VERSION} AS build
 ARG SERVICE
+ARG TARGETOS=linux
+ARG TARGETARCH
+ARG VERSION=dev
+ARG COMMIT=unknown
+WORKDIR /src
+ENV CGO_ENABLED=0 GOFLAGS=-mod=readonly GOWORK=off GOTOOLCHAIN=local
 
+# Shared modules (every service has `replace ... => ../../packages/...`)
 COPY packages/go-common ./packages/go-common
 COPY packages/events ./packages/events
-COPY services/${SERVICE} ./services/${SERVICE}
-
+COPY services/${SERVICE}/go.mod services/${SERVICE}/go.sum ./services/${SERVICE}/
 WORKDIR /src/services/${SERVICE}
-RUN go mod tidy && CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /out/service ./cmd
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
 
-FROM alpine:3.20
-RUN apk add --no-cache ca-certificates tzdata git openssh-client && \
-    adduser -D -H -u 10001 jp
+COPY services/${SERVICE} /src/services/${SERVICE}
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}" -o /out/service ./cmd
+
+# The gateway serves the node agent (a tiny, dependency-free Go program) to servers that join the cluster, for both
+# CPU architectures. Every other service gets an empty directory.
+COPY services/node /src/services/node
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    mkdir -p /out/agents && \
+    if [ "$SERVICE" = "gateway" ]; then \
+      cd /src/services/node && \
+      for a in amd64 arm64; do \
+        GOOS=linux GOARCH=$a go build -trimpath -ldflags="-s -w" -o /out/agents/node-linux-$a ./cmd/node || exit 1; \
+      done; \
+    fi
+
+FROM alpine:3.21.3
+ARG SERVICE
+ARG VERSION=dev
+ARG COMMIT=unknown
+LABEL org.opencontainers.image.title="jp-${SERVICE}" \
+      org.opencontainers.image.source="https://github.com/zeeshan-890/cloud-plateform" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${COMMIT}"
+RUN apk add --no-cache ca-certificates tzdata && \
+    adduser -D -H -u 10001 -s /sbin/nologin jp
 WORKDIR /app
 COPY --from=build /out/service /app/service
-ARG SERVICE
+COPY --from=build /out/agents /app/agents
 COPY services/${SERVICE}/migrations /app/migrations
-ENV MIGRATIONS_DIR=/app/migrations
-USER jp
+ENV MIGRATIONS_DIR=/app/migrations PORT=8000
+USER 10001:10001
+# busybox wget is part of alpine; every service exposes GET /healthz on $PORT
+HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=5 \
+  CMD wget -qO /dev/null "http://127.0.0.1:${PORT}/healthz" || exit 1
 ENTRYPOINT ["/app/service"]

@@ -1,14 +1,3 @@
-﻿# Worker — Phase 3 build farm consumer
+﻿# worker (8008)
 
-Claims jobs from Redis Streams (`jp.build` / `jp-workers`).
-
-| Env | Default | Meaning |
-|-----|---------|---------|
-| `WORKER_CONCURRENCY` | `1` | Parallel builds **inside** one process |
-| `WORKER_NAME` | container hostname | Unique consumer id (set automatically when scaled) |
-| `BUILD_MODE` | `simulate` / sized by host | `docker` for real BuildKit |
-
-Scale replicas with Compose: `docker compose ... --scale worker=N` (or `scripts/jp-up.*`).
-Host sizing overlays set concurrency + mem/cpu limits — see `infra/compose/sizing/`.
-
-Claims jobs from Redis Stream `jp.build`, simulates or runs BuildKit builds, updates build + deployment status.
+Consumes `jp.build`. Validated clone (https/ssh, `--`, askpass token or pinned-host-key deploy key, exact SHA / PR head verified) -> jp.yaml -> Dockerfile (repo, jp.yaml or generated; undetectable projects fail) -> `docker buildx build` -> push (failure = failed build) -> Trivy (`trivy` binary; failures are `scan_unavailable`, never clean) -> report. A failed clone/build/push fails the deployment; no mock fallback. Tokens scrubbed from all logs. Stale jobs reclaimed after 10 min, dead-lettered after 3 deliveries, SIGTERM drains. `BUILD_MODE=docker` default; `simulate` explicit and labelled (refused in production).

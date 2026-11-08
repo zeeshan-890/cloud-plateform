@@ -1,27 +1,26 @@
+// Package miniox is the object backend. Production uses MinIO only; there is no simulate mode
+// reachable from the environment (Memory exists for unit tests and must be wired explicitly).
 package miniox
 
 import (
-	"bytes"
 	"context"
+	"crypto/sha256"
+	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
-// Backend abstracts object storage (MinIO or in-memory simulate).
-type Backend interface {
-	Mode() string
-	EnsureBucket(ctx context.Context, name string) error
-	Put(ctx context.Context, bucket, key, contentType string, body []byte) (etag string, size int64, err error)
-	List(ctx context.Context, bucket, prefix string) ([]ObjectInfo, error)
-	Delete(ctx context.Context, bucket, key string) error
-	SignedURL(ctx context.Context, bucket, key string, expiry time.Duration) (string, error)
-}
+// ErrNotFound is returned when an object does not exist.
+var ErrNotFound = errors.New("object not found")
 
 type ObjectInfo struct {
 	Key          string
@@ -31,156 +30,216 @@ type ObjectInfo struct {
 	LastModified time.Time
 }
 
-type simulateBackend struct {
-	objects map[string]map[string]simObj
+// Backend abstracts object storage.
+type Backend interface {
+	Name() string
+	EnsureBucket(ctx context.Context, name string) error
+	// Put streams r into the object; size < 0 means unknown. It returns the stored size.
+	Put(ctx context.Context, bucket, key, contentType string, r io.Reader, size int64) (etag string, stored int64, err error)
+	Get(ctx context.Context, bucket, key string) (io.ReadCloser, ObjectInfo, error)
+	Delete(ctx context.Context, bucket, key string) error
+	// DeleteBucket removes every object and then the bucket.
+	DeleteBucket(ctx context.Context, bucket string) error
+	// SignedURL presigns a GET. publicBase (scheme://host) replaces the host when set: the signature
+	// only validates if MinIO is really reachable on that host.
+	SignedURL(ctx context.Context, bucket, key string, expiry time.Duration, publicBase string) (string, error)
 }
 
-type simObj struct {
-	Data        []byte
-	ContentType string
-	ETag        string
-	UpdatedAt   time.Time
+// Config for the MinIO backend.
+type Config struct {
+	Endpoint, AccessKey, SecretKey string
+	UseSSL                         bool
 }
 
-func NewFromEnv() (Backend, error) {
-	mode := strings.ToLower(strings.TrimSpace(os.Getenv("STORAGE_MODE")))
-	if mode == "" {
-		mode = "simulate"
+// ConfigFromEnv reads MINIO_*; credentials are mandatory and must not be the well known defaults in production.
+func ConfigFromEnv() (Config, error) {
+	c := Config{
+		Endpoint:  os.Getenv("MINIO_ENDPOINT"),
+		AccessKey: os.Getenv("MINIO_ACCESS_KEY"),
+		SecretKey: os.Getenv("MINIO_SECRET_KEY"),
+		UseSSL:    strings.EqualFold(os.Getenv("MINIO_USE_SSL"), "true"),
 	}
-	if mode == "simulate" {
-		return &simulateBackend{objects: map[string]map[string]simObj{}}, nil
+	if c.Endpoint == "" {
+		return c, errors.New("MINIO_ENDPOINT is required")
 	}
-
-	endpoint := os.Getenv("MINIO_ENDPOINT")
-	if endpoint == "" {
-		endpoint = "localhost:9000"
+	if c.AccessKey == "" || c.SecretKey == "" {
+		return c, errors.New("MINIO_ACCESS_KEY and MINIO_SECRET_KEY are required (no default credentials)")
 	}
-	access := os.Getenv("MINIO_ACCESS_KEY")
-	if access == "" {
-		access = "minioadmin"
-	}
-	secret := os.Getenv("MINIO_SECRET_KEY")
-	if secret == "" {
-		secret = "minioadmin"
-	}
-	useSSL := strings.EqualFold(os.Getenv("MINIO_USE_SSL"), "true")
-
-	client, err := minio.New(endpoint, &minio.Options{
-		Creds:  credentials.NewStaticV4(access, secret, ""),
-		Secure: useSSL,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("minio client: %w", err)
-	}
-	// Probe; fall back to simulate if MinIO unreachable
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	_, err = client.ListBuckets(ctx)
-	if err != nil {
-		return &simulateBackend{objects: map[string]map[string]simObj{}}, nil
-	}
-	return &minioBackend{client: client, publicBase: os.Getenv("MINIO_PUBLIC_URL")}, nil
-}
-
-func (s *simulateBackend) Mode() string { return "simulate" }
-
-func (s *simulateBackend) EnsureBucket(_ context.Context, name string) error {
-	if s.objects[name] == nil {
-		s.objects[name] = map[string]simObj{}
-	}
-	return nil
-}
-
-func (s *simulateBackend) Put(_ context.Context, bucket, key, contentType string, body []byte) (string, int64, error) {
-	if s.objects[bucket] == nil {
-		s.objects[bucket] = map[string]simObj{}
-	}
-	etag := fmt.Sprintf("sim-%d", len(body))
-	s.objects[bucket][key] = simObj{Data: append([]byte(nil), body...), ContentType: contentType, ETag: etag, UpdatedAt: time.Now().UTC()}
-	return etag, int64(len(body)), nil
-}
-
-func (s *simulateBackend) List(_ context.Context, bucket, prefix string) ([]ObjectInfo, error) {
-	m := s.objects[bucket]
-	out := []ObjectInfo{}
-	for k, v := range m {
-		if prefix != "" && !strings.HasPrefix(k, prefix) {
-			continue
+	if strings.EqualFold(os.Getenv("JP_ENV"), "production") {
+		if c.AccessKey == "minioadmin" || c.SecretKey == "minioadmin" || len(c.SecretKey) < 16 {
+			return c, errors.New("refusing to start: MinIO credentials must be random (>=16 char secret, not minioadmin) in production")
 		}
-		out = append(out, ObjectInfo{Key: k, Size: int64(len(v.Data)), ContentType: v.ContentType, ETag: v.ETag, LastModified: v.UpdatedAt})
 	}
-	return out, nil
-}
-
-func (s *simulateBackend) Delete(_ context.Context, bucket, key string) error {
-	if m := s.objects[bucket]; m != nil {
-		delete(m, key)
-	}
-	return nil
-}
-
-func (s *simulateBackend) SignedURL(_ context.Context, bucket, key string, expiry time.Duration) (string, error) {
-	u := url.URL{
-		Scheme:   "http",
-		Host:     "localhost:9000",
-		Path:     fmt.Sprintf("/%s/%s", bucket, key),
-		RawQuery: fmt.Sprintf("simulate=1&expires=%d", int(expiry.Seconds())),
-	}
-	return u.String(), nil
+	return c, nil
 }
 
 type minioBackend struct {
-	client     *minio.Client
-	publicBase string
+	client *minio.Client
+	cfg    Config
 }
 
-func (m *minioBackend) Mode() string { return "minio" }
+// NewMinIO connects and verifies the credentials by listing buckets.
+func NewMinIO(ctx context.Context, c Config) (Backend, error) {
+	client, err := minio.New(c.Endpoint, &minio.Options{Creds: credentials.NewStaticV4(c.AccessKey, c.SecretKey, ""), Secure: c.UseSSL})
+	if err != nil {
+		return nil, fmt.Errorf("minio client: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if _, err := client.ListBuckets(ctx); err != nil {
+		return nil, fmt.Errorf("minio unreachable or credentials rejected: %w", err)
+	}
+	return &minioBackend{client: client, cfg: c}, nil
+}
+
+func (m *minioBackend) Name() string { return "minio" }
 
 func (m *minioBackend) EnsureBucket(ctx context.Context, name string) error {
-	exists, err := m.client.BucketExists(ctx, name)
+	ok, err := m.client.BucketExists(ctx, name)
 	if err != nil {
 		return err
 	}
-	if exists {
+	if ok {
 		return nil
 	}
 	return m.client.MakeBucket(ctx, name, minio.MakeBucketOptions{})
 }
 
-func (m *minioBackend) Put(ctx context.Context, bucket, key, contentType string, body []byte) (string, int64, error) {
-	info, err := m.client.PutObject(ctx, bucket, key, bytes.NewReader(body), int64(len(body)), minio.PutObjectOptions{ContentType: contentType})
+func (m *minioBackend) Put(ctx context.Context, bucket, key, contentType string, r io.Reader, size int64) (string, int64, error) {
+	info, err := m.client.PutObject(ctx, bucket, key, r, size, minio.PutObjectOptions{ContentType: contentType})
 	if err != nil {
 		return "", 0, err
 	}
 	return info.ETag, info.Size, nil
 }
 
-func (m *minioBackend) List(ctx context.Context, bucket, prefix string) ([]ObjectInfo, error) {
-	out := []ObjectInfo{}
-	for obj := range m.client.ListObjects(ctx, bucket, minio.ListObjectsOptions{Prefix: prefix, Recursive: true}) {
-		if obj.Err != nil {
-			return nil, obj.Err
-		}
-		out = append(out, ObjectInfo{Key: obj.Key, Size: obj.Size, ContentType: obj.ContentType, ETag: obj.ETag, LastModified: obj.LastModified})
+func (m *minioBackend) Get(ctx context.Context, bucket, key string) (io.ReadCloser, ObjectInfo, error) {
+	obj, err := m.client.GetObject(ctx, bucket, key, minio.GetObjectOptions{})
+	if err != nil {
+		return nil, ObjectInfo{}, err
 	}
-	return out, nil
+	st, err := obj.Stat()
+	if err != nil {
+		_ = obj.Close()
+		if minio.ToErrorResponse(err).Code == "NoSuchKey" {
+			return nil, ObjectInfo{}, ErrNotFound
+		}
+		return nil, ObjectInfo{}, err
+	}
+	return obj, ObjectInfo{Key: key, Size: st.Size, ContentType: st.ContentType, ETag: st.ETag, LastModified: st.LastModified}, nil
 }
 
 func (m *minioBackend) Delete(ctx context.Context, bucket, key string) error {
 	return m.client.RemoveObject(ctx, bucket, key, minio.RemoveObjectOptions{})
 }
 
-func (m *minioBackend) SignedURL(ctx context.Context, bucket, key string, expiry time.Duration) (string, error) {
-	u, err := m.client.PresignedGetObject(ctx, bucket, key, expiry, nil)
+func (m *minioBackend) DeleteBucket(ctx context.Context, bucket string) error {
+	ok, err := m.client.BucketExists(ctx, bucket)
+	if err != nil || !ok {
+		return err
+	}
+	objs := m.client.ListObjects(ctx, bucket, minio.ListObjectsOptions{Recursive: true})
+	for e := range m.client.RemoveObjects(ctx, bucket, objs, minio.RemoveObjectsOptions{}) {
+		if e.Err != nil {
+			return e.Err
+		}
+	}
+	return m.client.RemoveBucket(ctx, bucket)
+}
+
+func (m *minioBackend) SignedURL(ctx context.Context, bucket, key string, expiry time.Duration, publicBase string) (string, error) {
+	client := m.client
+	if publicBase != "" {
+		// The signature covers the Host header, so sign FOR the public host (offline: fixed region).
+		b, err := url.Parse(publicBase)
+		if err != nil || b.Host == "" {
+			return "", fmt.Errorf("invalid STORAGE_PUBLIC_URL")
+		}
+		client, err = minio.New(b.Host, &minio.Options{Creds: credentials.NewStaticV4(m.cfg.AccessKey, m.cfg.SecretKey, ""),
+			Secure: b.Scheme == "https", Region: "us-east-1"})
+		if err != nil {
+			return "", err
+		}
+	}
+	u, err := client.PresignedGetObject(ctx, bucket, key, expiry, nil)
 	if err != nil {
 		return "", err
 	}
-	if m.publicBase != "" {
-		base, err := url.Parse(m.publicBase)
-		if err == nil {
-			u.Scheme = base.Scheme
-			u.Host = base.Host
-		}
-	}
 	return u.String(), nil
+}
+
+// ------------------------------------------------------------------ in-memory backend (tests only)
+
+type memObj struct {
+	data []byte
+	ct   string
+	at   time.Time
+}
+
+// Memory is an in-process Backend for unit tests. It is never constructed from the environment.
+type Memory struct {
+	mu      sync.Mutex
+	Buckets map[string]map[string]memObj
+}
+
+func NewMemory() *Memory { return &Memory{Buckets: map[string]map[string]memObj{}} }
+
+func (m *Memory) Name() string { return "memory(test)" }
+func (m *Memory) EnsureBucket(_ context.Context, name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Buckets[name] == nil {
+		m.Buckets[name] = map[string]memObj{}
+	}
+	return nil
+}
+func (m *Memory) Put(_ context.Context, bucket, key, ct string, r io.Reader, size int64) (string, int64, error) {
+	b, err := io.ReadAll(r)
+	if err != nil {
+		return "", 0, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Buckets[bucket] == nil {
+		return "", 0, errors.New("no such bucket")
+	}
+	m.Buckets[bucket][key] = memObj{data: b, ct: ct, at: time.Now()}
+	sum := sha256.Sum256(b)
+	return fmt.Sprintf("%x", sum[:8]), int64(len(b)), nil
+}
+func (m *Memory) Get(_ context.Context, bucket, key string) (io.ReadCloser, ObjectInfo, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	o, ok := m.Buckets[bucket][key]
+	if !ok {
+		return nil, ObjectInfo{}, ErrNotFound
+	}
+	return io.NopCloser(strings.NewReader(string(o.data))), ObjectInfo{Key: key, Size: int64(len(o.data)), ContentType: o.ct, LastModified: o.at}, nil
+}
+func (m *Memory) Delete(_ context.Context, bucket, key string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.Buckets[bucket], key)
+	return nil
+}
+func (m *Memory) DeleteBucket(_ context.Context, bucket string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.Buckets, bucket)
+	return nil
+}
+func (m *Memory) SignedURL(_ context.Context, bucket, key string, expiry time.Duration, publicBase string) (string, error) {
+	return fmt.Sprintf("%s/%s/%s?expires=%d", strings.TrimRight(publicBase, "/"), bucket, key, int(expiry.Seconds())), nil
+}
+
+// Keys lists the keys of a bucket (tests).
+func (m *Memory) Keys(bucket string) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var ks []string
+	for k := range m.Buckets[bucket] {
+		ks = append(ks, k)
+	}
+	sort.Strings(ks)
+	return ks
 }

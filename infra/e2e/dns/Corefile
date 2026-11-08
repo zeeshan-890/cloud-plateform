@@ -1,0 +1,15 @@
+# Test DNS server for the end-to-end suite (docker-compose.e2e.yml).
+#
+# * Authoritative ONLY for the zones found in ./zones (files named db.<zone>); everything else is REFUSED/NXDOMAIN,
+#   so the e2e run never depends on (or leaks to) public DNS.
+# * The `auto` plugin rescans the directory every 2s: drop in / edit / remove db.<zone> files and the
+#   changes are served within a few seconds. Bump the SOA serial on every edit (scripts/e2e-dns.sh does).
+.:53 {
+    errors
+    log
+    auto {
+        directory /zones db\.(.*) {1}
+        reload 2s
+    }
+    # no forwarder on purpose: unknown names are NXDOMAIN
+}

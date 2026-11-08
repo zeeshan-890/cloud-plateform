@@ -57,58 +57,57 @@ func (s *Store) List(ctx context.Context, orgID, projectID string) ([]Image, err
 	return out, rows.Err()
 }
 
-// DeleteOrphans removes image metadata older than cutoff, keeping the newest
-// image per project and any refs in keepRefs. Returns deleted count.
-func (s *Store) DeleteOrphans(ctx context.Context, olderThan time.Time, keepRefs map[string]struct{}) (int, error) {
-	if keepRefs == nil {
-		keepRefs = map[string]struct{}{}
-	}
-	// Protect latest image per project
-	rowsKeep, err := s.pool.Query(ctx, `
-		SELECT DISTINCT ON (org_id, project_id) image_ref
-		FROM images ORDER BY org_id, project_id, created_at DESC
-	`)
+// Candidates returns images that may be removed: older than olderThan, not among the
+// newest keepPerProject images of their project and not in keepRefs.
+func (s *Store) Candidates(ctx context.Context, olderThan time.Time, keepPerProject int, keepRefs map[string]struct{}) ([]Image, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, org_id, project_id, image_ref, framework, git_sha, created_at FROM (
+			SELECT *, ROW_NUMBER() OVER (PARTITION BY project_id ORDER BY created_at DESC) AS rn FROM images
+		) t WHERE rn > $1 AND created_at < $2 ORDER BY created_at LIMIT 500
+	`, keepPerProject, olderThan)
 	if err != nil {
-		return 0, err
-	}
-	defer rowsKeep.Close()
-	for rowsKeep.Next() {
-		var ref string
-		if err := rowsKeep.Scan(&ref); err != nil {
-			return 0, err
-		}
-		keepRefs[ref] = struct{}{}
-	}
-	if err := rowsKeep.Err(); err != nil {
-		return 0, err
-	}
-
-	rows, err := s.pool.Query(ctx, `SELECT id, image_ref FROM images WHERE created_at < $1`, olderThan)
-	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	defer rows.Close()
-	var ids []string
+	var out []Image
 	for rows.Next() {
-		var id, ref string
-		if err := rows.Scan(&id, &ref); err != nil {
-			return 0, err
+		var i Image
+		if err := rows.Scan(&i.ID, &i.OrgID, &i.ProjectID, &i.ImageRef, &i.Framework, &i.GitSHA, &i.CreatedAt); err != nil {
+			return nil, err
 		}
-		if _, ok := keepRefs[ref]; ok {
-			continue
+		if _, keep := keepRefs[i.ImageRef]; !keep {
+			out = append(out, i)
 		}
-		ids = append(ids, id)
 	}
-	if err := rows.Err(); err != nil {
-		return 0, err
+	return out, rows.Err()
+}
+
+// ListAllByProject returns every image of a project.
+func (s *Store) ListAllByProject(ctx context.Context, projectID string) ([]Image, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id, org_id, project_id, image_ref, framework, git_sha, created_at FROM images WHERE project_id=$1`, projectID)
+	if err != nil {
+		return nil, err
 	}
-	n := 0
-	for _, id := range ids {
-		tag, err := s.pool.Exec(ctx, `DELETE FROM images WHERE id=$1`, id)
-		if err != nil {
-			continue
+	defer rows.Close()
+	var out []Image
+	for rows.Next() {
+		var i Image
+		if err := rows.Scan(&i.ID, &i.OrgID, &i.ProjectID, &i.ImageRef, &i.Framework, &i.GitSHA, &i.CreatedAt); err != nil {
+			return nil, err
 		}
-		n += int(tag.RowsAffected())
+		out = append(out, i)
 	}
-	return n, nil
+	return out, rows.Err()
+}
+
+// Delete removes one metadata row.
+func (s *Store) Delete(ctx context.Context, id string) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM images WHERE id=$1`, id)
+	return err
+}
+
+// DeleteByRef removes the metadata of one image ref of a project.
+func (s *Store) DeleteByRef(ctx context.Context, projectID, ref string) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM images WHERE project_id=$1 AND image_ref=$2`, projectID, ref)
+	return err
 }

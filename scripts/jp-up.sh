@@ -1,48 +1,65 @@
 #!/usr/bin/env bash
-# Starts jp with host-aware resource overlay + worker scale.
-# Usage: ./scripts/jp-up.sh [profiles] [size]
-#   ./scripts/jp-up.sh
-#   ./scripts/jp-up.sh platform,ui,data
-#   ./scripts/jp-up.sh platform,ui,data,monitoring large
+# Start (or update) the stack with the right compose files for this host.
+#
+#   scripts/jp-up.sh                    production stack, sizing overlay from scripts/size-host.sh
+#   scripts/jp-up.sh --dev              + docker-compose.dev.yml and dev.env defaults (local development only)
+#   scripts/jp-up.sh --monitoring       enable prometheus/grafana/loki/tempo/promtail (persisted in .env COMPOSE_PROFILES)
+#   scripts/jp-up.sh --no-monitoring    disable them again
+#   scripts/jp-up.sh --e2e              + test DNS server (docker-compose.e2e.yml)
+#   scripts/jp-up.sh --size medium      force a sizing tier (default: auto)
+#   scripts/jp-up.sh --no-build         do not rebuild images
+#   scripts/jp-up.sh --wait             wait until every container is healthy
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-cd "$ROOT"
+# shellcheck source=scripts/lib.sh
+source "$ROOT/scripts/lib.sh"
 
-PROFILES_ARG="${1:-}"
-SIZE="${2:-auto}"
-
-"$ROOT/scripts/size-host.sh" "$SIZE"
-
-if [[ ! -f .env ]]; then
-  cp .env.example .env
-  echo "created .env from .env.example"
-fi
-
-# shellcheck disable=SC1091
-set -a
-# shellcheck source=/dev/null
-source .env.resources
-set +a
-
-TIER="${JP_SIZE}"
-OVERLAY="${COMPOSE_SIZING_FILE}"
-REPLICAS="${WORKER_REPLICAS:-1}"
-PROFILES="${PROFILES_ARG:-$JP_SUGGESTED_PROFILES}"
-
-ARGS=(-f infra/compose/docker-compose.yml -f "$OVERLAY" --env-file .env --env-file .env.resources)
-IFS=',' read -ra PARTS <<< "$PROFILES"
-for p in "${PARTS[@]}"; do
-  p="$(echo "$p" | xargs)"
-  [[ -n "$p" && "$p" != "core" ]] && ARGS+=(--profile "$p")
+SIZE=auto
+BUILD=1
+WAIT=0
+MON=""
+while (($#)); do
+  case "$1" in
+    --dev) export JP_DEV=1 ;;
+    --e2e) export JP_E2E=1 ;;
+    --monitoring) MON=on ;;
+    --no-monitoring) MON=off ;;
+    --size) SIZE="${2:?--size needs a value}"; shift ;;
+    --no-build) BUILD=0 ;;
+    --wait) WAIT=1 ;;
+    -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) die "unknown option: $1 (see --help)" ;;
+  esac
+  shift
 done
 
-UP=(up -d --build)
-[[ "$REPLICAS" -gt 1 ]] && UP+=(--scale "worker=$REPLICAS")
+cd "$ROOT"
+if [[ ! -f .env && -z "${JP_DEV:-}" ]]; then
+  die ".env not found - run ./install.sh first (or use --dev for local development)"
+fi
+"$ROOT/scripts/size-host.sh" "$SIZE"
 
-echo "docker compose ${ARGS[*]} ${UP[*]}"
-docker compose "${ARGS[@]}" "${UP[@]}"
+if [[ -n "$MON" && -f .env ]]; then
+  profiles="$(env_get COMPOSE_PROFILES || true)"
+  if [[ "$MON" == on ]]; then
+    [[ ",$profiles," == *",monitoring,"* ]] || profiles="${profiles:+$profiles,}monitoring"
+    if [[ -z "$(env_get GRAFANA_ADMIN_PASSWORD || true)" ]]; then
+      env_set GRAFANA_ADMIN_PASSWORD "$(openssl rand -hex 12)"
+      log "generated GRAFANA_ADMIN_PASSWORD in .env"
+    fi
+  else
+    profiles="$(printf '%s' ",$profiles," | sed 's/,monitoring,/,/; s/^,//; s/,$//')"
+  fi
+  env_set COMPOSE_PROFILES "$profiles"
+fi
+if [[ -n "${JP_DEV:-}" && -z "$MON" ]]; then export COMPOSE_PROFILES="${COMPOSE_PROFILES:-dev}"; fi
 
-echo ""
-echo "jp is up — size=$TIER workers×$REPLICAS profiles=$PROFILES"
-echo "API:         http://localhost:${GATEWAY_PORT:-8000}/api/v1"
-echo "Web Console: http://localhost:${DASHBOARD_PORT:-3000}"
+REPLICAS="$(env_get WORKER_REPLICAS "$ROOT/.env.resources" || echo 1)"
+UP=(up -d --remove-orphans)
+if ((BUILD)); then UP+=(--build); fi
+if ((REPLICAS > 1)); then UP+=(--scale "worker=$REPLICAS"); fi
+
+log "docker compose ${UP[*]}"
+jp_compose "${UP[@]}"
+if ((WAIT)); then jp_wait_healthy 300 || exit 1; fi
+ok "stack is up (size=$(env_get JP_SIZE "$ROOT/.env.resources"), workers x$REPLICAS)"

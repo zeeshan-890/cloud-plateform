@@ -107,5 +107,3 @@ const CleanupConsumerGroup = "jp-cleanup"
 // Consumer group for Phase-6 background / cron jobs on jp.jobs.
 const JobsConsumerGroup = "jp-jobs"
 
-// Consumer group for Phase-7 billing usage metering.
-const BillingConsumerGroup = "jp-billing"

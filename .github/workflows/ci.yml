@@ -6,54 +6,196 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test-go:
-    name: Test Go Services & Packages
+  go:
+    name: Go (vet, gofmt, test -race)
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: "1.22"
           cache: true
-
-      - name: Run Go Unit Tests
+          cache-dependency-path: |
+            **/go.sum
+      - name: gofmt
         run: |
-          go test -v -race ./packages/...
-          go test -v -race ./services/...
-          go test -v -race ./apps/cli/...
+          out="$(gofmt -l apps packages services e2e 2>/dev/null | grep -v '/node_modules/' || true)"
+          if [ -n "$out" ]; then echo "gofmt needed on:"; echo "$out"; exit 1; fi
+      # `go test ./services/...` from the repo root does NOT work with go.work (each service is its own module and the
+      # pattern matches no workspace module), so every module listed in `use (...)` is tested from its own directory.
+      - name: vet + test -race (every module in go.work)
+        run: |
+          set -euo pipefail
+          mapfile -t MODULES < <(awk '/^use \(/{u=1;next} u&&/^\)/{u=0} u{gsub(/[ \t\r]/,""); if ($0!="") print}' go.work)
+          echo "modules: ${#MODULES[@]}"
+          fail=0
+          for m in "${MODULES[@]}"; do
+            echo "::group::$m"
+            (cd "$m" && go vet ./... && go test -race -count=1 ./...) || { echo "::error::$m failed"; fail=1; }
+            echo "::endgroup::"
+          done
+          exit $fail
+      - name: e2e module builds (tests need a deployed platform and skip otherwise)
+        run: cd e2e && GOWORK=off go vet ./...
+      - name: services build without go.work (what the Dockerfile does)
+        run: |
+          set -euo pipefail
+          for d in services/*/; do
+            [ -f "$d/go.mod" ] || continue
+            (cd "$d" && GOWORK=off GOFLAGS=-mod=readonly go build -o /dev/null ./cmd) || { echo "::error::$d does not build standalone"; exit 1; }
+          done
 
-  build-frontend:
-    name: Build Next.js Dashboard
+  govulncheck:
+    name: govulncheck
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
-          node-version: 20
-          cache: 'npm'
+          go-version: stable
+          cache: true
+          cache-dependency-path: |
+            **/go.sum
+      - name: install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+      - name: scan every module
+        run: |
+          set -euo pipefail
+          mapfile -t MODULES < <(awk '/^use \(/{u=1;next} u&&/^\)/{u=0} u{gsub(/[ \t\r]/,""); if ($0!="") print}' go.work)
+          fail=0
+          for m in "${MODULES[@]}"; do
+            echo "::group::$m"
+            (cd "$m" && "$(go env GOPATH)/bin/govulncheck" ./...) || { echo "::error::vulnerabilities in $m"; fail=1; }
+            echo "::endgroup::"
+          done
+          exit $fail
+
+  dashboard:
+    name: Dashboard (lint, tsc, build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/dashboard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
           cache-dependency-path: apps/dashboard/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npx tsc --noEmit
+      - run: npm run build
 
-      - name: Install dependencies
-        working-directory: apps/dashboard
-        run: npm ci
-
-      - name: Build Dashboard
-        working-directory: apps/dashboard
-        run: npm run build
-
-  validate-compose:
-    name: Validate Docker Compose Configurations
+  compose:
+    name: Compose config + env contract
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - name: production file (dev.env only supplies throwaway values so interpolation succeeds)
+        run: docker compose -f infra/compose/docker-compose.yml --env-file infra/compose/dev.env config --quiet
+      - name: production file fails without secrets (required variables are really required)
+        run: |
+          if docker compose -f infra/compose/docker-compose.yml config --quiet 2>/dev/null; then
+            echo "::error::compose accepted an empty environment - a required variable has a default"; exit 1
+          fi
+      - name: every combination
+        run: |
+          set -euo pipefail
+          B="-f infra/compose/docker-compose.yml"
+          E="--env-file infra/compose/dev.env"
+          for size in small medium large xlarge; do
+            docker compose $B -f infra/compose/sizing/$size.yml $E --profile monitoring config --quiet
+          done
+          docker compose $B -f infra/compose/docker-compose.dev.yml $E --profile dev --profile monitoring config --quiet
+          docker compose $B -f infra/compose/docker-compose.e2e.yml $E config --quiet
+          docker compose $B -f infra/compose/docker-compose.dev.yml -f infra/compose/docker-compose.e2e.yml $E config --quiet
+      - name: no production defaults for secrets
+        run: |
+          if grep -nE 'dev-secret-change-me|jp_dev_password|dev-webhook-secret|minioadmin' infra/compose/docker-compose.yml; then
+            echo "::error::insecure fallback value in the production compose file"; exit 1
+          fi
+      - name: no publicly published datastore ports
+        run: |
+          docker compose -f infra/compose/docker-compose.yml --env-file infra/compose/dev.env --profile monitoring config --format json |
+            python3 -c '
+          import json,sys
+          cfg=json.load(sys.stdin); bad=[]
+          for n,s in cfg["services"].items():
+              for p in s.get("ports",[]) or []:
+                  host=p.get("host_ip","")
+                  if n in ("traefik",) and p["target"] in (80,443): continue
+                  if n=="dashboard": continue
+                  if host!="127.0.0.1": bad.append((n,p))
+          if bad: print("publicly bound ports:",bad); sys.exit(1)'
+      - name: env vars read by Go code are present in compose and documented
+        run: scripts/verify-env.sh
 
-      - name: Validate Root Compose
-        run: docker compose -f infra/compose/docker-compose.yml config --quiet
+  shell:
+    name: shellcheck + PowerShell parse
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: |
+          shellcheck --version
+          shellcheck -x -S warning install.sh uninstall.sh scripts/*.sh
+      - name: bash -n
+        run: for f in install.sh uninstall.sh scripts/*.sh; do bash -n "$f"; done
+      - name: PowerShell parse check
+        shell: pwsh
+        run: |
+          foreach ($f in (Get-ChildItem -Path . -Recurse -Include *.ps1 | Where-Object { $_.FullName -notmatch 'node_modules' })) {
+            $errors = $null; $tokens = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count) { $errors | ForEach-Object { Write-Error "$($f.Name): $($_.Message)" }; exit 1 }
+          }
+
+  known-hosts:
+    name: pinned GitHub SSH host keys are current
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          curl -fsS https://api.github.com/meta | python3 -c '
+          import json,sys
+          for k in json.load(sys.stdin)["ssh_keys"]: print("github.com "+k)' | sort >/tmp/live
+          sort infra/docker/github_known_hosts >/tmp/pinned
+          diff /tmp/pinned /tmp/live || { echo "::error::infra/docker/github_known_hosts is out of date with https://api.github.com/meta"; exit 1; }
+
+  images:
+    name: Build image (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: gateway,      file: infra/docker/Dockerfile.service, context: ., service: gateway }
+          - { target: runtime,      file: infra/docker/Dockerfile.service, context: ., service: runtime }
+          - { target: secret,       file: infra/docker/Dockerfile.service, context: ., service: secret }
+          - { target: domain,       file: infra/docker/Dockerfile.service, context: ., service: domain }
+          - { target: worker,       file: infra/docker/Dockerfile.worker,  context: ., service: "" }
+          - { target: dashboard,    file: apps/dashboard/Dockerfile,       context: apps/dashboard, service: "" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: build (linux/amd64, not pushed)
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          build-args: |
+            SERVICE=${{ matrix.service }}
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha,scope=${{ matrix.target }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.target }}

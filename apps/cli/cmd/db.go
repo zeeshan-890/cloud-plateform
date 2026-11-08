@@ -51,7 +51,7 @@ var dbListCmd = &cobra.Command{
 
 var dbCreateCmd = &cobra.Command{
 	Use:   "create <name>",
-	Short: "Provision a Postgres database (schema-per-db or simulate)",
+	Short: "Provision a managed Postgres database (dedicated container)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		client, cfg, err := newClient()

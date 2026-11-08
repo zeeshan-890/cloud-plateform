@@ -1,43 +1,70 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
-	"strings"
 
+	"github.com/google/uuid"
 	"github.com/jp-cloud/go-common/httpx"
+	"github.com/jp-cloud/go-common/internalauth"
 	jwtutil "github.com/jp-cloud/go-common/jwt"
+	"github.com/jp-cloud/go-common/membership"
 	"github.com/jp-cloud/go-common/middleware"
-	"github.com/jp-cloud/scheduler/internal/cluster"
 	"github.com/jp-cloud/scheduler/internal/cron"
 )
 
+// Authorizer enforces org membership + project binding.
+type Authorizer interface {
+	RequireArea(w http.ResponseWriter, r *http.Request, orgID, projectID, userID string, area membership.Area, need membership.Level) (*membership.Access, bool)
+}
+
 type Handler struct {
-	Cron    *cron.Store
-	Cluster *cluster.Registry
-	JWT     *jwtutil.Manager
-	Slot    string
+	Cron  *cron.Store
+	JWT   *jwtutil.Manager
+	Authz Authorizer
 }
 
 func (h *Handler) Routes(mux *http.ServeMux) {
 	auth := middleware.BearerAuth(h.JWT)
-
 	mux.Handle("GET /orgs/{orgId}/projects/{projectId}/cron", auth(http.HandlerFunc(h.ListCron)))
 	mux.Handle("POST /orgs/{orgId}/projects/{projectId}/cron", auth(http.HandlerFunc(h.CreateCron)))
 	mux.Handle("DELETE /orgs/{orgId}/projects/{projectId}/cron/{cronId}", auth(http.HandlerFunc(h.DeleteCron)))
 
-	// Optional user-facing queue stub
-	mux.Handle("GET /orgs/{orgId}/projects/{projectId}/queues", auth(http.HandlerFunc(h.ListQueues)))
+	mux.Handle("DELETE /internal/projects/{projectId}", internalauth.Require(http.HandlerFunc(h.InternalDeleteProject)))
+}
 
-	// Cluster node management
-	mux.Handle("GET /cluster/nodes", auth(http.HandlerFunc(h.ListNodes)))
-	mux.Handle("POST /cluster/nodes", auth(http.HandlerFunc(h.RegisterNode)))
-	mux.Handle("POST /cluster/nodes/{nodeId}/drain", auth(http.HandlerFunc(h.DrainNode)))
-	mux.Handle("POST /cluster/nodes/{nodeId}/heartbeat", auth(http.HandlerFunc(h.HeartbeatNode)))
+func validIDs(w http.ResponseWriter, ids ...string) bool {
+	for _, id := range ids {
+		if _, err := uuid.Parse(id); err != nil {
+			httpx.Error(w, http.StatusBadRequest, "bad_request", "invalid id")
+			return false
+		}
+	}
+	return true
+}
+
+func (h *Handler) authorize(w http.ResponseWriter, r *http.Request, min membership.Level) (orgID, projectID string, ok bool) {
+	orgID, projectID = r.PathValue("orgId"), r.PathValue("projectId")
+	if !validIDs(w, orgID, projectID) {
+		return
+	}
+	if min != membership.LevelView {
+		if c, has := middleware.ClaimsFrom(r.Context()); has && c.ReadOnly() {
+			httpx.Error(w, http.StatusForbidden, "forbidden", "read-only token")
+			return
+		}
+	}
+	if _, ok = h.Authz.RequireArea(w, r, orgID, projectID, middleware.UserIDFrom(r.Context()), membership.AreaRuntime, min); !ok {
+		return
+	}
+	return orgID, projectID, true
 }
 
 func (h *Handler) ListCron(w http.ResponseWriter, r *http.Request) {
-	orgID := r.PathValue("orgId")
-	projectID := r.PathValue("projectId")
+	orgID, projectID, ok := h.authorize(w, r, membership.LevelView)
+	if !ok {
+		return
+	}
 	list, err := h.Cron.List(r.Context(), orgID, projectID)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, "internal", "list failed")
@@ -47,26 +74,34 @@ func (h *Handler) ListCron(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) CreateCron(w http.ResponseWriter, r *http.Request) {
-	orgID := r.PathValue("orgId")
-	projectID := r.PathValue("projectId")
-	var req struct {
-		Name     string `json:"name"`
-		Cron     string `json:"cron"`
-		ImageRef string `json:"image_ref"`
-	}
-	if err := httpx.Decode(r, &req); err != nil || strings.TrimSpace(req.Name) == "" {
-		httpx.Error(w, http.StatusBadRequest, "validation_error", "name required")
+	orgID, projectID, ok := h.authorize(w, r, membership.LevelManage)
+	if !ok {
 		return
 	}
-	expr := strings.TrimSpace(req.Cron)
-	if expr == "" {
-		expr = "@hourly"
+	var req struct {
+		Name           string   `json:"name"`
+		Cron           string   `json:"cron"`
+		ImageRef       string   `json:"image_ref"`
+		Command        []string `json:"command"`
+		TimeoutSeconds int      `json:"timeout_seconds"`
+	}
+	if err := httpx.Decode(r, &req); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "validation_error", "invalid payload")
+		return
 	}
 	sch := &cron.Schedule{
-		OrgID: orgID, ProjectID: projectID, Name: strings.TrimSpace(req.Name),
-		Cron: expr, ImageRef: strings.TrimSpace(req.ImageRef),
+		OrgID: orgID, ProjectID: projectID, Name: req.Name, Cron: req.Cron, ImageRef: req.ImageRef,
+		Command: req.Command, TimeoutSeconds: req.TimeoutSeconds,
+	}
+	if err := cron.Validate(sch); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "validation_error", err.Error())
+		return
 	}
 	if err := h.Cron.Create(r.Context(), sch); err != nil {
+		if errors.Is(err, cron.ErrLimit) {
+			httpx.Error(w, http.StatusConflict, "limit_reached", err.Error())
+			return
+		}
 		httpx.Error(w, http.StatusInternalServerError, "internal", "create failed")
 		return
 	}
@@ -74,87 +109,35 @@ func (h *Handler) CreateCron(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) DeleteCron(w http.ResponseWriter, r *http.Request) {
-	orgID := r.PathValue("orgId")
-	projectID := r.PathValue("projectId")
+	orgID, projectID, ok := h.authorize(w, r, membership.LevelManage)
+	if !ok {
+		return
+	}
 	cronID := r.PathValue("cronId")
+	if !validIDs(w, cronID) {
+		return
+	}
 	if err := h.Cron.Delete(r.Context(), orgID, projectID, cronID); err != nil {
-		httpx.Error(w, http.StatusNotFound, "not_found", "schedule not found")
+		if errors.Is(err, cron.ErrNotFound) {
+			httpx.Error(w, http.StatusNotFound, "not_found", "schedule not found")
+			return
+		}
+		httpx.Error(w, http.StatusInternalServerError, "internal", "delete failed")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *Handler) ListQueues(w http.ResponseWriter, r *http.Request) {
-	httpx.JSON(w, http.StatusOK, map[string]any{
-		"queues": []map[string]any{
-			{"name": "jp.build", "kind": "platform", "description": "Build farm jobs"},
-			{"name": "jp.cleanup", "kind": "platform", "description": "Orphan image / preview cleanup"},
-			{"name": "jp.jobs", "kind": "platform", "description": "Cron / background runtime jobs"},
-		},
-		"mode": "stub",
-		"note": "User-facing custom queues are a stub; platform uses Redis Streams.",
-	})
-}
-
-func (h *Handler) ListNodes(w http.ResponseWriter, r *http.Request) {
-	if h.Cluster == nil {
-		httpx.JSON(w, http.StatusOK, map[string]any{"nodes": []*cluster.Node{}})
+// InternalDeleteProject removes all schedules of a deleted project.
+func (h *Handler) InternalDeleteProject(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("projectId")
+	if !validIDs(w, projectID) {
 		return
 	}
-	if h.Slot != "" {
-		_ = h.Cluster.UpdateNodeCapacity(h.Slot, cluster.DetectSystemCapacity())
-	}
-	nodes := h.Cluster.ListNodes()
-	httpx.JSON(w, http.StatusOK, map[string]any{
-		"nodes": nodes,
-		"count": len(nodes),
-	})
-}
-
-func (h *Handler) RegisterNode(w http.ResponseWriter, r *http.Request) {
-	if h.Cluster == nil {
-		httpx.Error(w, http.StatusInternalServerError, "internal", "cluster registry not configured")
-		return
-	}
-	var node cluster.Node
-	if err := httpx.Decode(r, &node); err != nil || node.ID == "" {
-		httpx.Error(w, http.StatusBadRequest, "validation_error", "node id and hostname required")
-		return
-	}
-	if err := h.Cluster.RegisterNode(&node); err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "internal", err.Error())
-		return
-	}
-	httpx.JSON(w, http.StatusCreated, map[string]any{"node": node})
-}
-
-func (h *Handler) DrainNode(w http.ResponseWriter, r *http.Request) {
-	if h.Cluster == nil {
-		httpx.Error(w, http.StatusInternalServerError, "internal", "cluster registry not configured")
-		return
-	}
-	nodeID := r.PathValue("nodeId")
-	status, err := h.Cluster.ToggleDrain(nodeID)
+	n, err := h.Cron.DeleteProject(r.Context(), projectID)
 	if err != nil {
-		httpx.Error(w, http.StatusNotFound, "not_found", err.Error())
+		httpx.Error(w, http.StatusInternalServerError, "internal", "cleanup failed")
 		return
 	}
-	httpx.JSON(w, http.StatusOK, map[string]any{
-		"node_id": nodeID,
-		"status":  string(status),
-	})
+	httpx.JSON(w, http.StatusOK, map[string]any{"schedules_removed": n})
 }
-
-func (h *Handler) HeartbeatNode(w http.ResponseWriter, r *http.Request) {
-	if h.Cluster == nil {
-		httpx.Error(w, http.StatusInternalServerError, "internal", "cluster registry not configured")
-		return
-	}
-	nodeID := r.PathValue("nodeId")
-	if err := h.Cluster.Heartbeat(nodeID); err != nil {
-		httpx.Error(w, http.StatusNotFound, "not_found", err.Error())
-		return
-	}
-	httpx.JSON(w, http.StatusOK, map[string]any{"status": "ok", "node_id": nodeID})
-}
-

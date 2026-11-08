@@ -1,143 +1,46 @@
-# JP Cloud Platform — Local Development Guide
+# Development
 
-This guide describes how to set up, develop, debug, and run the JP Open-Source Self-Hosted Cloud Platform locally.
+## Prerequisites
 
----
+Go 1.22+, Node 22 (CI uses 22; the dashboard Dockerfile builds with `node:22-alpine`), Docker with Compose v2, git. Bash scripts need Git Bash/WSL on Windows (PowerShell
+equivalents exist for install, jp-up, size-host and test-all).
 
-## 1. Prerequisites
+## Repository
 
-Before starting, ensure your local development machine has:
-- **Go**: `1.22.0` or higher (`go version`)
-- **Node.js**: `v20.0.0` or higher (`node -v`)
-- **Docker**: Engine `24.0+` with Docker Compose V2 (`docker compose version`)
-- **Git**: For version control (`git --version`)
-- **Make / PowerShell / Bash**: For executing build tasks
+* `go.work` lists 24 modules: `apps/cli`, `packages/events`, `packages/go-common` and the 21 services under `services/`
+  (`services/event` is only a placeholder directory with migrations and is not a module). Services depend on `go-common` via
+  `replace ../../packages/go-common`, which is also what makes `GOWORK=off go build` (the Dockerfile) work.
+* Dashboard: Next.js static export (`apps/dashboard`), served by nginx; `/api` is proxied to the gateway by Traefik (and by nginx as a fallback).
+* Shared conventions: errors are `{"error":{"code","message"}}`; `/internal/*` routes are wrapped by `internalauth.Require`;
+  service-to-service HTTP uses `internalauth.NewClient`; membership checks use `membership.Require/RequireProject`; request bodies are
+  capped at 1 MiB (`httpx.Decode`, use `DecodeLimit` for uploads).
 
----
-
-## 2. Monorepo Architecture & Go Workspace
-
-The repository is structured as a Go Workspace (`go.work`) containing 25 independent modules:
-- `packages/go-common`: Shared HTTP helpers, JWT managers, middleware, Postgres pools, Redis clients.
-- `packages/events`: Redis Streams event bus definitions, envelopes, publisher/subscriber routines.
-- `services/*`: 22 microservices, each with its own `go.mod` and isolated domain boundaries.
-- `apps/cli`: The `jp` command-line interface.
-- `apps/dashboard`: Next.js 16 / React 19 web management console.
-
-### Key Rule for Go Workspace:
-Global `go test ./...` from the workspace root will fail because the root directory has no `go.mod`.
-Always target specific package directories or module paths:
-```powershell
-# Run tests for specific packages
-go test -v ./packages/go-common/jwt/...
-go test -v ./services/addon/internal/...
-
-# Build specific service binaries
-go build ./services/gateway/cmd/...
-go build ./apps/cli/...
-```
-
----
-
-## 3. Local Development Setup
-
-### Step 1: Clone and Configure Environment
-```bash
-git clone https://github.com/jp-cloud/cloud-platform.git
-cd cloud-platform
-cp .env.example .env
-```
-
-Ensure standard development ports are free on `localhost`:
-- `5432`: PostgreSQL
-- `6379`: Redis
-- `80`: Traefik HTTP
-- `443`: Traefik HTTPS
-- `3000`: Dashboard Web Console
-- `8000`: API Gateway
-
-### Step 2: Start Core Infrastructure (Docker Compose)
-Start the shared data plane dependencies (PostgreSQL, Redis, Traefik):
-```bash
-docker compose up -d postgres redis traefik
-```
-
-Verify containers are running:
-```bash
-docker compose ps
-```
-
----
-
-## 4. Running Backend Services Locally
-
-You can run any microservice locally outside Docker while connecting to the Dockerized Postgres and Redis instances.
-
-Example: Running the `addon` service:
-```powershell
-$env:DATABASE_URL="postgres://jp:jp_dev_password@localhost:5432/jp?sslmode=disable"
-$env:REDIS_URL="redis://localhost:6379/0"
-$env:JWT_SECRET="dev-super-secret-jwt-key-minimum-32-chars-long"
-$env:HTTP_PORT="8021"
-$env:ADDON_MODE="simulate"
-
-go run ./services/addon/cmd/main.go
-```
-
-Example: Running the `gateway` service:
-```powershell
-$env:HTTP_PORT="8000"
-$env:JWT_SECRET="dev-super-secret-jwt-key-minimum-32-chars-long"
-$env:CORS_ORIGINS="http://localhost:3000"
-
-go run ./services/gateway/cmd/main.go
-```
-
----
-
-## 5. Running the Web Console Dashboard
-
-The dashboard is built with Next.js App Router and Tailwind CSS:
+## Run it
 
 ```bash
-cd apps/dashboard
-npm install
-npm run dev
+scripts/jp-up.sh --dev --wait          # whole stack, dev defaults, datastores on 127.0.0.1 (see infra/compose/docker-compose.dev.yml)
+scripts/jp-up.sh --dev --monitoring    # + Prometheus/Grafana/Loki/Tempo
+JP_DEV=1 scripts/jp-compose.sh logs -f gateway
+cd apps/dashboard && npm run dev       # hot reload against the gateway on :8000
+go build ./... && go vet ./...         # inside any module directory
 ```
 
-The web dashboard is now accessible at `http://localhost:3000`.
+On Windows use `.\install.ps1` (generates a `.env`, starts the dev stack) and `.\scripts\jp-up.ps1 -Dev`.
 
----
+## Adding things
 
-## 6. Using the CLI Locally
+* **A service:** `services/<name>` with its own `go.mod` (`replace` to `packages/go-common`), `cmd/main.go`, `migrations/`, `GET /healthz`,
+  add it to `go.work`, to `infra/compose/docker-compose.yml` (anchors `*go`, `*env-common`, `*env-data`, `*env-urls`) and a route in the gateway.
+  `scripts/verify-env.sh` fails if the service reads env vars compose does not set.
+* **A migration:** add `NNN_name.sql` to the service's `migrations/` (forward-only; applied at start).
+* **An add-on:** add an entry to the catalog (`services/addon/internal/catalog`) or drop JSON into `ADDON_CATALOG_DIR`; see [ADDONS.md](ADDONS.md).
+* **A CLI command:** `apps/cli/cmd/<name>.go`.
+* **Environment variable:** read it in Go, pass it in compose, document it above its line in `.env.example`, then
+  `scripts/gen-env-docs.sh > docs/ENVIRONMENT.md`.
 
-You can build and invoke the `jp` CLI directly from source:
+## Building images by hand
 
 ```bash
-# Build binary
-go build -o jp.exe ./apps/cli
-
-# Run commands
-./jp.exe whoami
-./jp.exe addon catalog --project <pid>
+docker buildx build -f infra/docker/Dockerfile.service --build-arg SERVICE=gateway --platform linux/amd64,linux/arm64 .
+docker buildx build -f infra/docker/Dockerfile.worker --platform linux/amd64,linux/arm64 .
 ```
-
----
-
-## 7. Database Migrations
-
-Each microservice maintains forward-only SQL migration scripts inside `services/<name>/migrations/`:
-- `001_init.sql`
-- `002_add_index.sql`
-
-On startup, each service calls `postgres.Migrate(ctx, pool, migDir)`, which creates the `schema_migrations` tracking table and runs unapplied migration files in lexical order inside a transaction.
-
----
-
-## 8. Code Standards & Pull Request Checklist
-
-1. **Format**: Format all Go code using standard `gofmt -s -w .`.
-2. **Lint**: Run `golangci-lint run` or ensure zero compilation warnings.
-3. **No Mocks in Core Logic**: Real behavior must be verified with integration tests or realistic in-memory test doubles.
-4. **Tenant Scoping**: All SQL queries must enforce `WHERE org_id = $1` to prevent cross-tenant data leaks.
-5. **Clickable Links**: In markdown documentation, use relative markdown links or standard URLs.

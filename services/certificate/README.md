@@ -1,11 +1,19 @@
 ﻿# certificate service
 
-Tracks TLS certificate status and renew metadata. Integrates with Traefik ACME via resolver name / router labels recorded in `metadata`.
+Certificate status is derived from reality: a TLS handshake (SNI = hostname) against Traefik (`TLS_PROBE_ADDR`, default
+`traefik:443`) reads the served certificate (issuer, notAfter, SANs) and verifies the chain against the system roots.
+States: `pending` (Traefik still serves its default cert), `issued`, `expiring` (< 21 days), `failed` (error text),
+`tls_disabled` (when `TLS_ENABLED=false`). A periodic scan (2 min; issued certs hourly) updates the DB and publishes events.
 
-| Env | Default |
+`POST .../certificates/{id}/renew` re-probes; if there is no valid certificate (or it is expiring) it asks the domain service
+to re-write the router so Traefik retries ACME. Valid certificates are renewed by Traefik itself.
+
+| Env | Meaning |
 |-----|---------|
-| `PORT` | `8013` |
-| `CERT_SIMULATE` | `true` — issue/renew locally without Let's Encrypt |
-| `TRAEFIK_CERT_RESOLVER` | empty — set e.g. `letsencrypt` when Traefik ACME is configured |
+| `TLS_ENABLED` | `false` = report `tls_disabled` |
+| `TLS_PROBE_ADDR` | Traefik websecure address |
+| `ACME_STAGING` | accept Let's Encrypt staging chains |
+| `TRAEFIK_CERT_RESOLVER` | recorded resolver name |
 
-Public: list/get/renew certificates. Internal: `POST /internal/certificates` (from domain service).
+RBAC (areas): list/get = `domains:view`, renew = `domains:manage`. Internal: `POST /internal/certificates`, `POST /internal/certificates/scan`,
+`DELETE /internal/certificates/by-domain/{id}`, `GET|DELETE /internal/projects/{id}[/certificates]`.

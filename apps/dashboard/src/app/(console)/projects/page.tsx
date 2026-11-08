@@ -1,129 +1,111 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
-import { Button } from "@/components/ui/button";
-import { EmptyState, Alert } from "@/components/ui/page";
-import { api, ApiError } from "@/lib/api";
+import { useState } from "react";
+import { LinkButton } from "@/components/ui/button";
+import { Input } from "@/components/ui/field";
+import { Icon } from "@/components/ui/icons";
+import { PageHeader, Panel } from "@/components/ui/panel";
+import { EmptyState, ErrorState, SkeletonRows } from "@/components/ui/states";
+import { Lamp } from "@/components/ui/status";
+import { projectHref } from "@/components/shell/nav";
+import { appState, projectUrl, useSnapshots } from "@/features/snapshots";
+import { levelOf } from "@/lib/access";
+import { relTime } from "@/lib/format";
 import { useOrg } from "@/lib/org-context";
-import type { Project } from "@/lib/types";
+import { useProjects } from "@/lib/project-context";
 
 export default function ProjectsPage() {
-  const { currentOrg, loading: orgLoading } = useOrg();
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    if (orgLoading) return;
-    if (!currentOrg) {
-      setProjects([]);
-      setLoading(false);
-      return;
-    }
-    let mounted = true;
-    (async () => {
-      setLoading(true);
-      setError("");
-      try {
-        const list = await api.listProjects(currentOrg.id);
-        if (mounted) setProjects(list);
-      } catch (err) {
-        if (mounted) {
-          setError(
-            err instanceof ApiError ? err.message : "Failed to load projects",
-          );
-        }
-      } finally {
-        if (mounted) setLoading(false);
-      }
-    })();
-    return () => {
-      mounted = false;
-    };
-  }, [currentOrg, orgLoading]);
-
-  if (!orgLoading && !currentOrg) {
-    return (
-      <EmptyState
-        title="Create an organization"
-        description="Projects live inside an organization workspace. Set one up to get started."
-        action={
-          <Link href="/orgs/new">
-            <Button>New Organization</Button>
-          </Link>
-        }
-      />
-    );
-  }
+  const { currentOrg, can, access, restricted } = useOrg();
+  const { projects, loading, error, reload } = useProjects();
+  const snaps = useSnapshots(currentOrg?.id, projects, access);
+  const [q, setQ] = useState("");
+  const byId = new Map((snaps.data ?? []).map((s) => [s.project.id, s]));
+  const needle = q.trim().toLowerCase();
+  const shown = projects.filter((p) => !needle || `${p.name} ${p.slug ?? ""} ${p.description ?? ""}`.toLowerCase().includes(needle));
 
   return (
-    <div className="space-y-6 animate-fade-up">
-
-      {error ? (
-        <Alert tone="error">{error}</Alert>
-      ) : null}
-
-      {loading || orgLoading ? (
-        <div className="flex h-48 items-center justify-center text-sm font-semibold text-slate-500">
-          Loading projects…
-        </div>
+    <>
+      <PageHeader
+        title="Projects"
+        eyebrow={currentOrg?.name}
+        description="Each project is one app with its own domains, settings and add-ons. Open one to work on it."
+        actions={
+          can("admin") && (
+            <LinkButton href="/projects/new" variant="primary">
+              <Icon name="plus" size={16} />
+              New project
+            </LinkButton>
+          )
+        }
+      />
+      {loading ? (
+        <SkeletonRows rows={4} label="Loading projects" />
+      ) : error ? (
+        <ErrorState error={error} onRetry={reload} />
       ) : projects.length === 0 ? (
         <EmptyState
-          title="No projects yet"
-          description="Create your first project to deploy code repositories, Docker containers, and databases."
-          action={
-            <Link href="/projects/new">
-              <Button>Create Project</Button>
-            </Link>
-          }
+          title={restricted ? "No projects shared with you yet" : "No projects yet"}
+          body={restricted ? "An administrator gives you access project by project. Ask them to add you to the project you work on." : "Create your first project, then connect a repository and deploy."}
+          action={can("admin") ? <LinkButton href="/projects/new" variant="primary">Create project</LinkButton> : undefined}
         />
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {projects.map((project) => (
-            <Link
-              key={project.id}
-              href={`/projects/${project.id}`}
-              className="bg-white rounded-xl border-2 border-slate-300 p-5 shadow-sm hover:shadow-md hover:border-slate-400 transition-all flex flex-col justify-between group cursor-pointer"
-            >
-              <div>
-                <div className="flex items-start justify-between gap-2 mb-2">
-                  <div className="flex items-center gap-2.5">
-                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-gradient-to-br from-blue-700 to-indigo-800 text-white font-extrabold text-sm shadow-xs">
-                      {project.name.slice(0, 2).toUpperCase()}
+        <>
+          {projects.length > 3 && (
+            <div className="mb-5 max-w-md">
+              <Input label="Search projects" hideLabel type="search" placeholder="Search projects..." value={q} onChange={(e) => setQ(e.target.value)} data-testid="project-search" />
+            </div>
+          )}
+          {shown.length === 0 ? (
+            <EmptyState title="No match" body="Try a different name." />
+          ) : (
+            <div className="grid-auto">
+              {shown.map((p) => {
+                const snap = byId.get(p.id);
+                const state = snap ? appState(snap) : null;
+                const url = snap ? projectUrl(snap) : null;
+                const last = snap?.deployments?.[0];
+                const lamp = state === "running" ? "ok" : state === "failed" ? "fail" : state === "unknown" ? "info" : "idle";
+                const word = state === "none" ? "not deployed" : state === "unknown" ? "unreachable" : (state ?? "checking");
+                return (
+                  <Panel key={p.id} variant="paper" as="article" className="flex flex-col gap-3">
+                    <div className="flex items-start gap-3">
+                      <div className="min-w-0 flex-1">
+                        <h2 className="truncate">
+                          <Link href={projectHref(p.id)} className="no-underline" style={{ color: "var(--ink)" }}>
+                            {p.name}
+                          </Link>
+                        </h2>
+                        <p className="m-0 truncate text-[13.5px] opacity-80">{p.description || p.slug}</p>
+                      </div>
+                      <span className="inline-flex items-center gap-2">
+                        <Lamp state={lamp} pulse={state === "running"} label={`App is ${word}`} />
+                        <span className="mono text-[11.5px]">{word}</span>
+                      </span>
                     </div>
-                    <div>
-                      <h3 className="font-extrabold text-[#0F1B3D] text-sm group-hover:text-[#1E3A8A] transition-colors">
-                        {project.name}
-                      </h3>
-                      <p className="text-[10px] text-slate-400 font-mono">
-                        {project.slug || project.id.slice(0, 8)}
-                      </p>
+                    <div className="rule !my-0" />
+                    <div className="flex flex-col gap-1 text-[13.5px]">
+                      {url ? (
+                        <a href={url} target="_blank" rel="noopener noreferrer" className="mono truncate">
+                          {url.replace(/^https?:\/\//, "")}
+                        </a>
+                      ) : (
+                        <span className="mono opacity-60">no live address yet</span>
+                      )}
+                      <span className="opacity-75">{last ? `Last deploy ${relTime(last.created_at)} (${last.status})` : `Created ${relTime(p.created_at)}`}</span>
                     </div>
-                  </div>
-                  <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-0.5 text-[10px] font-bold text-emerald-800 border-2 border-emerald-200 shrink-0">
-                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                    Active
-                  </span>
-                </div>
-                <p className="text-xs text-slate-600 font-medium line-clamp-2 my-2 leading-relaxed">
-                  {project.description || "Production container and web application infrastructure."}
-                </p>
-              </div>
-
-              <div className="pt-3 border-t-2 border-slate-100 flex items-center justify-between text-xs mt-3">
-                <span className="inline-flex items-center gap-1 font-mono text-[10px] bg-slate-50 text-slate-700 font-bold px-2 py-0.5 rounded-lg border-2 border-slate-300">
-                  <span>🐳</span> Docker Native
-                </span>
-                <span className="font-bold text-xs text-[#1E3A8A] group-hover:translate-x-0.5 transition-transform flex items-center gap-1">
-                  <span>Manage</span>
-                  <span>&rarr;</span>
-                </span>
-              </div>
-            </Link>
-          ))}
-        </div>
+                    <div className="flex flex-wrap gap-2">
+                      <LinkButton href={projectHref(p.id)} size="sm">Open</LinkButton>
+                      {levelOf(access, p.id, "deployments") !== "none" && <LinkButton href={projectHref(p.id, "deployments")} size="sm">Deploy</LinkButton>}
+                      {levelOf(access, p.id, "logs") !== "none" && <LinkButton href={projectHref(p.id, "logs")} size="sm">Logs</LinkButton>}
+                    </div>
+                  </Panel>
+                );
+              })}
+            </div>
+          )}
+        </>
       )}
-    </div>
+    </>
   );
 }

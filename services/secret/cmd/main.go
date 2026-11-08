@@ -11,6 +11,7 @@ import (
 	"github.com/jp-cloud/go-common/config"
 	jwtutil "github.com/jp-cloud/go-common/jwt"
 	"github.com/jp-cloud/go-common/logging"
+	"github.com/jp-cloud/go-common/membership"
 	"github.com/jp-cloud/go-common/middleware"
 	"github.com/jp-cloud/go-common/postgres"
 	redisx "github.com/jp-cloud/go-common/redis"
@@ -52,26 +53,28 @@ func main() {
 
 	enc, err := crypto.NewFromEnv()
 	if err != nil {
-		log.Error("crypto", "err", err)
+		log.Error("secrets master key rejected", "err", err)
 		os.Exit(1)
 	}
 	masterSet := os.Getenv("SECRETS_MASTER_KEY") != ""
+	if !masterSet {
+		log.Warn("SECRETS_MASTER_KEY not set: using the development key (refused when JP_ENV=production)")
+	}
 
 	jm := jwtutil.NewManager(cfg.JWTSecret, cfg.JWTAccessTTL, cfg.JWTRefreshTTL)
 	h := &handlers.Handler{
-		Store:           store.New(pool),
-		Crypto:          enc,
-		JWT:             jm,
-		OrganizationURL: cfg.OrganizationURL,
-		Redis:           rdb,
-		HTTP:            &http.Client{Timeout: 8 * time.Second},
+		Store:  store.New(pool),
+		Crypto: enc,
+		JWT:    jm,
+		Authz:  membership.New(cfg.OrganizationURL, cfg.ProjectURL),
+		Redis:  rdb,
 	}
 
 	mux := http.NewServeMux()
 	h.Routes(mux)
 	handler := middleware.Chain(mux, middleware.RequestID, middleware.Logging(log), middleware.CORS(cfg.CORSOrigins))
 
-	srv := &http.Server{Addr: ":" + cfg.HTTPPort, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Addr: ":" + cfg.HTTPPort, Handler: handler, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 120 * time.Second}
 	go func() {
 		log.Info("secret listening", "port", cfg.HTTPPort, "master_key_configured", masterSet)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {

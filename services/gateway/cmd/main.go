@@ -2,22 +2,22 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
-	"github.com/jp-cloud/go-common/config"
-	"github.com/jp-cloud/go-common/httpx"
-	jwtutil "github.com/jp-cloud/go-common/jwt"
-	"github.com/jp-cloud/go-common/logging"
-	"github.com/jp-cloud/go-common/middleware"
-	"github.com/jp-cloud/go-common/otelx"
+	"github.com/jp-cloud/gateway/internal/gateway"
 	"github.com/jp-cloud/gateway/internal/proxy"
 	"github.com/jp-cloud/gateway/internal/static"
+	"github.com/jp-cloud/go-common/config"
+	"github.com/jp-cloud/go-common/internalauth"
+	jwtutil "github.com/jp-cloud/go-common/jwt"
+	"github.com/jp-cloud/go-common/logging"
+	"github.com/jp-cloud/go-common/membership"
+	"github.com/jp-cloud/go-common/otelx"
+	redisx "github.com/jp-cloud/go-common/redis"
 )
 
 func main() {
@@ -26,342 +26,74 @@ func main() {
 		panic(err)
 	}
 	log := logging.New(cfg.LogLevel)
+	ctx := context.Background()
 
-	identity, err := proxy.New(cfg.IdentityURL)
+	rdb, err := redisx.Connect(ctx, cfg.RedisURL)
 	if err != nil {
-		log.Error("identity url", "err", err)
+		log.Error("redis", "err", err)
 		os.Exit(1)
 	}
-	organization, err := proxy.New(cfg.OrganizationURL)
-	if err != nil {
-		log.Error("organization url", "err", err)
-		os.Exit(1)
-	}
-	project, err := proxy.New(cfg.ProjectURL)
-	if err != nil {
-		log.Error("project url", "err", err)
-		os.Exit(1)
-	}
-	repository, err := proxy.New(cfg.RepositoryURL)
-	if err != nil {
-		log.Error("repository url", "err", err)
-		os.Exit(1)
-	}
-	deployment, err := proxy.New(cfg.DeploymentURL)
-	if err != nil {
-		log.Error("deployment url", "err", err)
-		os.Exit(1)
-	}
-	buildSvc, err := proxy.New(cfg.BuildURL)
-	if err != nil {
-		log.Error("build url", "err", err)
-		os.Exit(1)
-	}
-	registryAPI, err := proxy.New(cfg.RegistryURL)
-	if err != nil {
-		log.Error("registry url", "err", err)
-		os.Exit(1)
-	}
-	runtime, err := proxy.New(cfg.RuntimeURL)
-	if err != nil {
-		log.Error("runtime url", "err", err)
-		os.Exit(1)
-	}
-	domain, err := proxy.New(cfg.DomainURL)
-	if err != nil {
-		log.Error("domain url", "err", err)
-		os.Exit(1)
-	}
-	certificate, err := proxy.New(cfg.CertificateURL)
-	if err != nil {
-		log.Error("certificate url", "err", err)
-		os.Exit(1)
-	}
-	secretSvc, err := proxy.New(cfg.SecretURL)
-	if err != nil {
-		log.Error("secret url", "err", err)
-		os.Exit(1)
-	}
-	loggingSvc, err := proxy.New(cfg.LoggingURL)
-	if err != nil {
-		log.Error("logging url", "err", err)
-		os.Exit(1)
-	}
-	metricsSvc, err := proxy.New(cfg.MetricsURL)
-	if err != nil {
-		log.Error("metrics url", "err", err)
-		os.Exit(1)
-	}
-	storageSvc, err := proxy.New(cfg.StorageURL)
-	if err != nil {
-		log.Error("storage url", "err", err)
-		os.Exit(1)
-	}
-	databaseSvc, err := proxy.New(cfg.DatabaseURLSvc)
-	if err != nil {
-		log.Error("database url", "err", err)
-		os.Exit(1)
-	}
-	addonSvc, err := proxy.New(cfg.AddonURL)
-	if err != nil {
-		log.Error("addon url", "err", err)
-		os.Exit(1)
-	}
-	schedulerSvc, err := proxy.New(cfg.SchedulerURL)
-	if err != nil {
-		log.Error("scheduler url", "err", err)
-		os.Exit(1)
-	}
-	aiSvc, err := proxy.New(cfg.AIURL)
-	if err != nil {
-		log.Error("ai url", "err", err)
-		os.Exit(1)
-	}
-	billingSvc, err := proxy.New(cfg.BillingURL)
-	if err != nil {
-		log.Error("billing url", "err", err)
-		os.Exit(1)
+	defer rdb.Close()
+
+	gwCfg := gateway.Config{
+		Env: cfg.Env,
+		Upstreams: map[string]string{
+			"identity": cfg.IdentityURL, "organization": cfg.OrganizationURL, "project": cfg.ProjectURL,
+			"repository": cfg.RepositoryURL, "deployment": cfg.DeploymentURL, "build": cfg.BuildURL,
+			"registry": cfg.RegistryURL, "runtime": cfg.RuntimeURL, "domain": cfg.DomainURL,
+			"certificate": cfg.CertificateURL, "secret": cfg.SecretURL, "logging": cfg.LoggingURL,
+			"metrics": cfg.MetricsURL, "storage": cfg.StorageURL, "database": cfg.DatabaseURLSvc,
+			"addon": cfg.AddonURL, "scheduler": cfg.SchedulerURL, "ai": cfg.AIURL,
+		},
+		CORSOrigins:        cfg.CORSOrigins,
+		TrustedProxies:     cfg.TrustedProxies,
+		PublicBaseURL:      cfg.PublicBaseURL,
+		PublicDashboardURL: cfg.PublicDashboardURL,
+		RegistrationMode:   cfg.RegistrationMode,
+		JWTSecret:          cfg.JWTSecret,
 	}
 
-	jm := jwtutil.NewManager(cfg.JWTSecret, cfg.JWTAccessTTL, cfg.JWTRefreshTTL)
-	httpClient := &http.Client{Timeout: 5 * time.Second}
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", httpx.Healthz)
-
-	// Public auth routes (no JWT) — strip /api/v1 prefix when forwarding
-	mux.HandleFunc("GET /api/v1/auth/bootstrap/status", stripAndProxy(identity, "/api/v1"))
-	mux.HandleFunc("POST /api/v1/auth/bootstrap", stripAndProxy(identity, "/api/v1"))
-	mux.HandleFunc("POST /api/v1/auth/register", stripAndProxy(identity, "/api/v1"))
-	mux.HandleFunc("POST /api/v1/auth/login", stripAndProxy(identity, "/api/v1"))
-	mux.HandleFunc("POST /api/v1/auth/refresh", stripAndProxy(identity, "/api/v1"))
-
-	// Public GitHub webhook (HMAC verified upstream)
-	mux.HandleFunc("POST /api/v1/webhooks/github", stripAndProxy(repository, "/api/v1"))
-	// Public GitHub App setup redirect (state verified in repository via Redis)
-	mux.HandleFunc("GET /api/v1/github/setup", stripAndProxy(repository, "/api/v1"))
-	mux.HandleFunc("GET /github/setup", stripAndProxy(repository, ""))
-
-	auth := bearerOrPAT(jm, httpClient, cfg.IdentityURL)
-
-	// Authenticated auth routes
-	for _, pattern := range []string{
-		"POST /api/v1/auth/logout",
-		"GET /api/v1/auth/me",
-		"GET /api/v1/auth/sessions",
-		"DELETE /api/v1/auth/sessions/{id}",
-		"POST /api/v1/auth/pats",
-		"GET /api/v1/auth/pats",
-		"DELETE /api/v1/auth/pats/{id}",
-	} {
-		mux.Handle(pattern, auth(http.HandlerFunc(injectUser(stripAndProxy(identity, "/api/v1")))))
-	}
-
-	// Org routes
-	mux.Handle("POST /api/v1/orgs", auth(http.HandlerFunc(injectUser(stripAndProxy(organization, "/api/v1")))))
-	mux.Handle("GET /api/v1/orgs", auth(http.HandlerFunc(injectUser(stripAndProxy(organization, "/api/v1")))))
-	mux.Handle("POST /api/v1/orgs/invites/accept", auth(http.HandlerFunc(injectUser(stripAndProxy(organization, "/api/v1")))))
-	mux.Handle("GET /api/v1/orgs/{orgId}", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(organization, "/api/v1")))))
-	mux.Handle("POST /api/v1/orgs/{orgId}/invites", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(organization, "/api/v1")))))
-	mux.Handle("GET /api/v1/orgs/{orgId}/members", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(organization, "/api/v1")))))
-
-	// Project routes (org-scoped)
-	mux.Handle("POST /api/v1/orgs/{orgId}/projects", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(project, "/api/v1")))))
-	mux.Handle("GET /api/v1/orgs/{orgId}/projects", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(project, "/api/v1")))))
-	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(project, "/api/v1")))))
-	mux.Handle("PATCH /api/v1/orgs/{orgId}/projects/{projectId}", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(project, "/api/v1")))))
-	mux.Handle("DELETE /api/v1/orgs/{orgId}/projects/{projectId}", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(project, "/api/v1")))))
-	mux.Handle("PUT /api/v1/orgs/{orgId}/projects/{projectId}/config", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(project, "/api/v1")))))
-	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/config", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(project, "/api/v1")))))
-	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/config", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(project, "/api/v1")))))
-	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/config/drift", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(project, "/api/v1")))))
-
-	// Phase 2 — Git connect
-	mux.Handle("POST /api/v1/orgs/{orgId}/github/install/start", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(repository, "/api/v1")))))
-	mux.Handle("POST /api/v1/orgs/{orgId}/github/install/callback", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(repository, "/api/v1")))))
-	mux.Handle("GET /api/v1/orgs/{orgId}/github/installations", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(repository, "/api/v1")))))
-	mux.Handle("GET /api/v1/orgs/{orgId}/github/repos", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(repository, "/api/v1")))))
-	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/repos", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(repository, "/api/v1")))))
-	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/repos", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(repository, "/api/v1")))))
-	mux.Handle("DELETE /api/v1/orgs/{orgId}/projects/{projectId}/repos/{repoId}", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(repository, "/api/v1")))))
-	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/deploy-key", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(repository, "/api/v1")))))
-	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/deploy-key/generate", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(repository, "/api/v1")))))
-
-
-	// Phase 2 — Deployments
-	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/deployments", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(deployment, "/api/v1")))))
-	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/deployments", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(deployment, "/api/v1")))))
-	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/deployments/{deploymentId}", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(deployment, "/api/v1")))))
-	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/deployments/rollback", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(deployment, "/api/v1")))))
-	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/deployments/{deploymentId}/rollback", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(deployment, "/api/v1")))))
-
-	// Phase 3 — Builds
-	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/builds", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(buildSvc, "/api/v1")))))
-	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/builds/{buildId}", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(buildSvc, "/api/v1")))))
-	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/builds/{buildId}/logs", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(buildSvc, "/api/v1")))))
-  mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/images", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(registryAPI, "/api/v1")))))
-
-	// Phase 4 — Runtime
-	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/runtime/instances", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(runtime, "/api/v1")))))
-	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/runtime/instances", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(runtime, "/api/v1")))))
-	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/runtime/instances/{instanceId}", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(runtime, "/api/v1")))))
-	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/runtime/instances/{instanceId}/start", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(runtime, "/api/v1")))))
-	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/runtime/instances/{instanceId}/stop", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(runtime, "/api/v1")))))
-	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/runtime/containers", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(runtime, "/api/v1")))))
-	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/runtime/logs", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(runtime, "/api/v1")))))
-	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/runtime/instances/{instanceId}/logs", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(runtime, "/api/v1")))))
-
-	// Phase 4 — Domains
-	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/domains", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(domain, "/api/v1")))))
-	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/domains", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(domain, "/api/v1")))))
-	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/domains/{domainId}", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(domain, "/api/v1")))))
-	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/domains/{domainId}/verify", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(domain, "/api/v1")))))
-	mux.Handle("DELETE /api/v1/orgs/{orgId}/projects/{projectId}/domains/{domainId}", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(domain, "/api/v1")))))
-
-	// Phase 4 — Certificates
-	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/certificates", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(certificate, "/api/v1")))))
-	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/certificates/{certId}", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(certificate, "/api/v1")))))
-	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/certificates/{certId}/renew", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(certificate, "/api/v1")))))
-
-	// Phase 5 — Secrets & environments
-	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/environments", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(secretSvc, "/api/v1")))))
-	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/environments", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(secretSvc, "/api/v1")))))
-	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/secrets", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(secretSvc, "/api/v1")))))
-	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/environments/{env}/secrets", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(secretSvc, "/api/v1")))))
-	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/environments/{env}/secrets", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(secretSvc, "/api/v1")))))
-	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/environments/{env}/secrets/{name}", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(secretSvc, "/api/v1")))))
-	mux.Handle("PUT /api/v1/orgs/{orgId}/projects/{projectId}/environments/{env}/secrets/{name}", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(secretSvc, "/api/v1")))))
-	mux.Handle("DELETE /api/v1/orgs/{orgId}/projects/{projectId}/environments/{env}/secrets/{name}", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(secretSvc, "/api/v1")))))
-	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/env/{env}", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(secretSvc, "/api/v1")))))
-	mux.Handle("PUT /api/v1/orgs/{orgId}/projects/{projectId}/env/{env}/{name}", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(secretSvc, "/api/v1")))))
-	mux.Handle("DELETE /api/v1/orgs/{orgId}/projects/{projectId}/env/{env}/{name}", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(secretSvc, "/api/v1")))))
-
-	// Phase 5 — Logs
-	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/logs", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(loggingSvc, "/api/v1")))))
-	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/logs", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(loggingSvc, "/api/v1")))))
-	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/logs/ingest", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(loggingSvc, "/api/v1")))))
-
-	// Phase 5 — Metrics
-	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/metrics", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(metricsSvc, "/api/v1")))))
-	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/metrics", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(metricsSvc, "/api/v1")))))
-	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/metrics/targets", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(metricsSvc, "/api/v1")))))
-	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/metrics/targets", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(metricsSvc, "/api/v1")))))
-
-	// Phase 6 — Storage
-	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/storage/bucket", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(storageSvc, "/api/v1")))))
-	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/storage/bucket", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(storageSvc, "/api/v1")))))
-	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/storage/objects", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(storageSvc, "/api/v1")))))
-	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/storage/objects", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(storageSvc, "/api/v1")))))
-	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/storage/signed-url", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(storageSvc, "/api/v1")))))
-	mux.Handle("DELETE /api/v1/orgs/{orgId}/projects/{projectId}/storage/objects", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(storageSvc, "/api/v1")))))
-
-	// Phase 6 — Databases
-	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/databases", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(databaseSvc, "/api/v1")))))
-	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/databases", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(databaseSvc, "/api/v1")))))
-	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/databases/{dbId}", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(databaseSvc, "/api/v1")))))
-	mux.Handle("DELETE /api/v1/orgs/{orgId}/projects/{projectId}/databases/{dbId}", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(databaseSvc, "/api/v1")))))
-
-	mux.Handle("GET /api/v1/orgs/{orgId}/addons", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(addonSvc, "/api/v1")))))
-	mux.Handle("GET /api/v1/orgs/{orgId}/addons/catalog", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(addonSvc, "/api/v1")))))
-	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/addons/catalog", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(addonSvc, "/api/v1")))))
-	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/addons", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(addonSvc, "/api/v1")))))
-	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/addons", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(addonSvc, "/api/v1")))))
-	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/addons/{addonId}", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(addonSvc, "/api/v1")))))
-	mux.Handle("DELETE /api/v1/orgs/{orgId}/projects/{projectId}/addons/{addonId}", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(addonSvc, "/api/v1")))))
-
-	// Phase 6 — Cron / queues (scheduler)
-	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/cron", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(schedulerSvc, "/api/v1")))))
-	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/cron", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(schedulerSvc, "/api/v1")))))
-	mux.Handle("DELETE /api/v1/orgs/{orgId}/projects/{projectId}/cron/{cronId}", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(schedulerSvc, "/api/v1")))))
-	mux.Handle("GET /api/v1/orgs/{orgId}/projects/{projectId}/queues", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(schedulerSvc, "/api/v1")))))
-
-	// Phase 7 — AI ops
-	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/ai/explain", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(aiSvc, "/api/v1")))))
-	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/ai/analyze-logs", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(aiSvc, "/api/v1")))))
-	mux.Handle("POST /api/v1/orgs/{orgId}/projects/{projectId}/ai/overview-suggestions", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(aiSvc, "/api/v1")))))
-	mux.Handle("POST /api/v1/orgs/{orgId}/ai/ask", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(aiSvc, "/api/v1")))))
-	mux.Handle("GET /api/v1/orgs/{orgId}/ai/status", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(aiSvc, "/api/v1")))))
-	mux.Handle("GET /api/v1/orgs/{orgId}/ai/config", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(aiSvc, "/api/v1")))))
-	mux.Handle("POST /api/v1/orgs/{orgId}/ai/config", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(aiSvc, "/api/v1")))))
-
-	// Phase 7 — Billing
-	mux.Handle("GET /api/v1/billing/plans", auth(http.HandlerFunc(injectUser(stripAndProxy(billingSvc, "/api/v1")))))
-	mux.Handle("GET /api/v1/orgs/{orgId}/billing/plans", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(billingSvc, "/api/v1")))))
-	mux.Handle("GET /api/v1/orgs/{orgId}/billing/usage", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(billingSvc, "/api/v1")))))
-	mux.Handle("GET /api/v1/orgs/{orgId}/billing/events", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(billingSvc, "/api/v1")))))
-	mux.Handle("POST /api/v1/orgs/{orgId}/billing/events", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(billingSvc, "/api/v1")))))
-	mux.Handle("GET /api/v1/orgs/{orgId}/billing/plan", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(billingSvc, "/api/v1")))))
-	mux.Handle("PUT /api/v1/orgs/{orgId}/billing/plan", auth(http.HandlerFunc(withOrgContext(jm, httpClient, cfg.OrganizationURL, stripAndProxy(billingSvc, "/api/v1")))))
-
-	// Cluster node management
-	mux.Handle("GET /api/v1/cluster/nodes", auth(http.HandlerFunc(stripAndProxy(schedulerSvc, "/api/v1"))))
-	mux.Handle("POST /api/v1/cluster/nodes", auth(http.HandlerFunc(stripAndProxy(schedulerSvc, "/api/v1"))))
-	mux.Handle("POST /api/v1/cluster/nodes/{nodeId}/drain", auth(http.HandlerFunc(stripAndProxy(schedulerSvc, "/api/v1"))))
-	mux.Handle("POST /api/v1/cluster/nodes/{nodeId}/heartbeat", auth(http.HandlerFunc(stripAndProxy(schedulerSvc, "/api/v1"))))
-
-	// System settings & maintenance
-	mux.Handle("GET /api/v1/system/settings", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		tier := os.Getenv("JP_SIZE")
-		if tier == "" {
-			tier = "auto"
+	// Dashboard: static files (lite) or reverse proxy to the dashboard container (full).
+	var dash http.Handler
+	if dir := os.Getenv("STATIC_DIR"); dir != "" {
+		if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
+			log.Info("serving static dashboard", "dir", dir)
+			dash = static.NewHandler(dir)
 		}
-		env := os.Getenv("JP_ENV")
-		if env == "" {
-			env = "development"
+	} else if u := os.Getenv("DASHBOARD_URL"); u != "" {
+		p, err := proxy.New(u)
+		if err != nil {
+			log.Error("dashboard url", "err", err)
+			os.Exit(1)
 		}
-		httpx.JSON(w, http.StatusOK, map[string]any{
-			"management_domain": os.Getenv("MANAGEMENT_DOMAIN"),
-			"public_base_url":   cfg.PublicBaseURL,
-			"cors_origins":      cfg.CORSOrigins,
-			"cname_target":      os.Getenv("DOMAIN_CNAME_TARGET"),
-			"preview_domain":    os.Getenv("PREVIEW_BASE_DOMAIN"),
-			"platform_env":      env,
-			"sizing_tier":       tier,
-			"build_mode":        os.Getenv("BUILD_MODE"),
-			"runtime_mode":      os.Getenv("RUNTIME_MODE"),
-			"openai_configured": os.Getenv("OPENAI_API_KEY") != "",
-			"github_configured": os.Getenv("GITHUB_APP_ID") != "",
-			"smtp_configured":   os.Getenv("SMTP_HOST") != "",
-			"version":           "v1.2.0",
-		})
-	})))
-	mux.Handle("POST /api/v1/system/settings", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req map[string]any
-		_ = httpx.Decode(r, &req)
-		httpx.JSON(w, http.StatusOK, map[string]any{
-			"status": "updated",
-			"note":   "Settings saved to runtime state.",
-		})
-	})))
-	mux.Handle("POST /api/v1/system/maintenance/cleanup", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		httpx.JSON(w, http.StatusOK, map[string]any{
-			"status":  "triggered",
-			"message": "Pruned orphan images and expired preview environments.",
-		})
-	})))
+		log.Info("proxying dashboard to upstream", "url", u)
+		dash = p
+	}
 
-	// Lite mode static dashboard serving or Full mode dashboard reverse proxy
-	staticDir := os.Getenv("STATIC_DIR")
-	dashboardURL := os.Getenv("DASHBOARD_URL")
-	if staticDir != "" {
-		if fi, err := os.Stat(staticDir); err == nil && fi.IsDir() {
-			log.Info("serving static dashboard", "dir", staticDir)
-			mux.Handle("GET /", static.NewHandler(staticDir))
-		}
-	} else if dashboardURL != "" {
-		if dashProxy, err := proxy.New(dashboardURL); err == nil {
-			log.Info("proxying dashboard to upstream", "url", dashboardURL)
-			mux.Handle("GET /", dashProxy)
-		}
+	srv, err := gateway.New(gwCfg, gateway.Deps{
+		JWT:     jwtutil.NewManager(cfg.JWTSecret, cfg.JWTAccessTTL, cfg.JWTRefreshTTL),
+		Redis:   rdb,
+		Members: membership.New(cfg.OrganizationURL, ""),
+		HTTP:    internalauth.NewClient(8 * time.Second),
+		Log:     log,
+	}, dash)
+	if err != nil {
+		log.Error("gateway", "err", err)
+		os.Exit(1)
 	}
 
 	otelCfg := otelx.FromEnv("gateway")
-	handler := middleware.Chain(mux, otelx.Propagate(otelCfg), middleware.Logging(log), middleware.CORS(cfg.CORSOrigins))
-
-	srv := &http.Server{Addr: ":" + cfg.HTTPPort, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
+	httpSrv := &http.Server{
+		Addr:              ":" + cfg.HTTPPort,
+		Handler:           otelx.Propagate(otelCfg)(srv.Handler()),
+		ReadHeaderTimeout: 10 * time.Second,
+		// Read/Write deadlines are applied per request by the router (streams and uploads differ).
+		IdleTimeout:    120 * time.Second,
+		MaxHeaderBytes: 64 << 10,
+	}
 	go func() {
-		log.Info("gateway listening", "port", cfg.HTTPPort)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Info("gateway listening", "port", cfg.HTTPPort, "trusted_proxies", cfg.TrustedProxies)
+		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Error("server", "err", err)
 			os.Exit(1)
 		}
@@ -370,138 +102,7 @@ func main() {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	_ = srv.Shutdown(shutdownCtx)
-}
-
-// bearerOrPAT accepts JWT access tokens or jp_pat_* personal access tokens.
-func bearerOrPAT(jm *jwtutil.Manager, client *http.Client, identityURL string) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			h := r.Header.Get("Authorization")
-			if h == "" || !strings.HasPrefix(strings.ToLower(h), "bearer ") {
-				httpx.Error(w, http.StatusUnauthorized, "unauthorized", "missing bearer token")
-				return
-			}
-			token := strings.TrimSpace(h[7:])
-
-			if strings.HasPrefix(token, "jp_pat_") {
-				claims, ok := verifyPAT(r, client, identityURL, token)
-				if !ok {
-					httpx.Error(w, http.StatusUnauthorized, "unauthorized", "invalid or expired token")
-					return
-				}
-				// Downstream services expect JWT — mint a short-lived access token.
-				access, _, err := jm.IssueAccess(claims.UserID, claims.Email, claims.Name)
-				if err != nil {
-					httpx.Error(w, http.StatusInternalServerError, "internal", "failed to issue access token")
-					return
-				}
-				r.Header.Set("Authorization", "Bearer "+access)
-				ctx := r.Context()
-				ctx = context.WithValue(ctx, middleware.ClaimsKey, claims)
-				ctx = context.WithValue(ctx, middleware.UserIDKey, claims.UserID)
-				next.ServeHTTP(w, r.WithContext(ctx))
-				return
-			}
-
-			claims, err := jm.Parse(token)
-			if err != nil || claims.Type != "access" {
-				httpx.Error(w, http.StatusUnauthorized, "unauthorized", "invalid or expired token")
-				return
-			}
-			ctx := r.Context()
-			ctx = context.WithValue(ctx, middleware.ClaimsKey, claims)
-			ctx = context.WithValue(ctx, middleware.UserIDKey, claims.UserID)
-			next.ServeHTTP(w, r.WithContext(ctx))
-		})
-	}
-}
-
-func verifyPAT(r *http.Request, client *http.Client, identityURL, token string) (*jwtutil.Claims, bool) {
-	if identityURL == "" || client == nil {
-		return nil, false
-	}
-	body, _ := json.Marshal(map[string]string{"token": token})
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, strings.TrimRight(identityURL, "/")+"/internal/pats/verify", strings.NewReader(string(body)))
-	if err != nil {
-		return nil, false
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, false
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, false
-	}
-	var payload struct {
-		User struct {
-			ID    string `json:"id"`
-			Email string `json:"email"`
-			Name  string `json:"name"`
-		} `json:"user"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil || payload.User.ID == "" {
-		return nil, false
-	}
-	return &jwtutil.Claims{
-		UserID: payload.User.ID,
-		Email:  payload.User.Email,
-		Name:   payload.User.Name,
-		Type:   "access",
-	}, true
-}
-
-func stripAndProxy(upstream http.Handler, prefix string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		r2 := r.Clone(r.Context())
-		r2.URL.Path = strings.TrimPrefix(r.URL.Path, prefix)
-		if r2.URL.Path == "" {
-			r2.URL.Path = "/"
-		}
-		upstream.ServeHTTP(w, r2)
-	}
-}
-
-func injectUser(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if claims, ok := middleware.ClaimsFrom(r.Context()); ok {
-			r.Header.Set("X-User-ID", claims.UserID)
-			r.Header.Set("X-User-Email", claims.Email)
-		}
-		next(w, r)
-	}
-}
-
-func withOrgContext(_ *jwtutil.Manager, client *http.Client, orgURL string, next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		claims, ok := middleware.ClaimsFrom(r.Context())
-		if !ok {
-			httpx.Error(w, http.StatusUnauthorized, "unauthorized", "missing claims")
-			return
-		}
-		r.Header.Set("X-User-ID", claims.UserID)
-		r.Header.Set("X-User-Email", claims.Email)
-
-		orgID := r.PathValue("orgId")
-		if orgID != "" && orgURL != "" {
-			url := strings.TrimRight(orgURL, "/") + "/internal/orgs/" + orgID + "/members/" + claims.UserID
-			resp, err := client.Get(url)
-			if err == nil {
-				defer resp.Body.Close()
-				if resp.StatusCode == http.StatusOK {
-					var body struct {
-						Role string `json:"role"`
-					}
-					_ = json.NewDecoder(resp.Body).Decode(&body)
-					r.Header.Set("X-Org-ID", orgID)
-					r.Header.Set("X-Org-Role", body.Role)
-				}
-			}
-		}
-		next(w, r)
-	}
+	_ = httpSrv.Shutdown(shutdownCtx)
 }

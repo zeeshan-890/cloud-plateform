@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -18,8 +19,10 @@ var logoutCmd = &cobra.Command{
 		}
 
 		if cfg.AccessToken != "" {
-			// Best-effort server logout; always clear local credentials.
-			_ = client.Logout()
+			// Always clear local credentials, but say so when the server could not revoke the session.
+			if err := client.Logout(); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: server-side logout failed (%v); the session may remain valid until it expires.\n", err)
+			}
 		}
 
 		config.ClearAuth(cfg)

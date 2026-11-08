@@ -38,7 +38,7 @@ type SecretMeta struct {
 	Name           string    `json:"name"`
 	CurrentVersion int       `json:"current_version"`
 	ValueHint      string    `json:"value_hint"`
-	Value          string    `json:"value,omitempty"`
+	Value          string    `json:"value,omitempty"` // only ever set for admin+ reveal
 	CreatedBy      *string   `json:"created_by,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
@@ -170,7 +170,7 @@ func (s *Store) CreateSecret(ctx context.Context, orgID, projectID, env, name, h
 	id := uuid.NewString()
 	verID := uuid.NewString()
 	var actor *string
-	if actorID != "" {
+	if _, perr := uuid.Parse(actorID); actorID != "" && perr == nil { // service actors ("addon") are not user ids
 		actor = &actorID
 	}
 	tx, err := s.pool.Begin(ctx)
@@ -212,7 +212,7 @@ func (s *Store) UpdateSecret(ctx context.Context, meta *SecretMeta, hint string,
 func (s *Store) UpdateSecretWithRename(ctx context.Context, meta *SecretMeta, newName, hint string, ciphertext, nonce []byte, keyVersion int, actorID string) (*SecretMeta, error) {
 	now := time.Now().UTC()
 	var actor *string
-	if actorID != "" {
+	if _, perr := uuid.Parse(actorID); actorID != "" && perr == nil { // service actors ("addon") are not user ids
 		actor = &actorID
 	}
 	nameToSet := meta.Name
@@ -298,27 +298,152 @@ func (s *Store) ListVersions(ctx context.Context, secretID string) ([]SecretVers
 	return out, rows.Err()
 }
 
-func (s *Store) GetCiphertext(ctx context.Context, secretID string, version int) (ciphertext, nonce []byte, err error) {
+func (s *Store) GetCiphertext(ctx context.Context, secretID string, version int) (ciphertext, nonce []byte, keyVersion int, err error) {
 	err = s.pool.QueryRow(ctx, `
-		SELECT ciphertext, nonce FROM secret_versions WHERE secret_id=$1 AND version=$2
-	`, secretID, version).Scan(&ciphertext, &nonce)
+		SELECT ciphertext, nonce, key_version FROM secret_versions WHERE secret_id=$1 AND version=$2
+	`, secretID, version).Scan(&ciphertext, &nonce, &keyVersion)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil, ErrNotFound
+		return nil, nil, 0, ErrNotFound
 	}
-	return ciphertext, nonce, err
+	return ciphertext, nonce, keyVersion, err
 }
 
 func (s *Store) Audit(ctx context.Context, orgID, projectID, env, secretName, action, actorID, requestID string, meta map[string]any) {
 	if meta == nil {
 		meta = map[string]any{}
 	}
-	b, _ := json.Marshal(meta)
 	var actor any
 	if actorID != "" {
-		actor = actorID
+		if _, err := uuid.Parse(actorID); err == nil {
+			actor = actorID
+		} else {
+			meta["actor"] = actorID // service callers (e.g. "addon") are not user ids
+		}
 	}
+	b, _ := json.Marshal(meta)
 	_, _ = s.pool.Exec(ctx, `
 		INSERT INTO secret_audit (id, org_id, project_id, environment, secret_name, action, actor_id, metadata, request_id, created_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 	`, uuid.NewString(), orgID, projectID, env, secretName, action, actor, b, requestID, time.Now().UTC())
+}
+
+// EnvRow is one current secret value (still encrypted) used to build an environment.
+type EnvRow struct {
+	Environment string
+	Name        string
+	Ciphertext  []byte
+	Nonce       []byte
+	KeyVersion  int
+}
+
+// EnvRows returns the current version of every secret of the project in the given environments.
+func (s *Store) EnvRows(ctx context.Context, orgID, projectID string, envs []string) ([]EnvRow, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT s.environment, s.name, v.ciphertext, v.nonce, v.key_version
+		FROM secrets s JOIN secret_versions v ON v.secret_id = s.id AND v.version = s.current_version
+		WHERE s.org_id=$1 AND s.project_id=$2 AND s.environment = ANY($3)
+	`, orgID, projectID, envs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []EnvRow
+	for rows.Next() {
+		var r EnvRow
+		if err := rows.Scan(&r.Environment, &r.Name, &r.Ciphertext, &r.Nonce, &r.KeyVersion); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// AuditEntry is one audit row (never contains secret values).
+type AuditEntry struct {
+	ID          string          `json:"id"`
+	Environment string          `json:"environment"`
+	SecretName  string          `json:"secret_name"`
+	Action      string          `json:"action"`
+	ActorID     *string         `json:"actor_id,omitempty"`
+	Metadata    json.RawMessage `json:"metadata"`
+	RequestID   string          `json:"request_id,omitempty"`
+	CreatedAt   time.Time       `json:"created_at"`
+}
+
+// ListAudit returns a page of the project's audit trail, newest first.
+func (s *Store) ListAudit(ctx context.Context, orgID, projectID string, limit, offset int) ([]AuditEntry, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, environment, secret_name, action, actor_id, metadata, request_id, created_at
+		FROM secret_audit WHERE org_id=$1 AND project_id=$2 ORDER BY created_at DESC LIMIT $3 OFFSET $4
+	`, orgID, projectID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []AuditEntry{}
+	for rows.Next() {
+		var a AuditEntry
+		if err := rows.Scan(&a.ID, &a.Environment, &a.SecretName, &a.Action, &a.ActorID, &a.Metadata, &a.RequestID, &a.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// DeleteProject removes every secret, environment and audit row of a project.
+func (s *Store) DeleteProject(ctx context.Context, projectID string) (int64, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `DELETE FROM secrets WHERE project_id=$1`, projectID) // versions cascade
+	if err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM project_environments WHERE project_id=$1`, projectID); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM secret_audit WHERE project_id=$1`, projectID); err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), tx.Commit(ctx)
+}
+
+// VersionRow is one stored ciphertext for re-encryption.
+type VersionRow struct {
+	ID         string
+	Ciphertext []byte
+	Nonce      []byte
+	KeyVersion int
+}
+
+// OutdatedVersions returns up to limit versions encrypted with a key version other than current.
+func (s *Store) OutdatedVersions(ctx context.Context, currentKeyVersion, limit int, projectID string) ([]VersionRow, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT v.id, v.ciphertext, v.nonce, v.key_version
+		FROM secret_versions v JOIN secrets s ON s.id = v.secret_id
+		WHERE v.key_version <> $1 AND ($3 = '' OR s.project_id::text = $3)
+		ORDER BY v.created_at LIMIT $2
+	`, currentKeyVersion, limit, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []VersionRow
+	for rows.Next() {
+		var r VersionRow
+		if err := rows.Scan(&r.ID, &r.Ciphertext, &r.Nonce, &r.KeyVersion); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// SetCiphertext replaces a version's ciphertext after re-encryption.
+func (s *Store) SetCiphertext(ctx context.Context, versionID string, ct, nonce []byte, keyVersion int) error {
+	_, err := s.pool.Exec(ctx, `UPDATE secret_versions SET ciphertext=$2, nonce=$3, key_version=$4 WHERE id=$1`, versionID, ct, nonce, keyVersion)
+	return err
 }

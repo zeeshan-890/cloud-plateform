@@ -1,4 +1,8 @@
-# Prometheus — scrapes jp metrics service + self (monitoring profile)
+# Prometheus (monitoring profile). Only endpoints that really exist are scraped:
+#   * prometheus itself
+#   * traefik   :8082/metrics  (entrypoint `metrics`, enabled by the traefik command in docker-compose.yml)
+#   * metrics   :8016/metrics  (the JP metrics service's own Prometheus endpoint)
+# The other Go services do not expose /metrics; their health is covered by container healthchecks.
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
@@ -8,16 +12,16 @@ scrape_configs:
     static_configs:
       - targets: ["localhost:9090"]
 
+  - job_name: traefik
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["traefik:8082"]
+        labels:
+          service: traefik
+
   - job_name: jp-metrics
     metrics_path: /metrics
     static_configs:
       - targets: ["metrics:8016"]
         labels:
           service: metrics
-
-  - job_name: jp-gateway
-    metrics_path: /healthz
-    static_configs:
-      - targets: ["gateway:8000"]
-        labels:
-          service: gateway

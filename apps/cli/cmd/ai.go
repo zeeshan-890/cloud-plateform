@@ -14,7 +14,7 @@ var (
 var aiCmd = &cobra.Command{
 	Use:   "ai [prompt]",
 	Short: "Ask AI ops to explain failures or answer a prompt",
-	Long:  "Uses hosted LLM when OPENAI_API_KEY is configured on the ai service; otherwise returns a heuristic explanation (simulate mode).",
+	Long:  "Uses the LLM configured for the platform or organization. Without a configured AI key the service reports that AI is not configured.",
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		client, cfg, err := newClient()

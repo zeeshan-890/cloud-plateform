@@ -38,9 +38,15 @@ type Config struct {
 	StorageURL      string
 	DatabaseURLSvc  string
 	AIURL           string
-	BillingURL      string
 	AddonURL        string
 	GitHubWebhookSecret string
+
+	// TrustedProxies are the CIDRs/IPs (env TRUSTED_PROXIES) whose X-Forwarded-For is honoured.
+	TrustedProxies []string
+	// PublicDashboardURL is the externally reachable dashboard base URL (env PUBLIC_DASHBOARD_URL).
+	PublicDashboardURL string
+	// RegistrationMode is closed | invite | open (env REGISTRATION_MODE, default invite).
+	RegistrationMode string
 }
 
 // Load reads configuration from environment variables with sensible defaults.
@@ -72,9 +78,12 @@ func Load(servicePortDefault string) (*Config, error) {
 		StorageURL:          getEnv("STORAGE_URL", "http://localhost:8017"),
 		DatabaseURLSvc:      getEnv("DATABASE_SVC_URL", "http://localhost:8018"),
 		AIURL:               getEnv("AI_URL", "http://localhost:8019"),
-		BillingURL:          getEnv("BILLING_URL", "http://localhost:8020"),
 		AddonURL:            getEnv("ADDON_SVC_URL", "http://localhost:8021"),
-		GitHubWebhookSecret: getEnv("GITHUB_WEBHOOK_SECRET", "dev-webhook-secret"),
+		// No built-in default: webhooks are accepted only with a per-repo or an explicit global secret.
+		GitHubWebhookSecret: getEnv("GITHUB_WEBHOOK_SECRET", ""),
+		TrustedProxies:      splitCSV(getEnv("TRUSTED_PROXIES", "")),
+		PublicDashboardURL:  strings.TrimRight(getEnv("PUBLIC_DASHBOARD_URL", ""), "/"),
+		RegistrationMode:    strings.ToLower(getEnv("REGISTRATION_MODE", "invite")),
 	}
 
 	var err error
@@ -87,11 +96,27 @@ func Load(servicePortDefault string) (*Config, error) {
 		return nil, fmt.Errorf("JWT_REFRESH_TTL: %w", err)
 	}
 
+	switch cfg.RegistrationMode {
+	case "closed", "invite", "open":
+	default:
+		return nil, fmt.Errorf("REGISTRATION_MODE must be closed, invite or open (got %q)", cfg.RegistrationMode)
+	}
 	if cfg.JWTSecret == "" {
 		return nil, fmt.Errorf("JWT_SECRET is required")
 	}
+	if strings.EqualFold(cfg.Env, "production") {
+		if len(cfg.JWTSecret) < 32 || strings.Contains(cfg.JWTSecret, "change-me") || cfg.JWTSecret == "dev-secret-change-me" {
+			return nil, fmt.Errorf("JWT_SECRET must be a random value of at least 32 characters in production")
+		}
+		if strings.TrimSpace(os.Getenv("INTERNAL_TOKEN")) == "" {
+			return nil, fmt.Errorf("INTERNAL_TOKEN is required in production")
+		}
+	}
 	return cfg, nil
 }
+
+// IsProduction reports whether JP_ENV is production.
+func (c *Config) IsProduction() bool { return strings.EqualFold(c.Env, "production") }
 
 func getEnv(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {

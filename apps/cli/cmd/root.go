@@ -37,7 +37,6 @@ func init() {
 		initCmd,
 		configCmd,
 	)
-	registerStubs(rootCmd)
 }
 
 func loadConfig() (*config.Config, error) {

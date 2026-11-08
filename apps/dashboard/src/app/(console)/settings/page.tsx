@@ -1,516 +1,199 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { PageHeader, Alert } from "@/components/ui/page";
+import { FormEvent, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { useProject } from "@/lib/project-context";
+import { CopyButton } from "@/components/ui/code";
+import { Input } from "@/components/ui/field";
+import { Modal } from "@/components/ui/modal";
+import { PageHeader, Panel } from "@/components/ui/panel";
+import { QrCode } from "@/components/ui/qr-code";
+import { Lamp } from "@/components/ui/status";
+import { useToast } from "@/components/ui/toast";
+import { auth, errorMessage, type MfaSetup } from "@/lib/api";
+import { useAuth } from "@/lib/auth-context";
 
-export default function SettingsPage() {
-  const { rootDomain, setRootDomain, panelDomain } = useProject();
-  const [domainInput, setDomainInput] = useState(rootDomain);
-  const [platformUrl, setPlatformUrl] = useState("http://localhost:3000");
-  const [serverIp, setServerIp] = useState("161.118.168.6");
-  const [autoSsl, setAutoSsl] = useState(true);
-  const [copiedRecord, setCopiedRecord] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [cleaning, setCleaning] = useState(false);
-  const [optimizing, setOptimizing] = useState(false);
-  const [message, setMessage] = useState<{ type: "success" | "info" | "error"; text: string } | null>(null);
+function Profile() {
+  const { user, refreshUser } = useAuth();
+  const toast = useToast();
+  const [name, setName] = useState(user?.name ?? "");
+  const [busy, setBusy] = useState(false);
+  return (
+    <Panel title="Profile">
+      <form
+        className="grid items-end gap-4 sm:grid-cols-[1fr_1fr_auto]"
+        onSubmit={async (e: FormEvent) => {
+          e.preventDefault();
+          setBusy(true);
+          try {
+            await auth.updateProfile({ name: name.trim() });
+            await refreshUser();
+            toast.success("Profile saved");
+          } catch (err) {
+            toast.error("Could not save profile", err);
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        <Input label="Name" value={name} onChange={(e) => setName(e.target.value)} />
+        <Input label="Email" value={user?.email ?? ""} readOnly disabled />
+        <Button type="submit" variant="primary" loading={busy} disabled={!name.trim() || name === user?.name}>Save</Button>
+      </form>
+    </Panel>
+  );
+}
 
-  interface DnsCheckResult {
-    host: string;
-    type: string;
-    target: string;
-    resolved: string[];
-    status: "matched" | "proxied" | "pending";
-    detail: string;
-  }
+function Password() {
+  const toast = useToast();
+  const [cur, setCur] = useState("");
+  const [next, setNext] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  return (
+    <Panel title="Password">
+      <form
+        className="grid items-end gap-4 sm:grid-cols-[1fr_1fr_auto]"
+        onSubmit={async (e: FormEvent) => {
+          e.preventDefault();
+          setBusy(true);
+          setErr("");
+          try {
+            await auth.changePassword({ current_password: cur, new_password: next });
+            setCur("");
+            setNext("");
+            toast.success("Password changed");
+          } catch (e2) {
+            setErr(errorMessage(e2));
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        <Input label="Current password" type="password" autoComplete="current-password" value={cur} onChange={(e) => setCur(e.target.value)} />
+        <Input label="New password (8+ characters)" type="password" autoComplete="new-password" minLength={8} value={next} onChange={(e) => setNext(e.target.value)} error={err || undefined} />
+        <Button type="submit" variant="primary" loading={busy} disabled={!cur || next.length < 8}>Change</Button>
+      </form>
+    </Panel>
+  );
+}
 
-  const [checkingDns, setCheckingDns] = useState(false);
-  const [dnsResults, setDnsResults] = useState<DnsCheckResult[] | null>(null);
-  const [httpsStatus, setHttpsStatus] = useState<{
-    checked: boolean;
-    accessible: boolean;
-    url: string;
-    message: string;
-  } | null>(null);
+function Mfa() {
+  const { user, refreshUser } = useAuth();
+  const toast = useToast();
+  const enabled = !!user?.totp_enabled;
+  const [setup, setSetup] = useState<MfaSetup | null>(null);
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [codes, setCodes] = useState<string[] | null>(null);
+  const [disableOpen, setDisableOpen] = useState(false);
+  const [dcode, setDcode] = useState("");
 
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      setPlatformUrl(window.location.origin);
-      setDomainInput(rootDomain);
-      if (window.location.hostname && /^[0-9.]+$/.test(window.location.hostname)) {
-        setServerIp(window.location.hostname);
-      }
-    }
-  }, [rootDomain]);
-
-  async function resolveDns(domain: string): Promise<{ ips: string[]; nxdomain: boolean }> {
+  const begin = async () => {
+    setBusy(true);
+    setErr("");
     try {
-      const res = await fetch(`https://dns.google/resolve?name=${encodeURIComponent(domain)}&type=A`, {
-        headers: { Accept: "application/json" },
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.Status === 3) return { ips: [], nxdomain: true };
-        const answers = data.Answer || [];
-        const aRecords = answers
-          .filter((a: { type: number; data: string }) => a.type === 1)
-          .map((a: { data: string }) => a.data);
-        if (aRecords.length > 0) return { ips: aRecords, nxdomain: false };
-      }
-    } catch {
-      // Fallback to Cloudflare
-    }
-
-    try {
-      const res = await fetch(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(domain)}&type=A`, {
-        headers: { Accept: "application/dns-json" },
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.Status === 3) return { ips: [], nxdomain: true };
-        const answers = data.Answer || [];
-        const aRecords = answers
-          .filter((a: { type: number; data: string }) => a.type === 1)
-          .map((a: { data: string }) => a.data);
-        return { ips: aRecords, nxdomain: aRecords.length === 0 };
-      }
-    } catch {
-      // Silent error
-    }
-    return { ips: [], nxdomain: false };
-  }
-
-  async function handleCheckPropagation() {
-    setCheckingDns(true);
-    setDnsResults(null);
-    setHttpsStatus(null);
-
-    const cleanBase = rootDomain.startsWith("panel.") ? rootDomain.replace(/^panel\./, "") : rootDomain;
-    const panelHost = `panel.${cleanBase}`;
-    const wildcardProbe = `probe-app.${cleanBase}`;
-    const apexHost = cleanBase;
-
-    try {
-      const [panelRes, wildcardRes, apexRes] = await Promise.all([
-        resolveDns(panelHost),
-        resolveDns(wildcardProbe),
-        resolveDns(apexHost),
-      ]);
-
-      function evaluate(host: string, res: { ips: string[]; nxdomain: boolean }, expectedIp: string): DnsCheckResult {
-        if (res.nxdomain || res.ips.length === 0) {
-          return {
-            host,
-            type: "A",
-            target: expectedIp,
-            resolved: [],
-            status: "pending",
-            detail: "Record not found yet in global DNS (Status: NXDOMAIN). Add it to your DNS manager or wait 1-2 minutes.",
-          };
-        }
-        if (res.ips.includes(expectedIp)) {
-          return {
-            host,
-            type: "A",
-            target: expectedIp,
-            resolved: res.ips,
-            status: "matched",
-            detail: `Directly points to server IP ${expectedIp}. Active and live!`,
-          };
-        }
-        const isCloudflare = res.ips.some(
-          (ip) =>
-            ip.startsWith("104.") ||
-            ip.startsWith("172.") ||
-            ip.startsWith("188.") ||
-            ip.startsWith("162.")
-        );
-        return {
-          host,
-          type: "A",
-          target: expectedIp,
-          resolved: res.ips,
-          status: "proxied",
-          detail: isCloudflare
-            ? `Resolving via Cloudflare Proxy (${res.ips.join(", ")}). Edge HTTPS is active!`
-            : `Resolving to ${res.ips.join(", ")}.`,
-        };
-      }
-
-      setDnsResults([
-        evaluate(panelHost, panelRes, serverIp),
-        evaluate(`*.${cleanBase}`, wildcardRes, serverIp),
-        evaluate(apexHost, apexRes, serverIp),
-      ]);
-
-      const panelHttpsUrl = `https://${panelHost}`;
-      if (panelRes.ips.length > 0) {
-        setHttpsStatus({
-          checked: true,
-          accessible: true,
-          url: panelHttpsUrl,
-          message: "DNS is resolving! Your panel is ready to be accessed securely over HTTPS.",
-        });
-      } else {
-        setHttpsStatus({
-          checked: true,
-          accessible: false,
-          url: panelHttpsUrl,
-          message: "Pending DNS propagation before HTTPS certificate can be verified.",
-        });
-      }
-    } catch {
-      // Ignored
+      setSetup(await auth.mfaSetup());
+      setCode("");
+    } catch (e) {
+      toast.error("Could not start setup", e);
     } finally {
-      setCheckingDns(false);
+      setBusy(false);
     }
-  }
-
-  function copyToClipboard(text: string, label: string) {
-    if (typeof navigator !== "undefined" && navigator.clipboard) {
-      navigator.clipboard.writeText(text);
-      setCopiedRecord(label);
-      setTimeout(() => setCopiedRecord(""), 2000);
-    }
-  }
-
-  const handleSaveDomain = (e: React.FormEvent) => {
+  };
+  const enable = async (e: FormEvent) => {
     e.preventDefault();
-    setSaving(true);
-    setMessage(null);
-
-    const clean = domainInput.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
-    setRootDomain(clean);
-
-    setTimeout(() => {
-      setSaving(false);
-      setMessage({
-        type: "success",
-        text: `Platform Root Domain updated to "${clean}". Panel is at panel.${clean} and apps default to <app-name>.${clean}.`,
-      });
-    }, 400);
+    setBusy(true);
+    setErr("");
+    try {
+      const r = await auth.mfaEnable(code.trim());
+      setCodes(r.backup_codes);
+      setSetup(null);
+      await refreshUser();
+      toast.success("Two-step sign-in is on");
+    } catch (e2) {
+      setErr(errorMessage(e2));
+    } finally {
+      setBusy(false);
+    }
   };
-
-  const handlePrune = async () => {
-    setCleaning(true);
-    setMessage(null);
-    setTimeout(() => {
-      setCleaning(false);
-      setMessage({
-        type: "info",
-        text: "Cleaned unused Docker image caches and temporary build artifacts.",
-      });
-    }, 600);
-  };
-
-  const handleOptimize = async () => {
-    setOptimizing(true);
-    setMessage(null);
-    setTimeout(() => {
-      setOptimizing(false);
-      setMessage({
-        type: "success",
-        text: "Memory limits and CPU quotas auto-tuned for current server workload.",
-      });
-    }, 500);
+  const disable = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setErr("");
+    try {
+      await auth.mfaDisable(dcode.trim());
+      setDisableOpen(false);
+      setDcode("");
+      await refreshUser();
+      toast.success("Two-step sign-in is off");
+    } catch (e2) {
+      setErr(errorMessage(e2));
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
-    <div className="space-y-6 max-w-4xl">
-      <PageHeader
-        title="Platform Settings & Root Domain"
-        description="Configure your platform's root domain, panel domain, automated app subdomains, and self-hosted system maintenance."
-      />
-
-      {message && (
-        <Alert tone={message.type === "error" ? "error" : "success"}>
-          {message.text}
-        </Alert>
+    <Panel title="Two-step sign-in">
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <Lamp state={enabled ? "ok" : "idle"} large label={enabled ? "enabled" : "disabled"} />
+        <strong>{enabled ? "Authenticator app is required at sign-in" : "Not enabled"}</strong>
+        <div className="ml-auto">
+          {enabled ? <Button variant="danger" onClick={() => { setErr(""); setDisableOpen(true); }}>Turn off</Button> : !setup && <Button variant="primary" onClick={() => void begin()} loading={busy} data-testid="mfa-begin">Set up authenticator</Button>}
+        </div>
+      </div>
+      {setup && (
+        <form onSubmit={enable} className="grid gap-6 md:grid-cols-[auto_1fr]" data-testid="mfa-setup">
+          <div className="flex flex-col items-center gap-2">
+            <QrCode text={setup.otpauth_uri} label="Authenticator QR code" />
+            <span className="hint !mt-0">Scan with your authenticator app</span>
+          </div>
+          <div className="flex flex-col gap-4">
+            <div>
+              <div className="label mb-1">Or enter this key manually</div>
+              <code className="mono well block break-all !py-2 text-[14px]" data-testid="mfa-secret">{setup.secret}</code>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <CopyButton text={setup.secret} label="Copy key" />
+                <CopyButton text={setup.otpauth_uri} label="Copy otpauth link" />
+              </div>
+            </div>
+            <Input label="6-digit code from the app" inputMode="numeric" autoComplete="one-time-code" value={code} onChange={(e) => setCode(e.target.value)} error={err || undefined} data-testid="mfa-code" />
+            <div className="flex gap-3">
+              <Button type="submit" variant="primary" loading={busy} disabled={code.trim().length < 6} data-testid="mfa-enable">Verify and turn on</Button>
+              <Button variant="ghost" onClick={() => setSetup(null)}>Cancel</Button>
+            </div>
+          </div>
+        </form>
       )}
-
-      {/* 1. Main Root Domain & Automated App Subdomains */}
-      <form onSubmit={handleSaveDomain} className="jp-card p-5 space-y-4">
-        <div className="border-b border-[var(--border)] pb-3">
-          <h2 className="text-base font-bold text-[var(--ink)]">
-            Main Platform Domain & DNS Configuration
-          </h2>
-          <p className="text-xs text-[var(--ink-muted)]">
-            Panel: <code className="font-bold text-[var(--accent)] font-mono">{panelDomain}</code> &bull; Apps: <code className="font-bold text-blue-600 font-mono">*.{rootDomain}</code>
-          </p>
+      <Modal open={!!codes} onClose={() => setCodes(null)} title="Save your backup codes" description="Each code works once if you lose your phone. They are shown only now.">
+        <div className="well grid grid-cols-2 gap-2" data-testid="backup-codes">
+          {codes?.map((c) => <code key={c} className="mono text-[14px]">{c}</code>)}
         </div>
-
-        <div className="space-y-4">
-          <div>
-            <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
-              Root Domain
-            </label>
-            <div className="flex items-center gap-2">
-              <Input
-                type="text"
-                value={domainInput}
-                onChange={(e) => setDomainInput(e.target.value)}
-                placeholder="e.g. mycompany.com"
-                required
-              />
-              <Button type="submit" disabled={saving || !domainInput.trim()}>
-                {saving ? "Saving..." : "Save Root Domain"}
-              </Button>
-            </div>
-          </div>
-
-          {/* DNS Records */}
-          <div className="rounded-xl border-2 border-slate-300 bg-slate-50 p-5 space-y-4 shadow-2xs">
-            <p className="text-xs font-extrabold uppercase tracking-wider text-[#0F1B3D]">
-              Required DNS Records:
-            </p>
-            <div className="space-y-2.5 font-mono text-[11px]">
-              {/* Record 1: Panel Domain */}
-              <div className="flex items-center justify-between rounded-lg bg-white px-3.5 py-2.5 border-2 border-slate-300 shadow-2xs">
-                <div className="flex items-center gap-2">
-                  <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-bold text-blue-800">A</span>
-                  <strong className="text-blue-900 font-bold">panel</strong>
-                  <span className="text-slate-400">&rarr;</span>
-                  <code className="text-slate-900 font-bold">{serverIp}</code>
-                  <span className="text-slate-500 text-[10px] font-sans font-medium">(Management Panel)</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => copyToClipboard(`panel.${rootDomain}`, "panel")}
-                  className="text-xs text-[#1E3A8A] font-bold hover:underline shrink-0"
-                >
-                  {copiedRecord === "panel" ? "Copied!" : "Copy Host"}
-                </button>
-              </div>
-
-              {/* Record 2: Wildcard for Apps */}
-              <div className="flex items-center justify-between rounded-lg bg-white px-3.5 py-2.5 border-2 border-slate-300 shadow-2xs">
-                <div className="flex items-center gap-2">
-                  <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold text-emerald-800">A</span>
-                  <strong className="text-emerald-900 font-bold">*</strong>
-                  <span className="text-slate-400">&rarr;</span>
-                  <code className="text-slate-900 font-bold">{serverIp}</code>
-                  <span className="text-slate-500 text-[10px] font-sans font-medium">(All App Containers)</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => copyToClipboard(`*.${rootDomain}`, "wildcard")}
-                  className="text-xs text-[#1E3A8A] font-bold hover:underline shrink-0"
-                >
-                  {copiedRecord === "wildcard" ? "Copied!" : "Copy Host"}
-                </button>
-              </div>
-
-              {/* Record 3: Apex Domain */}
-              <div className="flex items-center justify-between rounded-lg bg-white px-3.5 py-2.5 border-2 border-slate-300 shadow-2xs">
-                <div className="flex items-center gap-2">
-                  <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-800">A</span>
-                  <strong className="text-slate-900 font-bold">@</strong>
-                  <span className="text-slate-400">&rarr;</span>
-                  <code className="text-slate-900 font-bold">{serverIp}</code>
-                  <span className="text-slate-500 text-[10px] font-sans font-medium">(Apex / Root Domain)</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => copyToClipboard(rootDomain, "root")}
-                  className="text-xs text-[#1E3A8A] font-bold hover:underline shrink-0"
-                >
-                  {copiedRecord === "root" ? "Copied!" : "Copy Host"}
-                </button>
-              </div>
-            </div>
-
-            {/* Action Buttons: Check Propagation */}
-            <div className="flex flex-wrap items-center gap-2 pt-3 border-t-2 border-slate-200">
-              <Button
-                type="button"
-                size="sm"
-                onClick={handleCheckPropagation}
-                disabled={checkingDns}
-                className="bg-[#1E3A8A] hover:bg-[#162456] text-white font-bold"
-              >
-                {checkingDns ? "Checking DNS & HTTPS..." : "⚡ Check DNS & HTTPS Propagation"}
-              </Button>
-
-                <a
-                  href={`https://www.whatsmydns.net/#A/panel.${rootDomain}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-1 rounded-lg border-2 border-slate-300 bg-white px-3 py-1.5 text-xs font-bold text-slate-800 hover:bg-slate-50 transition-colors shadow-2xs"
-                >
-                  <span>Global Map (WhatsMyDNS)</span>
-                  <span className="text-[10px] text-blue-600">↗</span>
-                </a>
-
-                {httpsStatus?.accessible && (
-                  <a
-                    href={`https://panel.${rootDomain}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-1 rounded-lg border-2 border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-800 hover:bg-emerald-100 transition-colors shadow-2xs"
-                  >
-                    <span>🔒 Open https://panel.{rootDomain}</span>
-                    <span className="text-[10px]">↗</span>
-                  </a>
-                )}
-              </div>
-
-              {/* Real-time Propagation Results Panel */}
-              {dnsResults && (
-                <div className="mt-3 space-y-2.5 rounded-xl border-2 border-slate-300 bg-white p-4 shadow-sm">
-                  <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                    <h5 className="text-xs font-bold uppercase tracking-wider text-slate-800">
-                      Live DNS Verification Report
-                    </h5>
-                    <span className="text-[10px] text-slate-500 font-mono">
-                      Query Source: Google DNS & Cloudflare DoH
-                    </span>
-                  </div>
-
-                  <div className="space-y-2">
-                    {dnsResults.map((r, i) => (
-                      <div
-                        key={i}
-                        className={`flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 rounded p-2.5 text-xs border ${
-                          r.status === "matched"
-                            ? "border-emerald-200 bg-emerald-50/50 text-emerald-950"
-                            : r.status === "proxied"
-                            ? "border-blue-200 bg-blue-50/50 text-blue-950"
-                            : "border-amber-200 bg-amber-50/50 text-amber-950"
-                        }`}
-                      >
-                        <div className="space-y-0.5">
-                          <div className="flex items-center gap-2">
-                            <span className="font-mono font-bold text-slate-900">{r.host}</span>
-                            <span className="rounded bg-white px-1.5 py-0.2 border border-slate-200 text-[10px] font-mono font-bold">
-                              {r.type}
-                            </span>
-                          </div>
-                          <p className="text-[11px] text-slate-600">{r.detail}</p>
-                        </div>
-
-                        <div className="flex items-center gap-2 shrink-0">
-                          {r.status === "matched" ? (
-                            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2.5 py-0.5 text-[11px] font-bold text-emerald-800">
-                              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                              Propagated & Live
-                            </span>
-                          ) : r.status === "proxied" ? (
-                            <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2.5 py-0.5 text-[11px] font-bold text-blue-800">
-                              <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
-                              Cloudflare Proxied
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-0.5 text-[11px] font-bold text-amber-800">
-                              <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />
-                              Propagating...
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-
-                  {/* HTTPS Status Alert Card */}
-                  {httpsStatus && (
-                    <div className="mt-2.5 rounded border border-blue-200 bg-blue-50/80 p-2.5 text-xs text-blue-900 flex items-center gap-2">
-                      <span className="text-base leading-none">🔒</span>
-                      <p className="font-bold">{httpsStatus.message}</p>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-      </form>
-
-      {/* 2. One-Click Automated Maintenance */}
-      <div className="jp-card p-5 space-y-4">
-        <div className="border-b border-[var(--border)] pb-3">
-          <h2 className="text-base font-bold text-[var(--ink)]">Automated Maintenance & Self-Healing</h2>
-          <p className="text-xs text-[var(--ink-muted)]">
-            Keep platform storage and memory optimized with zero manual shell commands.
-          </p>
+        <div className="mt-4 flex gap-2">
+          <CopyButton text={(codes ?? []).join("\n")} label="Copy all" />
+          <Button onClick={() => setCodes(null)} variant="primary">I have stored them</Button>
         </div>
+      </Modal>
+      <Modal open={disableOpen} onClose={() => setDisableOpen(false)} locked={busy} title="Turn off two-step sign-in" description="Enter a current code or an unused backup code to confirm.">
+        <form onSubmit={disable} className="flex flex-col gap-4">
+          <Input data-autofocus label="Code" value={dcode} onChange={(e) => setDcode(e.target.value)} error={err || undefined} />
+          <Button type="submit" variant="danger" loading={busy} disabled={!dcode.trim()}>Turn off</Button>
+        </form>
+      </Modal>
+    </Panel>
+  );
+}
 
-        <div className="grid gap-3 sm:grid-cols-2">
-          <div className="flex flex-col justify-between rounded-lg border border-[var(--border)] bg-slate-50 p-3.5 space-y-3">
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-                <h3 className="text-xs font-bold text-[var(--ink)]">Reclaim Disk Space</h3>
-              </div>
-              <p className="mt-1 text-[11px] text-[var(--ink-muted)] leading-relaxed">
-                Prunes unused Docker build layers, stopped preview containers, and temporary cache files.
-              </p>
-            </div>
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              onClick={handlePrune}
-              disabled={cleaning}
-            >
-              {cleaning ? "Cleaning..." : "Clean Docker Caches"}
-            </Button>
-          </div>
-
-          <div className="flex flex-col justify-between rounded-lg border border-[var(--border)] bg-slate-50 p-3.5 space-y-3">
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="h-2 w-2 rounded-full bg-blue-500" />
-                <h3 className="text-xs font-bold text-[var(--ink)]">Auto-Balance CPU & RAM</h3>
-              </div>
-              <p className="mt-1 text-[11px] text-[var(--ink-muted)] leading-relaxed">
-                Re-evaluates host hardware capacity and balances container resource quotas dynamically.
-              </p>
-            </div>
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              onClick={handleOptimize}
-              disabled={optimizing}
-            >
-              {optimizing ? "Optimizing..." : "Auto-Balance Allocations"}
-            </Button>
-          </div>
-        </div>
+export default function SettingsPage() {
+  return (
+    <>
+      <PageHeader title="Account settings" description="Your profile, password and two-step sign-in." />
+      <div className="flex flex-col gap-6">
+        <Profile />
+        <Password />
+        <Mfa />
       </div>
-
-      {/* 3. Server Specs & Profile */}
-      <div className="jp-card p-5 space-y-4">
-        <div className="flex items-center justify-between border-b border-[var(--border)] pb-3">
-          <div>
-            <h2 className="text-base font-bold text-[var(--ink)]">Server Profile</h2>
-            <p className="text-xs text-[var(--ink-muted)]">System architecture and runtime topology.</p>
-          </div>
-          <span className="rounded-full border border-emerald-300 bg-emerald-50 px-2.5 py-0.5 text-xs font-bold text-emerald-800">
-            Healthy &bull; Self-Hosted
-          </span>
-        </div>
-
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
-          <div className="rounded-md border border-[var(--border)] bg-slate-50 p-2.5">
-            <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--ink-muted)]">Platform</p>
-            <p className="mt-0.5 text-sm font-bold text-[var(--ink)]">JP v1.2</p>
-          </div>
-          <div className="rounded-md border border-[var(--border)] bg-slate-50 p-2.5">
-            <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--ink-muted)]">Reverse Proxy</p>
-            <p className="mt-0.5 text-sm font-bold text-[var(--ink)]">Traefik v3</p>
-          </div>
-          <div className="rounded-md border border-[var(--border)] bg-slate-50 p-2.5">
-            <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--ink-muted)]">Engine</p>
-            <p className="mt-0.5 text-sm font-bold text-[var(--ink)]">Docker Engine</p>
-          </div>
-          <div className="rounded-md border border-[var(--border)] bg-slate-50 p-2.5">
-            <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--ink-muted)]">Database</p>
-            <p className="mt-0.5 text-sm font-bold text-[var(--ink)]">Postgres 16</p>
-          </div>
-        </div>
-      </div>
-    </div>
+    </>
   );
 }

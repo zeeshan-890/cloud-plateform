@@ -1,90 +1,59 @@
 "use client";
 
-import React, { createContext, useContext, useEffect, useState } from "react";
-import type { Project } from "@/lib/types";
+import { createContext, useContext, useMemo } from "react";
+import { projects, type Project } from "@/lib/api";
+import { useOrg } from "@/lib/org-context";
+import { useStoredValue } from "@/lib/persist";
+import { useResource } from "@/lib/use-resource";
+import type { ApiError } from "@/lib/api/http";
 
 interface ProjectContextValue {
+  projects: Project[];
   activeProject: Project | null;
-  setActiveProject: (p: Project | null) => void;
-  rootDomain: string;
-  setRootDomain: (d: string) => void;
-  panelDomain: string;
-  getAppPublicUrl: (projectName: string) => string;
+  setActiveProjectId: (id: string) => void;
+  loading: boolean;
+  error: ApiError | undefined;
+  reload: () => void;
 }
 
-const ProjectContext = createContext<ProjectContextValue>({
-  activeProject: null,
-  setActiveProject: () => {},
-  rootDomain: "jp.localhost",
-  setRootDomain: () => {},
-  panelDomain: "panel.jp.localhost",
-  getAppPublicUrl: () => "",
-});
+const Ctx = createContext<ProjectContextValue | null>(null);
 
 export function ProjectProvider({ children }: { children: React.ReactNode }) {
-  const [activeProject, setActiveProject] = useState<Project | null>(null);
-  const [rootDomain, setRootDomainState] = useState<string>("jp.localhost");
-
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      const savedDomain = localStorage.getItem("jp_platform_domain");
-      if (savedDomain) {
-        setRootDomainState(savedDomain);
-      } else {
-        const host = window.location.hostname || "localhost";
-        // If accessed via panel.domain.com, the base domain for customer apps is domain.com
-        const detectedBase = host.startsWith("panel.") ? host.replace(/^panel\./, "") : host;
-        setRootDomainState(
-          detectedBase === "localhost" || /^[0-9.]+$/.test(detectedBase)
-            ? "jp.localhost"
-            : detectedBase
-        );
-      }
-    }
-  }, []);
-
-  const setRootDomain = (domain: string) => {
-    let clean = domain.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
-    if (clean.startsWith("panel.")) {
-      clean = clean.replace(/^panel\./, "");
-    }
-    setRootDomainState(clean);
-    if (typeof window !== "undefined") {
-      localStorage.setItem("jp_platform_domain", clean);
-    }
-  };
-
-  const cleanBase = rootDomain.startsWith("panel.") ? rootDomain.replace(/^panel\./, "") : rootDomain;
-  const panelDomain =
-    cleanBase === "jp.localhost" || cleanBase === "localhost"
-      ? "panel.jp.localhost"
-      : `panel.${cleanBase}`;
-
-  const getAppPublicUrl = (projectName: string) => {
-    const slug = projectName.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-");
-    const proto =
-      typeof window !== "undefined" && window.location.protocol === "https:"
-        ? "https:"
-        : "http:";
-    return `${proto}//${slug}.${cleanBase}`;
-  };
-
-  return (
-    <ProjectContext.Provider
-      value={{
-        activeProject,
-        setActiveProject,
-        rootDomain,
-        setRootDomain,
-        panelDomain,
-        getAppPublicUrl,
-      }}
-    >
-      {children}
-    </ProjectContext.Provider>
+  const { currentOrg, access } = useOrg();
+  const [storedId, setStoredId] = useStoredValue("jp_active_project");
+  const list = useResource(currentOrg ? `projects:${currentOrg.id}` : null, (signal) =>
+    projects.list(currentOrg!.id, { signal }),
   );
+
+  // Restricted users only ever see projects they were granted, even if an upstream list is broader.
+  const visible = useMemo(() => {
+    const l = list.data;
+    if (!l) return l;
+    return access.known && !access.full ? l.filter((p) => access.projects.has(p.id)) : l;
+  }, [list.data, access]);
+
+  const activeProject = useMemo(() => {
+    const l = visible;
+    if (!l || l.length === 0) return null;
+    return l.find((p) => p.id === storedId) ?? l[0];
+  }, [visible, storedId]);
+
+  const value = useMemo<ProjectContextValue>(
+    () => ({
+      projects: visible ?? [],
+      activeProject,
+      setActiveProjectId: setStoredId,
+      loading: list.loading,
+      error: list.error,
+      reload: list.reload,
+    }),
+    [visible, activeProject, setStoredId, list.loading, list.error, list.reload],
+  );
+  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 
-export function useProject() {
-  return useContext(ProjectContext);
+export function useProjects(): ProjectContextValue {
+  const v = useContext(Ctx);
+  if (!v) throw new Error("useProjects must be used inside ProjectProvider");
+  return v;
 }

@@ -3,87 +3,114 @@ package catalog
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
-func TestCatalogDefaults(t *testing.T) {
+func TestCatalogSanity(t *testing.T) {
 	all := All()
-	t.Logf("Total catalog engines registered: %d", len(all))
-	if len(all) < 15 {
-		t.Fatalf("expected at least 15 default engines, got %d", len(all))
+	if len(all) != 241 {
+		t.Fatalf("expected 241 catalog entries, got %d", len(all))
 	}
+	reserved := map[string]bool{"custom": true, "catalog": true, "provision": true, "backups": true, "connection": true}
+	seen := map[string]bool{}
+	prov := 0
+	for _, it := range all {
+		if !idRe.MatchString(it.ID) {
+			t.Errorf("bad id %q", it.ID)
+		}
+		if seen[it.ID] {
+			t.Errorf("duplicate id %q", it.ID)
+		}
+		seen[it.ID] = true
+		if reserved[it.ID] {
+			t.Errorf("id %q collides with a reserved word", it.ID)
+		}
+		if it.Provisionable {
+			prov++
+			if it.DefaultImage == "" || it.DefaultPort <= 0 || it.Probe == nil || it.Driver == "" || it.Driver == "generic" {
+				t.Errorf("%s: provisionable without image/port/probe/driver: %+v", it.ID, it)
+			}
+			if strings.HasSuffix(it.DefaultImage, ":latest") && it.ID != "keydb" {
+				t.Errorf("%s: provisionable image must be pinned, got %s", it.ID, it.DefaultImage)
+			}
+			if !it.ArchOK || it.Arch != "amd64,arm64" {
+				t.Errorf("%s: provisionable images must be multi-arch", it.ID)
+			}
+			if it.Probe.Type == "http" && it.Probe.Path == "" {
+				t.Errorf("%s: http probe needs a path", it.ID)
+			}
+			if it.Reason != "" {
+				t.Errorf("%s: provisionable with a reason", it.ID)
+			}
+		} else if it.Reason == "" || ReasonText[it.Reason] == "" {
+			t.Errorf("%s: non provisionable without a known reason (%q)", it.ID, it.Reason)
+		}
+	}
+	if prov != len(provisionable) {
+		t.Fatalf("provisionable count %d != specs %d", prov, len(provisionable))
+	}
+	for _, id := range []string{"postgres", "mysql", "mariadb", "mongodb", "redis", "valkey", "dragonfly", "rabbitmq", "clickhouse",
+		"meilisearch", "elasticsearch", "opensearch", "kafka", "nats", "memcached"} {
+		if it, ok := Get(id); !ok || !it.Provisionable {
+			t.Errorf("first-class engine %s must be provisionable", id)
+		}
+	}
+	if it, _ := Get("sqlite"); it.Provisionable || it.Reason != ReasonNoServer {
+		t.Errorf("sqlite: %+v", it)
+	}
+	if it, _ := Get("minio"); it.Provisionable || it.Reason != ReasonImage {
+		t.Errorf("minio image is not publicly pullable: %+v", it)
+	}
+	t.Logf("catalog: %d entries, %d provisionable", len(all), prov)
+}
 
-	expected := []string{"postgres", "mysql", "mariadb", "mongodb", "redis", "valkey", "rabbitmq", "kafka", "sqlite", "meilisearch", "clickhouse", "minio"}
-	for _, id := range expected {
-		if !ValidEngine(id) {
-			t.Errorf("expected engine %q to be valid", id)
-		}
-		item, ok := Get(id)
-		if !ok || item.ID != id {
-			t.Errorf("expected to get valid item for %q", id)
-		}
+func TestImmutableCopies(t *testing.T) {
+	a := All()
+	a[0].ID = "hacked"
+	if All()[0].ID == "hacked" {
+		t.Fatal("All() must return a copy")
 	}
 }
 
 func TestSecretName(t *testing.T) {
-	tests := []struct {
-		engine string
-		name   string
-		want   string
-	}{
+	for _, tc := range [][3]string{
 		{"postgres", "primary", "POSTGRES_URL_PRIMARY"},
 		{"valkey", "cache-prod", "VALKEY_URL_CACHE_PROD"},
-		{"meilisearch", "search", "MEILISEARCH_URL_SEARCH"},
-		{"custom_app", "my-app", "CUSTOM_APP_URL_MY_APP"},
-	}
-
-	for _, tt := range tests {
-		got := SecretName(tt.engine, tt.name)
-		if got != tt.want {
-			t.Errorf("SecretName(%q, %q) = %q, want %q", tt.engine, tt.name, got, tt.want)
+		{"kafka", "events", "KAFKA_BROKERS_EVENTS"},
+		{"nope", "x", "NOPE_URL_X"},
+	} {
+		if got := SecretName(tc[0], tc[1]); got != tc[2] {
+			t.Errorf("SecretName(%s,%s)=%s want %s", tc[0], tc[1], got, tc[2])
 		}
 	}
 }
 
-func TestDynamicRegistrationAndLoadDir(t *testing.T) {
-	custom := Item{
-		ID:          "typesense",
-		Name:        "Typesense",
-		Category:    "search",
-		Description: "Fast, typo-tolerant search engine",
-		DefaultPort: 8108,
-		Scheme:      "http",
-		EnvPrefix:   "TYPESENSE_URL_",
+func TestLoadCatalogDirStartupOnlyRules(t *testing.T) {
+	dir := t.TempDir()
+	write := func(n, c string) {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte(c), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
-	Register(custom)
-
-	if !ValidEngine("typesense") {
-		t.Fatalf("expected typesense to be registered")
+	write("ok.json", `{"id":"my-queue","name":"My Queue","category":"queue","default_image":"example/q:1","default_port":1234,"provisionable":true,"probe":{"type":"tcp"},"driver":"generic"}`)
+	write("incomplete.json", `{"id":"half-baked","name":"x","category":"tool","provisionable":true}`)
+	write("override.json", `{"id":"postgres","name":"Evil","default_image":"evil/pg"}`)
+	write("bad.json", `{not json`)
+	n, err := LoadCatalogDir(dir)
+	if err == nil {
+		t.Fatal("invalid files must be reported")
 	}
-	item, ok := Get("typesense")
-	if !ok || item.DefaultPort != 8108 {
-		t.Fatalf("expected typesense port 8108, got %+v", item)
+	if n != 2 {
+		t.Fatalf("loaded=%d", n)
 	}
-
-	tmpDir := t.TempDir()
-	jsonContent := `{
-		"id": "chroma",
-		"name": "ChromaDB",
-		"category": "database",
-		"description": "AI-native open-source embedding database",
-		"default_port": 8000,
-		"scheme": "http",
-		"env_prefix": "CHROMA_URL_"
-	}`
-	if err := os.WriteFile(filepath.Join(tmpDir, "chroma.json"), []byte(jsonContent), 0o644); err != nil {
-		t.Fatalf("failed to write test json: %v", err)
+	if it, ok := Get("my-queue"); !ok || !it.Provisionable {
+		t.Fatalf("%+v", it)
 	}
-
-	if err := LoadCatalogDir(tmpDir); err != nil {
-		t.Fatalf("LoadCatalogDir failed: %v", err)
+	if it, _ := Get("half-baked"); it.Provisionable || it.Reason == "" {
+		t.Fatalf("incomplete entries must not be provisionable: %+v", it)
 	}
-
-	if !ValidEngine("chroma") {
-		t.Fatalf("expected dynamically loaded chroma engine to be valid")
+	if it, _ := Get("postgres"); it.DefaultImage != "postgres:16-alpine" {
+		t.Fatal("built-in entries cannot be overridden")
 	}
 }

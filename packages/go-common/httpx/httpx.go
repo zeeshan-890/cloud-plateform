@@ -25,9 +25,18 @@ func Error(w http.ResponseWriter, status int, code, message string) {
 	JSON(w, status, ErrorBody{Error: ErrorDetail{Code: code, Message: message}})
 }
 
+// MaxBody is the default request body limit (1 MiB).
+const MaxBody = 1 << 20
+
+// Decode reads JSON with a 1 MiB cap.
 func Decode(r *http.Request, dst any) error {
+	return DecodeLimit(r, dst, MaxBody)
+}
+
+// DecodeLimit reads JSON with a custom byte cap.
+func DecodeLimit(r *http.Request, dst any, max int64) error {
 	defer r.Body.Close()
-	dec := json.NewDecoder(r.Body)
+	dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, max))
 	dec.DisallowUnknownFields()
 	return dec.Decode(dst)
 }

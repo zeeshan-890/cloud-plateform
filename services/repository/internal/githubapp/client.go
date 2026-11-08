@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,12 +27,14 @@ var (
 
 // Client authenticates as a GitHub App and mints installation tokens.
 type Client struct {
-	AppID  int64
-	Slug   string
-	HTTP   *http.Client
-	key    *rsa.PrivateKey
-	mu     sync.Mutex
-	tokens map[string]cachedToken
+	AppID int64
+	Slug  string
+	HTTP  *http.Client
+	// APIBase overrides https://api.github.com (tests / GitHub Enterprise).
+	APIBase string
+	key     *rsa.PrivateKey
+	mu      sync.Mutex
+	tokens  map[string]cachedToken
 }
 
 type cachedToken struct {
@@ -92,6 +96,18 @@ func NewFromEnv(httpClient *http.Client) (*Client, error) {
 	return New(id, slug, pem, httpClient)
 }
 
+func (c *Client) api() string {
+	if c.APIBase != "" {
+		return strings.TrimRight(c.APIBase, "/")
+	}
+	return "https://api.github.com"
+}
+
+var installIDRe = regexp.MustCompile(`^[0-9]{1,20}$`)
+
+// ValidInstallationID reports whether id is a numeric GitHub installation id.
+func ValidInstallationID(id string) bool { return installIDRe.MatchString(id) }
+
 func (c *Client) Configured() bool { return c != nil && c.key != nil && c.AppID > 0 }
 
 func (c *Client) InstallURL(state string) string {
@@ -101,7 +117,7 @@ func (c *Client) InstallURL(state string) string {
 	}
 	base := fmt.Sprintf("https://github.com/apps/%s/installations/new", slug)
 	if state != "" {
-		return base + "?state=" + state
+		return base + "?state=" + url.QueryEscape(state)
 	}
 	return base
 }
@@ -122,8 +138,8 @@ func (c *Client) InstallationToken(ctx context.Context, installationID string) (
 		return "", ErrNotConfigured
 	}
 	installationID = strings.TrimSpace(installationID)
-	if installationID == "" {
-		return "", fmt.Errorf("installation_id required")
+	if !ValidInstallationID(installationID) {
+		return "", fmt.Errorf("invalid installation_id")
 	}
 
 	c.mu.Lock()
@@ -137,7 +153,7 @@ func (c *Client) InstallationToken(ctx context.Context, installationID string) (
 	if err != nil {
 		return "", err
 	}
-	url := fmt.Sprintf("https://api.github.com/app/installations/%s/access_tokens", installationID)
+	url := fmt.Sprintf("%s/app/installations/%s/access_tokens", c.api(), installationID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
 	if err != nil {
 		return "", err
@@ -181,7 +197,7 @@ func (c *Client) ListInstallationRepos(ctx context.Context, installationID strin
 		return nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		"https://api.github.com/installation/repositories?per_page=100", nil)
+		c.api()+"/installation/repositories?per_page=100", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -223,11 +239,14 @@ func (c *Client) GetInstallationAccount(ctx context.Context, installationID stri
 	if !c.Configured() {
 		return "", ErrNotConfigured
 	}
+	if !ValidInstallationID(installationID) {
+		return "", fmt.Errorf("invalid installation_id")
+	}
 	appJWT, err := c.appJWT()
 	if err != nil {
 		return "", err
 	}
-	url := fmt.Sprintf("https://api.github.com/app/installations/%s", installationID)
+	url := fmt.Sprintf("%s/app/installations/%s", c.api(), installationID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", err
@@ -276,7 +295,7 @@ func (c *Client) CreateCommitStatus(ctx context.Context, installationID, fullNam
 		payload["target_url"] = targetURL
 	}
 	body, _ := json.Marshal(payload)
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/statuses/%s", owner, repo, sha)
+	url := fmt.Sprintf("%s/repos/%s/%s/statuses/%s", c.api(), owner, repo, sha)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(body)))
 	if err != nil {
 		return err

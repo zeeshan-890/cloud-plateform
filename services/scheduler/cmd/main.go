@@ -12,9 +12,9 @@ import (
 	"github.com/jp-cloud/go-common/httpx"
 	jwtutil "github.com/jp-cloud/go-common/jwt"
 	"github.com/jp-cloud/go-common/logging"
+	"github.com/jp-cloud/go-common/membership"
 	"github.com/jp-cloud/go-common/middleware"
 	redisx "github.com/jp-cloud/go-common/redis"
-	"github.com/jp-cloud/scheduler/internal/cluster"
 	"github.com/jp-cloud/scheduler/internal/cron"
 	"github.com/jp-cloud/scheduler/internal/handlers"
 	"github.com/jp-cloud/scheduler/internal/loop"
@@ -42,8 +42,6 @@ func main() {
 	}
 
 	cronStore := cron.NewStore(rdb)
-	clusterRegistry := cluster.NewRegistry()
-	_ = clusterRegistry.RegisterNode(cluster.DetectHostNode(getenv("SCHEDULER_SLOT", "node-1")))
 
 	sched := loop.New(loop.Config{
 		Redis:             rdb,
@@ -51,9 +49,8 @@ func main() {
 		RegistryURL:       cfg.RegistryURL,
 		DeploymentURL:     cfg.DeploymentURL,
 		DomainURL:         cfg.DomainURL,
-		PreviewBaseDomain: getenv("PREVIEW_BASE_DOMAIN", "preview.jp.localhost"),
+		PreviewBaseDomain: os.Getenv("PREVIEW_BASE_DOMAIN"),
 		Log:               log,
-		Slot:              getenv("SCHEDULER_SLOT", "node-1"),
 		HealthEvery:       20 * time.Second,
 		CleanupEvery:      parseDurationEnv("CLEANUP_INTERVAL", time.Hour),
 		Cron:              cronStore,
@@ -62,25 +59,14 @@ func main() {
 	})
 
 	jm := jwtutil.NewManager(cfg.JWTSecret, cfg.JWTAccessTTL, cfg.JWTRefreshTTL)
-	h := &handlers.Handler{Cron: cronStore, Cluster: clusterRegistry, JWT: jm, Slot: getenv("SCHEDULER_SLOT", "node-1")}
+	h := &handlers.Handler{Cron: cronStore, JWT: jm, Authz: membership.New(cfg.OrganizationURL, cfg.ProjectURL)}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", httpx.Healthz)
-	mux.HandleFunc("GET /status", func(w http.ResponseWriter, r *http.Request) {
-		httpx.JSON(w, http.StatusOK, map[string]any{
-			"slot":             getenv("SCHEDULER_SLOT", "node-1"),
-			"runtime_url":      runtimeURL,
-			"consumer_group":   "jp-scheduler",
-			"cleanup_group":    "jp-cleanup",
-			"jobs_group":       "jp-jobs",
-			"rolling_update":   "stub",
-			"cleanup_interval": getenv("CLEANUP_INTERVAL", "1h"),
-		})
-	})
 	h.Routes(mux)
 	handler := middleware.Chain(mux, middleware.RequestID, middleware.Logging(log), middleware.CORS(cfg.CORSOrigins))
 
-	srv := &http.Server{Addr: ":" + cfg.HTTPPort, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Addr: ":" + cfg.HTTPPort, Handler: handler, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 120 * time.Second}
 	go func() {
 		log.Info("scheduler listening", "port", cfg.HTTPPort)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -89,7 +75,9 @@ func main() {
 		}
 	}()
 
+	loopDone := make(chan struct{})
 	go func() {
+		defer close(loopDone)
 		if err := sched.Run(ctx); err != nil && err != context.Canceled {
 			log.Error("scheduler loop", "err", err)
 		}
@@ -102,6 +90,10 @@ func main() {
 	shutdownCtx, c2 := context.WithTimeout(context.Background(), 10*time.Second)
 	defer c2()
 	_ = srv.Shutdown(shutdownCtx)
+	select {
+	case <-loopDone:
+	case <-shutdownCtx.Done():
+	}
 }
 
 func getenv(k, def string) string {

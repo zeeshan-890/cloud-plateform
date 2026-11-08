@@ -11,7 +11,6 @@ type Domain struct {
 	Hostname         string `json:"hostname"`
 	Status           string `json:"status"`
 	VerificationType string `json:"verification_type"`
-	ForceVerified    bool   `json:"force_verified"`
 }
 
 type RuntimeInstance struct {
@@ -58,9 +57,9 @@ func (c *Client) AddDomain(orgID, projectID, hostname string) (*Domain, error) {
 	return &wrapped.Domain, nil
 }
 
-func (c *Client) VerifyDomain(orgID, projectID, domainID string, force bool) (*Domain, error) {
+func (c *Client) VerifyDomain(orgID, projectID, domainID string) (*Domain, error) {
 	path := fmt.Sprintf("/orgs/%s/projects/%s/domains/%s/verify", orgID, projectID, domainID)
-	raw, err := c.doRaw(http.MethodPost, path, map[string]any{"force": force}, true)
+	raw, err := c.doRaw(http.MethodPost, path, map[string]any{}, true)
 	if err != nil {
 		return nil, err
 	}

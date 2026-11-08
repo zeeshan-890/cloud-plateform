@@ -10,22 +10,26 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jp-cloud/repository/internal/cd"
+	"github.com/jp-cloud/repository/internal/secbox"
 	"github.com/jp-cloud/repository/internal/sshkey"
 )
 
 var (
 	ErrNotFound      = errors.New("not found")
 	ErrAlreadyExists = errors.New("already exists")
+	// ErrInstallationOwned: the GitHub installation is already linked to another organization.
+	ErrInstallationOwned = errors.New("installation belongs to another organization")
 )
 
+// DeployKey never exposes the private key through JSON.
 type DeployKey struct {
-	ID         string    `json:"id"`
-	OrgID      string    `json:"org_id"`
-	ProjectID  string    `json:"project_id"`
-	PublicKey  string    `json:"public_key"`
-	PrivateKey string    `json:"private_key,omitempty"`
-	KeyType    string    `json:"key_type"`
-	CreatedAt  time.Time `json:"created_at"`
+	ID        string    `json:"id"`
+	OrgID     string    `json:"org_id"`
+	ProjectID string    `json:"project_id"`
+	PublicKey string    `json:"public_key"`
+	KeyType   string    `json:"key_type"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type Installation struct {
@@ -37,6 +41,7 @@ type Installation struct {
 	CreatedAt      time.Time `json:"created_at"`
 }
 
+// Repo is a connected repository. It carries no credentials.
 type Repo struct {
 	ID             string    `json:"id"`
 	OrgID          string    `json:"org_id"`
@@ -44,43 +49,102 @@ type Repo struct {
 	InstallationID *string   `json:"installation_id,omitempty"`
 	Provider       string    `json:"provider"`
 	FullName       string    `json:"full_name"`
-	CloneURL       string    `json:"clone_url"`
+	CloneURL       string    `json:"clone_url"` // token-free
 	DefaultBranch  string    `json:"default_branch"`
+	AuthType       string    `json:"auth_type"` // app | token | deploy_key | none
+	AllowForks     bool      `json:"allow_forks"`
 	CreatedAt      time.Time `json:"created_at"`
+
+	// continuous deployment (see package cd)
+	RootDir        string   `json:"root_dir"`
+	AutoDeploy     bool     `json:"auto_deploy"`
+	DeployBranch   string   `json:"deploy_branch"`
+	BranchPreviews bool     `json:"branch_previews"`
+	PRPreviews     bool     `json:"pr_previews"`
+	WatchPaths     []string `json:"watch_paths"`
+	IgnorePaths    []string `json:"ignore_paths"`
+	RequireCI      bool     `json:"require_ci"`
 }
 
-type Store struct{ pool *pgxpool.Pool }
+// CD returns the continuous-deployment settings of the connection.
+func (r Repo) CD() cd.Settings {
+	return cd.Settings{RootDir: r.RootDir, AutoDeploy: r.AutoDeploy, DeployBranch: r.DeployBranch, BranchPreviews: r.BranchPreviews,
+		PRPreviews: r.PRPreviews, WatchPaths: r.WatchPaths, IgnorePaths: r.IgnorePaths, RequireCI: r.RequireCI}
+}
 
-func New(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
+func (r *Repo) applyCD(s cd.Settings) {
+	r.RootDir, r.AutoDeploy, r.DeployBranch, r.BranchPreviews, r.PRPreviews, r.RequireCI = s.RootDir, s.AutoDeploy, s.DeployBranch, s.BranchPreviews, s.PRPreviews, s.RequireCI
+	r.WatchPaths, r.IgnorePaths = nonNil(s.WatchPaths), nonNil(s.IgnorePaths)
+}
 
-func (s *Store) CreateInstallation(ctx context.Context, orgID, installationID, login string) (*Installation, error) {
-	inst := &Installation{
-		ID: uuid.NewString(), OrgID: orgID, InstallationID: installationID,
-		AccountLogin: login, Status: "active", CreatedAt: time.Now().UTC(),
+func nonNil(l []string) []string {
+	if l == nil {
+		return []string{}
 	}
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO github_installations (id, org_id, installation_id, account_login, status, created_at)
-		VALUES ($1,$2,$3,$4,$5,$6)
-	`, inst.ID, inst.OrgID, inst.InstallationID, inst.AccountLogin, inst.Status, inst.CreatedAt)
-	if err != nil {
-		if isUnique(err) {
-			return nil, ErrAlreadyExists
+	return l
+}
+
+// dest lists the scan targets matching repoCols.
+func (r *Repo) dest() []any {
+	return []any{&r.ID, &r.OrgID, &r.ProjectID, &r.InstallationID, &r.Provider, &r.FullName, &r.CloneURL, &r.DefaultBranch, &r.AuthType, &r.AllowForks, &r.CreatedAt,
+		&r.RootDir, &r.AutoDeploy, &r.DeployBranch, &r.BranchPreviews, &r.PRPreviews, &r.WatchPaths, &r.IgnorePaths, &r.RequireCI}
+}
+
+// WebhookRepo is a connection together with its decrypted webhook secret (internal use).
+type WebhookRepo struct {
+	Repo
+	WebhookSecret string
+}
+
+// ConnectParams create a connection.
+type ConnectParams struct {
+	OrgID, ProjectID, InstallationID, FullName, CloneURL, Branch, AuthType string
+	Token, WebhookSecret                                                   string
+	AllowForks                                                             bool
+	CD                                                                     cd.Settings
+}
+
+type Store struct {
+	pool *pgxpool.Pool
+	box  *secbox.Box
+}
+
+func New(pool *pgxpool.Pool, box *secbox.Box) *Store { return &Store{pool: pool, box: box} }
+
+const repoCols = `id, org_id, project_id, installation_id, provider, full_name, clone_url, default_branch, auth_type, allow_forks, created_at,
+	root_dir, auto_deploy, deploy_branch, branch_previews, pr_previews, watch_paths, ignore_paths, require_ci`
+
+func scanRepo(row pgx.Row) (*Repo, error) {
+	r := &Repo{}
+	err := row.Scan(r.dest()...)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return r, err
+}
+
+func (s *Store) repoRows(rows pgx.Rows) ([]Repo, error) {
+	defer rows.Close()
+	out := []Repo{}
+	for rows.Next() {
+		r, err := scanRepo(rows)
+		if err != nil {
+			return nil, err
 		}
-		return nil, err
+		out = append(out, *r)
 	}
-	return inst, nil
+	return out, rows.Err()
 }
+
+// ---------------------------------------------------------------- installations
 
 func (s *Store) ListInstallations(ctx context.Context, orgID string) ([]Installation, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT id, org_id, installation_id, account_login, status, created_at
-		FROM github_installations WHERE org_id=$1 ORDER BY created_at DESC
-	`, orgID)
+	rows, err := s.pool.Query(ctx, `SELECT id, org_id, installation_id, account_login, status, created_at FROM github_installations WHERE org_id=$1 ORDER BY created_at DESC`, orgID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []Installation
+	out := []Installation{}
 	for rows.Next() {
 		var i Installation
 		if err := rows.Scan(&i.ID, &i.OrgID, &i.InstallationID, &i.AccountLogin, &i.Status, &i.CreatedAt); err != nil {
@@ -88,115 +152,74 @@ func (s *Store) ListInstallations(ctx context.Context, orgID string) ([]Installa
 		}
 		out = append(out, i)
 	}
-	if out == nil {
-		out = []Installation{}
-	}
 	return out, rows.Err()
 }
 
-// LatestInstallation returns the most recent active installation for an org.
+// HasInstallation reports whether the org owns the installation.
+func (s *Store) HasInstallation(ctx context.Context, orgID, installationID string) (bool, error) {
+	var n int
+	err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM github_installations WHERE org_id=$1 AND installation_id=$2 AND status='active'`, orgID, installationID).Scan(&n)
+	return n > 0, err
+}
+
+// UpsertInstallation links an installation to exactly one organization.
+func (s *Store) UpsertInstallation(ctx context.Context, orgID, installationID, login string) (*Installation, error) {
+	var owner string
+	err := s.pool.QueryRow(ctx, `SELECT org_id::text FROM github_installations WHERE installation_id=$1 LIMIT 1`, installationID).Scan(&owner)
+	if err == nil && owner != orgID {
+		return nil, ErrInstallationOwned
+	}
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
+	}
+	i := &Installation{ID: uuid.NewString(), OrgID: orgID, InstallationID: installationID, AccountLogin: login, Status: "active", CreatedAt: time.Now().UTC()}
+	err = s.pool.QueryRow(ctx, `
+		INSERT INTO github_installations (id, org_id, installation_id, account_login, status, created_at)
+		VALUES ($1,$2,$3,$4,'active',$5)
+		ON CONFLICT (org_id, installation_id) DO UPDATE SET account_login=EXCLUDED.account_login, status='active'
+		RETURNING id, created_at`, i.ID, i.OrgID, i.InstallationID, i.AccountLogin, i.CreatedAt).Scan(&i.ID, &i.CreatedAt)
+	return i, err
+}
+
+// LatestInstallation returns the newest active installation of the org.
 func (s *Store) LatestInstallation(ctx context.Context, orgID string) (*Installation, error) {
 	i := &Installation{}
-	err := s.pool.QueryRow(ctx, `
-		SELECT id, org_id, installation_id, account_login, status, created_at
-		FROM github_installations WHERE org_id=$1 AND status='active'
-		ORDER BY created_at DESC LIMIT 1
-	`, orgID).Scan(&i.ID, &i.OrgID, &i.InstallationID, &i.AccountLogin, &i.Status, &i.CreatedAt)
+	err := s.pool.QueryRow(ctx, `SELECT id, org_id, installation_id, account_login, status, created_at FROM github_installations
+		WHERE org_id=$1 AND status='active' ORDER BY created_at DESC LIMIT 1`, orgID).Scan(&i.ID, &i.OrgID, &i.InstallationID, &i.AccountLogin, &i.Status, &i.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	return i, err
 }
 
-// FindInstallationByGitHubID finds any org's installation by GitHub installation_id.
-func (s *Store) FindInstallationByGitHubID(ctx context.Context, githubInstallationID string) (*Installation, error) {
-	i := &Installation{}
-	err := s.pool.QueryRow(ctx, `
-		SELECT id, org_id, installation_id, account_login, status, created_at
-		FROM github_installations WHERE installation_id=$1
-		ORDER BY created_at DESC LIMIT 1
-	`, githubInstallationID).Scan(&i.ID, &i.OrgID, &i.InstallationID, &i.AccountLogin, &i.Status, &i.CreatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, ErrNotFound
-	}
-	return i, err
-}
+// ---------------------------------------------------------------- repos
 
-// ResolveInstallationIDForRepo returns GitHub installation_id for a full_name.
-func (s *Store) ResolveInstallationIDForRepo(ctx context.Context, fullName, hint string) (string, error) {
-	if hint != "" {
-		return hint, nil
-	}
-	var inst *string
-	err := s.pool.QueryRow(ctx, `
-		SELECT installation_id FROM connected_repos
-		WHERE full_name=$1 AND installation_id IS NOT NULL AND installation_id <> ''
-		ORDER BY created_at DESC LIMIT 1
-	`, fullName).Scan(&inst)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", ErrNotFound
-	}
+func (s *Store) ConnectRepo(ctx context.Context, p ConnectParams) (*Repo, error) {
+	tok, err := s.box.Seal(p.Token)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	if inst == nil || *inst == "" {
-		return "", ErrNotFound
+	sec, err := s.box.Seal(p.WebhookSecret)
+	if err != nil {
+		return nil, err
 	}
-	return *inst, nil
-}
-
-// UpsertInstallation inserts or refreshes an installation for the org.
-func (s *Store) UpsertInstallation(ctx context.Context, orgID, installationID, login string) (*Installation, error) {
-	existing, err := s.FindInstallationByGitHubID(ctx, installationID)
-	if err == nil && existing.OrgID == orgID {
-		_, _ = s.pool.Exec(ctx, `
-			UPDATE github_installations SET account_login=$1, status='active' WHERE id=$2
-		`, login, existing.ID)
-		existing.AccountLogin = login
-		existing.Status = "active"
-		return existing, nil
-	}
-	if err == nil && existing.OrgID != orgID {
-		// Same GitHub install claimed by another org — update login only if same org path fails insert
-	}
-	inst, err := s.CreateInstallation(ctx, orgID, installationID, login)
-	if errors.Is(err, ErrAlreadyExists) {
-		list, listErr := s.ListInstallations(ctx, orgID)
-		if listErr != nil {
-			return nil, listErr
-		}
-		for i := range list {
-			if list[i].InstallationID == installationID {
-				_, _ = s.pool.Exec(ctx, `
-					UPDATE github_installations SET account_login=$1, status='active' WHERE id=$2
-				`, login, list[i].ID)
-				list[i].AccountLogin = login
-				list[i].Status = "active"
-				return &list[i], nil
-			}
-		}
-		return nil, ErrAlreadyExists
-	}
-	return inst, err
-}
-
-func (s *Store) ConnectRepo(ctx context.Context, orgID, projectID, installationID, fullName, cloneURL, branch, secret string) (*Repo, error) {
-	r := &Repo{
-		ID: uuid.NewString(), OrgID: orgID, ProjectID: projectID,
-		Provider: "github", FullName: fullName, CloneURL: cloneURL,
-		DefaultBranch: branch, CreatedAt: time.Now().UTC(),
-	}
+	r := &Repo{ID: uuid.NewString(), OrgID: p.OrgID, ProjectID: p.ProjectID, Provider: "github", FullName: p.FullName, CloneURL: p.CloneURL,
+		DefaultBranch: p.Branch, AuthType: p.AuthType, AllowForks: p.AllowForks, CreatedAt: time.Now().UTC()}
+	r.applyCD(p.CD)
 	var inst *string
-	if installationID != "" {
-		inst = &installationID
+	if p.InstallationID != "" {
+		inst = &p.InstallationID
 		r.InstallationID = inst
 	}
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO connected_repos (id, org_id, project_id, installation_id, provider, full_name, clone_url, default_branch, webhook_secret, created_at)
-		VALUES ($1,$2,$3,$4,'github',$5,$6,$7,$8,$9)
-	`, r.ID, orgID, projectID, inst, fullName, cloneURL, branch, secret, r.CreatedAt)
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO connected_repos (id, org_id, project_id, installation_id, provider, full_name, clone_url, default_branch, webhook_secret,
+			auth_type, token_enc, webhook_secret_enc, allow_forks, legacy_scrubbed, created_at,
+			root_dir, auto_deploy, deploy_branch, branch_previews, pr_previews, watch_paths, ignore_paths, require_ci)
+		VALUES ($1,$2,$3,$4,'github',$5,$6,$7,'',$8,$9,$10,$11,TRUE,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
+		r.ID, r.OrgID, r.ProjectID, inst, r.FullName, r.CloneURL, r.DefaultBranch, r.AuthType, tok, sec, r.AllowForks, r.CreatedAt,
+		r.RootDir, r.AutoDeploy, r.DeployBranch, r.BranchPreviews, r.PRPreviews, r.WatchPaths, r.IgnorePaths, r.RequireCI)
 	if err != nil {
-		if isUnique(err) {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
 			return nil, ErrAlreadyExists
 		}
 		return nil, err
@@ -205,42 +228,19 @@ func (s *Store) ConnectRepo(ctx context.Context, orgID, projectID, installationI
 }
 
 func (s *Store) ListRepos(ctx context.Context, orgID, projectID string) ([]Repo, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT id, org_id, project_id, installation_id, provider, full_name, clone_url, default_branch, created_at
-		FROM connected_repos WHERE org_id=$1 AND project_id=$2 ORDER BY created_at DESC
-	`, orgID, projectID)
+	rows, err := s.pool.Query(ctx, `SELECT `+repoCols+` FROM connected_repos WHERE org_id=$1 AND project_id=$2 ORDER BY created_at DESC`, orgID, projectID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []Repo
-	for rows.Next() {
-		var r Repo
-		if err := rows.Scan(&r.ID, &r.OrgID, &r.ProjectID, &r.InstallationID, &r.Provider, &r.FullName, &r.CloneURL, &r.DefaultBranch, &r.CreatedAt); err != nil {
-			return nil, err
-		}
-		out = append(out, r)
-	}
-	if out == nil {
-		out = []Repo{}
-	}
-	return out, rows.Err()
+	return s.repoRows(rows)
 }
 
-func (s *Store) GetRepo(ctx context.Context, orgID, projectID, repoID string) (*Repo, error) {
-	r := &Repo{}
-	err := s.pool.QueryRow(ctx, `
-		SELECT id, org_id, project_id, installation_id, provider, full_name, clone_url, default_branch, created_at
-		FROM connected_repos WHERE id=$1 AND org_id=$2 AND project_id=$3
-	`, repoID, orgID, projectID).Scan(&r.ID, &r.OrgID, &r.ProjectID, &r.InstallationID, &r.Provider, &r.FullName, &r.CloneURL, &r.DefaultBranch, &r.CreatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, ErrNotFound
-	}
-	return r, err
+func (s *Store) GetRepo(ctx context.Context, orgID, projectID, id string) (*Repo, error) {
+	return scanRepo(s.pool.QueryRow(ctx, `SELECT `+repoCols+` FROM connected_repos WHERE id=$1 AND org_id=$2 AND project_id=$3`, id, orgID, projectID))
 }
 
-func (s *Store) DeleteRepo(ctx context.Context, orgID, projectID, repoID string) error {
-	tag, err := s.pool.Exec(ctx, `DELETE FROM connected_repos WHERE id=$1 AND org_id=$2 AND project_id=$3`, repoID, orgID, projectID)
+func (s *Store) DeleteRepo(ctx context.Context, orgID, projectID, id string) error {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM connected_repos WHERE id=$1 AND org_id=$2 AND project_id=$3`, id, orgID, projectID)
 	if err != nil {
 		return err
 	}
@@ -250,147 +250,269 @@ func (s *Store) DeleteRepo(ctx context.Context, orgID, projectID, repoID string)
 	return nil
 }
 
-func (s *Store) FindReposByFullName(ctx context.Context, fullName string) ([]Repo, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT id, org_id, project_id, installation_id, provider, full_name, clone_url, default_branch, created_at
-		FROM connected_repos WHERE full_name=$1
-	`, fullName)
+// UpdateCD replaces the continuous-deployment settings of one connection.
+func (s *Store) UpdateCD(ctx context.Context, orgID, projectID, id string, c cd.Settings) (*Repo, error) {
+	r := &Repo{}
+	r.applyCD(c)
+	return scanRepo(s.pool.QueryRow(ctx, `UPDATE connected_repos SET root_dir=$4, auto_deploy=$5, deploy_branch=$6, branch_previews=$7, pr_previews=$8,
+		watch_paths=$9, ignore_paths=$10, require_ci=$11 WHERE id=$1 AND org_id=$2 AND project_id=$3 RETURNING `+repoCols,
+		id, orgID, projectID, r.RootDir, r.AutoDeploy, r.DeployBranch, r.BranchPreviews, r.PRPreviews, r.WatchPaths, r.IgnorePaths, r.RequireCI))
+}
+
+// SetWebhookSecret replaces the (sealed) webhook secret of one connection.
+func (s *Store) SetWebhookSecret(ctx context.Context, orgID, projectID, id, secret string) error {
+	sec, err := s.box.Seal(secret)
+	if err != nil {
+		return err
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE connected_repos SET webhook_secret_enc=$4 WHERE id=$1 AND org_id=$2 AND project_id=$3`, id, orgID, projectID, sec)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// WebhookSecretOf returns the decrypted webhook secret of one connection (to install the GitHub hook).
+func (s *Store) WebhookSecretOf(ctx context.Context, orgID, projectID, id string) (string, error) {
+	var enc []byte
+	err := s.pool.QueryRow(ctx, `SELECT webhook_secret_enc FROM connected_repos WHERE id=$1 AND org_id=$2 AND project_id=$3`, id, orgID, projectID).Scan(&enc)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	return s.box.Open(enc)
+}
+
+// FindForWebhook returns every connection of fullName with its decrypted webhook secret.
+func (s *Store) FindForWebhook(ctx context.Context, fullName string) ([]WebhookRepo, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+repoCols+`, webhook_secret_enc FROM connected_repos WHERE lower(full_name)=lower($1)`, fullName)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []Repo
+	var out []WebhookRepo
 	for rows.Next() {
-		var r Repo
-		if err := rows.Scan(&r.ID, &r.OrgID, &r.ProjectID, &r.InstallationID, &r.Provider, &r.FullName, &r.CloneURL, &r.DefaultBranch, &r.CreatedAt); err != nil {
+		var w WebhookRepo
+		var enc []byte
+		if err := rows.Scan(append(w.Repo.dest(), &enc)...); err != nil {
 			return nil, err
 		}
-		out = append(out, r)
-	}
-	if out == nil {
-		out = []Repo{}
+		if w.WebhookSecret, err = s.box.Open(enc); err != nil {
+			w.WebhookSecret = "" // undecryptable => can never verify
+		}
+		out = append(out, w)
 	}
 	return out, rows.Err()
 }
 
-func (s *Store) GetWebhookSecret(ctx context.Context, repoID string) (string, error) {
-	var secret string
-	err := s.pool.QueryRow(ctx, `SELECT webhook_secret FROM connected_repos WHERE id=$1`, repoID).Scan(&secret)
+// Credentials returns the decrypted personal token of a connection.
+func (s *Store) Credentials(ctx context.Context, repoID string) (*Repo, string, error) {
+	var enc []byte
+	r := &Repo{}
+	err := s.pool.QueryRow(ctx, `SELECT `+repoCols+`, token_enc FROM connected_repos WHERE id=$1`, repoID).
+		Scan(append(r.dest(), &enc)...)
 	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, "", ErrNotFound
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	tok, err := s.box.Open(enc)
+	return r, tok, err
+}
+
+// InstallationForRepo returns a GitHub installation id used by any connection of fullName.
+func (s *Store) InstallationForRepo(ctx context.Context, fullName string) (string, error) {
+	var inst *string
+	err := s.pool.QueryRow(ctx, `SELECT installation_id FROM connected_repos WHERE lower(full_name)=lower($1) AND installation_id IS NOT NULL AND installation_id <> '' ORDER BY created_at DESC LIMIT 1`, fullName).Scan(&inst)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && (inst == nil || *inst == "")) {
 		return "", ErrNotFound
 	}
-	return secret, err
-}
-
-func isUnique(err error) bool {
-	return err != nil && (contains(err.Error(), "duplicate key") || contains(err.Error(), "unique constraint"))
-}
-
-func contains(s, sub string) bool {
-	return len(sub) == 0 || (len(s) >= len(sub) && indexOf(s, sub) >= 0)
-}
-
-func indexOf(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
+	if err != nil {
+		return "", err
 	}
-	return -1
+	return *inst, nil
 }
 
-func (s *Store) GetOrCreateDeployKey(ctx context.Context, orgID, projectID string) (*DeployKey, error) {
+// DeleteProject removes connections and the deploy key of a project.
+func (s *Store) DeleteProject(ctx context.Context, projectID string) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM connected_repos WHERE project_id=$1`, projectID)
+	if err != nil {
+		return 0, err
+	}
+	_, err = s.pool.Exec(ctx, `DELETE FROM project_deploy_keys WHERE project_id=$1`, projectID)
+	return tag.RowsAffected(), err
+}
+
+// ---------------------------------------------------------------- deploy keys
+
+func (s *Store) newKey(orgID, projectID string) (*DeployKey, []byte, error) {
+	pub, priv, err := sshkey.GenerateEd25519(fmt.Sprintf("jp-deploy-%s", shortID(projectID)))
+	if err != nil {
+		return nil, nil, err
+	}
+	enc, err := s.box.Seal(priv)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &DeployKey{ID: uuid.NewString(), OrgID: orgID, ProjectID: projectID, PublicKey: pub, KeyType: "ed25519", CreatedAt: time.Now().UTC()}, enc, nil
+}
+
+// GetDeployKey returns the public part, or ErrNotFound.
+func (s *Store) GetDeployKey(ctx context.Context, projectID string) (*DeployKey, error) {
 	k := &DeployKey{}
-	err := s.pool.QueryRow(ctx, `
-		SELECT id, org_id, project_id, public_key, private_key, key_type, created_at
-		FROM project_deploy_keys WHERE project_id=$1
-	`, projectID).Scan(&k.ID, &k.OrgID, &k.ProjectID, &k.PublicKey, &k.PrivateKey, &k.KeyType, &k.CreatedAt)
-	if err == nil {
-		return k, nil
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return nil, err
-	}
-
-	// Generate a new keypair
-	comment := fmt.Sprintf("jp-deploy-%s", shortID(projectID))
-	pub, priv, err := sshkey.GenerateEd25519(comment)
-	if err != nil {
-		return nil, fmt.Errorf("generate keypair: %w", err)
-	}
-
-	k = &DeployKey{
-		ID:         uuid.NewString(),
-		OrgID:      orgID,
-		ProjectID:  projectID,
-		PublicKey:  pub,
-		PrivateKey: priv,
-		KeyType:    "ed25519",
-		CreatedAt:  time.Now().UTC(),
-	}
-
-	_, err = s.pool.Exec(ctx, `
-		INSERT INTO project_deploy_keys (id, org_id, project_id, public_key, private_key, key_type, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		ON CONFLICT (project_id) DO NOTHING
-	`, k.ID, k.OrgID, k.ProjectID, k.PublicKey, k.PrivateKey, k.KeyType, k.CreatedAt)
-	if err != nil {
-		return nil, err
-	}
-
-	// Fetch again in case another worker/goroutine inserted simultaneously
-	err = s.pool.QueryRow(ctx, `
-		SELECT id, org_id, project_id, public_key, private_key, key_type, created_at
-		FROM project_deploy_keys WHERE project_id=$1
-	`, projectID).Scan(&k.ID, &k.OrgID, &k.ProjectID, &k.PublicKey, &k.PrivateKey, &k.KeyType, &k.CreatedAt)
-	if err != nil {
-		return nil, err
-	}
-	return k, nil
-}
-
-func (s *Store) RotateDeployKey(ctx context.Context, orgID, projectID string) (*DeployKey, error) {
-	comment := fmt.Sprintf("jp-deploy-%s", shortID(projectID))
-	pub, priv, err := sshkey.GenerateEd25519(comment)
-	if err != nil {
-		return nil, fmt.Errorf("generate keypair: %w", err)
-	}
-
-	k := &DeployKey{
-		ID:         uuid.NewString(),
-		OrgID:      orgID,
-		ProjectID:  projectID,
-		PublicKey:  pub,
-		PrivateKey: priv,
-		KeyType:    "ed25519",
-		CreatedAt:  time.Now().UTC(),
-	}
-
-	_, err = s.pool.Exec(ctx, `
-		INSERT INTO project_deploy_keys (id, org_id, project_id, public_key, private_key, key_type, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		ON CONFLICT (project_id) DO UPDATE SET
-			public_key = EXCLUDED.public_key,
-			private_key = EXCLUDED.private_key,
-			key_type = EXCLUDED.key_type,
-			created_at = EXCLUDED.created_at
-	`, k.ID, k.OrgID, k.ProjectID, k.PublicKey, k.PrivateKey, k.KeyType, k.CreatedAt)
-	if err != nil {
-		return nil, err
-	}
-	return k, nil
-}
-
-func (s *Store) GetDeployKeyByProject(ctx context.Context, projectID string) (*DeployKey, error) {
-	k := &DeployKey{}
-	err := s.pool.QueryRow(ctx, `
-		SELECT id, org_id, project_id, public_key, private_key, key_type, created_at
-		FROM project_deploy_keys WHERE project_id=$1
-	`, projectID).Scan(&k.ID, &k.OrgID, &k.ProjectID, &k.PublicKey, &k.PrivateKey, &k.KeyType, &k.CreatedAt)
+	err := s.pool.QueryRow(ctx, `SELECT id, org_id, project_id, public_key, key_type, created_at FROM project_deploy_keys WHERE project_id=$1`, projectID).
+		Scan(&k.ID, &k.OrgID, &k.ProjectID, &k.PublicKey, &k.KeyType, &k.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	return k, err
+}
+
+// GetOrCreateDeployKey returns the project's key, generating it on first use.
+func (s *Store) GetOrCreateDeployKey(ctx context.Context, orgID, projectID string) (*DeployKey, error) {
+	if k, err := s.GetDeployKey(ctx, projectID); err == nil {
+		return k, nil
+	} else if !errors.Is(err, ErrNotFound) {
+		return nil, err
+	}
+	k, enc, err := s.newKey(orgID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := s.pool.Exec(ctx, `INSERT INTO project_deploy_keys (id, org_id, project_id, public_key, private_key, private_key_enc, key_type, created_at)
+		VALUES ($1,$2,$3,$4,'',$5,$6,$7) ON CONFLICT (project_id) DO NOTHING`, k.ID, k.OrgID, k.ProjectID, k.PublicKey, enc, k.KeyType, k.CreatedAt); err != nil {
+		return nil, err
+	}
+	return s.GetDeployKey(ctx, projectID)
+}
+
+// RotateDeployKey replaces the project's key.
+func (s *Store) RotateDeployKey(ctx context.Context, orgID, projectID string) (*DeployKey, error) {
+	k, enc, err := s.newKey(orgID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	_, err = s.pool.Exec(ctx, `INSERT INTO project_deploy_keys (id, org_id, project_id, public_key, private_key, private_key_enc, key_type, created_at)
+		VALUES ($1,$2,$3,$4,'',$5,$6,$7)
+		ON CONFLICT (project_id) DO UPDATE SET public_key=EXCLUDED.public_key, private_key='', private_key_enc=EXCLUDED.private_key_enc, created_at=EXCLUDED.created_at`,
+		k.ID, k.OrgID, k.ProjectID, k.PublicKey, enc, k.KeyType, k.CreatedAt)
+	return k, err
+}
+
+// DeployKeyPrivate returns the decrypted private key (internal use only).
+func (s *Store) DeployKeyPrivate(ctx context.Context, projectID string) (string, error) {
+	var enc []byte
+	err := s.pool.QueryRow(ctx, `SELECT private_key_enc FROM project_deploy_keys WHERE project_id=$1`, projectID).Scan(&enc)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	return s.box.Open(enc)
+}
+
+// ---------------------------------------------------------------- legacy scrub
+
+// ScrubLegacy moves credentials written by older versions (tokens inside clone URLs,
+// plaintext deploy keys and webhook secrets) into encrypted columns. Idempotent.
+func (s *Store) ScrubLegacy(ctx context.Context) (int, error) {
+	n := 0
+	rows, err := s.pool.Query(ctx, `SELECT id, clone_url, webhook_secret FROM connected_repos WHERE NOT legacy_scrubbed LIMIT 1000`)
+	if err != nil {
+		return 0, err
+	}
+	type row struct{ id, url, secret string }
+	var list []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.id, &r.url, &r.secret); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		list = append(list, r)
+	}
+	rows.Close()
+	for _, r := range list {
+		clean, token := StripURLCredentials(r.url)
+		authType := "none"
+		switch {
+		case token != "":
+			authType = "token"
+		case strings.HasPrefix(clean, "git@"):
+			authType = "deploy_key"
+		}
+		tok, _ := s.box.Seal(token)
+		sec := []byte(nil)
+		if r.secret != "" && r.secret != "dev-webhook-secret" {
+			sec, _ = s.box.Seal(r.secret)
+		}
+		if _, err := s.pool.Exec(ctx, `UPDATE connected_repos SET clone_url=$2, auth_type=$3, token_enc=COALESCE($4, token_enc), webhook_secret_enc=COALESCE($5, webhook_secret_enc),
+			webhook_secret='', legacy_scrubbed=TRUE WHERE id=$1`, r.id, clean, authType, nilIfEmpty(tok), nilIfEmpty(sec)); err != nil {
+			return n, err
+		}
+		n++
+	}
+	krows, err := s.pool.Query(ctx, `SELECT project_id::text, private_key FROM project_deploy_keys WHERE private_key <> ''`)
+	if err != nil {
+		return n, err
+	}
+	type kr struct{ pid, key string }
+	var keys []kr
+	for krows.Next() {
+		var k kr
+		if err := krows.Scan(&k.pid, &k.key); err != nil {
+			krows.Close()
+			return n, err
+		}
+		keys = append(keys, k)
+	}
+	krows.Close()
+	for _, k := range keys {
+		enc, err := s.box.Seal(k.key)
+		if err != nil {
+			return n, err
+		}
+		if _, err := s.pool.Exec(ctx, `UPDATE project_deploy_keys SET private_key_enc=$2, private_key='' WHERE project_id=$1`, k.pid, enc); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
+}
+
+func nilIfEmpty(b []byte) any {
+	if len(b) == 0 {
+		return nil
+	}
+	return b
+}
+
+// StripURLCredentials removes user:password@ from a URL and returns the password part.
+func StripURLCredentials(u string) (clean, secret string) {
+	i := strings.Index(u, "://")
+	if i < 0 {
+		return u, ""
+	}
+	rest := u[i+3:]
+	at := strings.Index(rest, "@")
+	slash := strings.Index(rest, "/")
+	if at < 0 || (slash >= 0 && at > slash) {
+		return u, ""
+	}
+	userinfo := rest[:at]
+	if c := strings.Index(userinfo, ":"); c >= 0 {
+		secret = userinfo[c+1:]
+	} else {
+		secret = userinfo
+	}
+	return u[:i+3] + rest[at+1:], secret
 }
 
 func shortID(id string) string {
@@ -403,4 +525,3 @@ func shortID(id string) string {
 	}
 	return clean
 }
-

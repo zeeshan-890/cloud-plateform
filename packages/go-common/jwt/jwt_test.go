@@ -58,3 +58,27 @@ func TestInvalidSignature(t *testing.T) {
 		t.Fatalf("expected ErrInvalidToken, got %v", err)
 	}
 }
+
+func TestAdminScopeSessionClaims(t *testing.T) {
+	mgr := NewManager("test-super-secret-key-32-chars-ok", time.Minute, time.Hour)
+	tok, _, err := mgr.IssueAccessWith("u1", "a@b.c", "A", IssueOptions{Admin: true, Scope: ScopeRead, SessionID: "sess-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := mgr.Parse(tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Admin || c.Scope != ScopeRead || c.SessionID != "sess-1" || !c.ReadOnly() || c.IssuedAtMs == 0 {
+		t.Fatalf("claims not carried: %+v", c)
+	}
+	plain, _, _ := mgr.IssueAccess("u1", "a@b.c", "A")
+	pc, _ := mgr.Parse(plain)
+	if pc.Admin || pc.Scope != "" || pc.ReadOnly() {
+		t.Fatal("plain token must not carry privileges")
+	}
+	other := NewManager("another-secret-another-secret-123456", time.Minute, time.Hour)
+	if _, err := other.Parse(tok); err == nil {
+		t.Fatal("token signed with a different secret must be rejected")
+	}
+}

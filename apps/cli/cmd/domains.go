@@ -10,7 +10,6 @@ import (
 
 var (
 	domainsProjectID string
-	domainsForce     bool
 )
 
 var domainsCmd = &cobra.Command{
@@ -83,7 +82,7 @@ var domainsAddCmd = &cobra.Command{
 
 var domainsVerifyCmd = &cobra.Command{
 	Use:   "verify <domain-id>",
-	Short: "Verify domain DNS (use --force to stub locally)",
+	Short: "Verify domain ownership via DNS (TXT jp-verify record or CNAME)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		client, cfg, err := newClient()
@@ -99,7 +98,7 @@ var domainsVerifyCmd = &cobra.Command{
 		if domainsProjectID == "" {
 			return fmt.Errorf("--project is required")
 		}
-		d, err := client.VerifyDomain(cfg.CurrentOrgID, domainsProjectID, args[0], domainsForce)
+		d, err := client.VerifyDomain(cfg.CurrentOrgID, domainsProjectID, args[0])
 		if err != nil {
 			return err
 		}
@@ -138,7 +137,6 @@ func init() {
 	for _, c := range []*cobra.Command{domainsListCmd, domainsAddCmd, domainsVerifyCmd, domainsDeleteCmd} {
 		c.Flags().StringVar(&domainsProjectID, "project", "", "Project ID")
 	}
-	domainsVerifyCmd.Flags().BoolVar(&domainsForce, "force", false, "Force verify (skip real DNS)")
 	domainsCmd.AddCommand(domainsListCmd, domainsAddCmd, domainsVerifyCmd, domainsDeleteCmd)
 	rootCmd.AddCommand(domainsCmd)
 }

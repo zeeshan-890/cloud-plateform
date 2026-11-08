@@ -9,15 +9,15 @@ import (
 )
 
 type PlatformBackupManifest struct {
-	ID                 string    `json:"id"`
-	PlatformVersion    string    `json:"platform_version"`
-	CreatedAt          time.Time `json:"created_at"`
-	PostgresDumpSize   int64     `json:"postgres_dump_size_bytes"`
-	ConfigFilesCount   int       `json:"config_files_count"`
-	ChecksumSHA256     string    `json:"checksum_sha256"`
-	DestinationURI     string    `json:"destination_uri"`
-	EncryptionKeyID    string    `json:"encryption_key_id,omitempty"`
-	Status             string    `json:"status"` // "ready", "corrupt", "restored"
+	ID               string    `json:"id"`
+	PlatformVersion  string    `json:"platform_version"`
+	CreatedAt        time.Time `json:"created_at"`
+	PostgresDumpSize int64     `json:"postgres_dump_size_bytes"`
+	ConfigFilesCount int       `json:"config_files_count"`
+	ChecksumSHA256   string    `json:"checksum_sha256"`
+	DestinationURI   string    `json:"destination_uri"`
+	EncryptionKeyID  string    `json:"encryption_key_id,omitempty"`
+	Status           string    `json:"status"` // "ready", "corrupt", "restored"
 }
 
 // GenerateChecksum computes a SHA-256 hash of payload bytes.

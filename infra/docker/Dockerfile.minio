@@ -1,0 +1,15 @@
+# MinIO no longer publishes container images (quay.io/minio and Docker Hub return 401/404),
+# so we build the S3 server from its public source at a pinned release tag. Multi-arch (native build).
+ARG GO_IMAGE=golang:1.24-bookworm
+FROM ${GO_IMAGE} AS build
+ARG MINIO_VERSION=RELEASE.2025-04-22T22-12-26Z
+ENV CGO_ENABLED=0 GOFLAGS=-trimpath GOBIN=/out
+RUN go install -ldflags "-s -w" github.com/minio/minio@${MINIO_VERSION}
+
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates curl && addgroup -S minio -g 10002 && adduser -S minio -u 10002 -G minio && mkdir /data && chown minio:minio /data
+COPY --from=build /out/minio /usr/local/bin/minio
+USER 10002
+EXPOSE 9000 9001
+VOLUME ["/data"]
+ENTRYPOINT ["/usr/local/bin/minio"]

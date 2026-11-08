@@ -3,9 +3,11 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -31,14 +33,32 @@ type Query struct {
 	BuildID string
 	Q       string
 	Since   *time.Time
-	Limit   int
+	// Before is the pagination cursor: only entries logged strictly before it.
+	Before *time.Time
+	Limit  int
 }
 
-type Store struct{ pool *pgxpool.Pool }
+const (
+	MaxLimit     = 500
+	DefaultLimit = 100
+)
 
-func New(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
+// Repo is the persistence surface (faked in tests).
+type Repo interface {
+	IngestBatch(ctx context.Context, entries []*Entry) error
+	Query(ctx context.Context, orgID, projectID string, q Query) ([]Entry, error)
+	DeleteProject(ctx context.Context, projectID string) (int64, error)
+	// DeleteOlderThan removes up to limit entries logged before cutoff and returns how many.
+	DeleteOlderThan(ctx context.Context, cutoff time.Time, limit int) (int64, error)
+}
 
-func (s *Store) Ingest(ctx context.Context, e *Entry) error {
+type PG struct{ pool *pgxpool.Pool }
+
+func New(pool *pgxpool.Pool) *PG { return &PG{pool: pool} }
+
+var _ Repo = (*PG)(nil)
+
+func normalize(e *Entry) {
 	if e.ID == "" {
 		e.ID = uuid.NewString()
 	}
@@ -56,20 +76,38 @@ func (s *Store) Ingest(ctx context.Context, e *Entry) error {
 	if e.Attrs == nil {
 		e.Attrs = map[string]any{}
 	}
-	attrs, _ := json.Marshal(e.Attrs)
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO log_entries (
-			id, org_id, project_id, source, level, message, build_id, instance_id,
-			deployment_id, request_id, attrs, logged_at, created_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-	`, e.ID, e.OrgID, e.ProjectID, e.Source, e.Level, e.Message, e.BuildID, e.InstanceID,
-		e.DeploymentID, e.RequestID, attrs, e.LoggedAt, e.CreatedAt)
-	return err
 }
 
-func (s *Store) Query(ctx context.Context, orgID, projectID string, q Query) ([]Entry, error) {
-	if q.Limit <= 0 || q.Limit > 500 {
-		q.Limit = 100
+func (s *PG) IngestBatch(ctx context.Context, entries []*Entry) error {
+	b := &pgx.Batch{}
+	for _, e := range entries {
+		normalize(e)
+		attrs, _ := json.Marshal(e.Attrs)
+		b.Queue(`
+			INSERT INTO log_entries (id, org_id, project_id, source, level, message, build_id, instance_id,
+				deployment_id, request_id, attrs, logged_at, created_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+			e.ID, e.OrgID, e.ProjectID, e.Source, e.Level, e.Message, e.BuildID, e.InstanceID,
+			e.DeploymentID, e.RequestID, attrs, e.LoggedAt, e.CreatedAt)
+	}
+	res := s.pool.SendBatch(ctx, b)
+	defer res.Close()
+	for range entries {
+		if _, err := res.Exec(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func escapeLike(s string) string {
+	r := strings.NewReplacer(`\`, `\`, `%`, `\%`, `_`, `\_`)
+	return r.Replace(s)
+}
+
+func (s *PG) Query(ctx context.Context, orgID, projectID string, q Query) ([]Entry, error) {
+	if q.Limit <= 0 || q.Limit > MaxLimit {
+		q.Limit = DefaultLimit
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, org_id, project_id, source, level, message, build_id, instance_id,
@@ -79,16 +117,17 @@ func (s *Store) Query(ctx context.Context, orgID, projectID string, q Query) ([]
 		  AND ($3 = '' OR source = $3)
 		  AND ($4 = '' OR level = $4)
 		  AND ($5 = '' OR build_id::text = $5)
-		  AND ($6 = '' OR message ILIKE '%' || $6 || '%')
+		  AND ($6 = '' OR message ILIKE '%' || $6 || '%' ESCAPE '\')
 		  AND ($7::timestamptz IS NULL OR logged_at >= $7)
+		  AND ($8::timestamptz IS NULL OR logged_at < $8)
 		ORDER BY logged_at DESC
-		LIMIT $8
-	`, orgID, projectID, q.Source, q.Level, q.BuildID, q.Q, q.Since, q.Limit)
+		LIMIT $9
+	`, orgID, projectID, q.Source, q.Level, q.BuildID, escapeLike(q.Q), q.Since, q.Before, q.Limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []Entry
+	out := []Entry{}
 	for rows.Next() {
 		var e Entry
 		var attrs []byte
@@ -99,8 +138,15 @@ func (s *Store) Query(ctx context.Context, orgID, projectID string, q Query) ([]
 		_ = json.Unmarshal(attrs, &e.Attrs)
 		out = append(out, e)
 	}
-	if out == nil {
-		out = []Entry{}
-	}
 	return out, rows.Err()
+}
+
+func (s *PG) DeleteProject(ctx context.Context, projectID string) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM log_entries WHERE project_id=$1`, projectID)
+	return tag.RowsAffected(), err
+}
+
+func (s *PG) DeleteOlderThan(ctx context.Context, cutoff time.Time, limit int) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM log_entries WHERE id IN (SELECT id FROM log_entries WHERE logged_at < $1 LIMIT $2)`, cutoff, limit)
+	return tag.RowsAffected(), err
 }

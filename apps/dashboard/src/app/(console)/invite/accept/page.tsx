@@ -1,58 +1,69 @@
 "use client";
 
-import { FormEvent, useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Alert, PageHeader } from "@/components/ui/page";
-import { api, ApiError } from "@/lib/api";
+import { Input } from "@/components/ui/field";
+import { PageHeader, Panel } from "@/components/ui/panel";
+import { useToast } from "@/components/ui/toast";
+import { errorMessage, orgs } from "@/lib/api";
 import { useOrg } from "@/lib/org-context";
-import { setCurrentOrgId } from "@/lib/storage";
 
-export default function AcceptInvitePage() {
-  const { refreshOrgs } = useOrg();
+function AcceptForm() {
+  const params = useSearchParams();
   const router = useRouter();
-  const [token, setToken] = useState("");
+  const toast = useToast();
+  const { setCurrentOrgId, reload } = useOrg();
+  const [token, setToken] = useState(params.get("token") ?? "");
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [submitting, setSubmitting] = useState(false);
 
-  async function onSubmit(e: FormEvent) {
-    e.preventDefault();
-    setSubmitting(true);
+  const accept = async () => {
+    setBusy(true);
     setError("");
     try {
-      const org = await api.acceptInvite(token.trim());
-      setCurrentOrgId(org.id);
-      await refreshOrgs();
-      router.push("/projects");
+      const o = await orgs.acceptInvite(token.trim());
+      if (o?.id) setCurrentOrgId(o.id);
+      reload();
+      toast.success("Invitation accepted", o?.name ? `You joined ${o.name}` : undefined);
+      router.push("/");
     } catch (err) {
-      setError(
-        err instanceof ApiError ? err.message : "Failed to accept invite",
-      );
+      setError(errorMessage(err));
     } finally {
-      setSubmitting(false);
+      setBusy(false);
     }
-  }
+  };
 
   return (
-    <div className="mx-auto max-w-lg animate-fade-up">
-      <PageHeader
-        title="Accept invite"
-        description="Paste the invite token you received to join an organization."
-      />
-      <form onSubmit={onSubmit} className="flex flex-col gap-4">
-        {error ? <Alert>{error}</Alert> : null}
-        <Input
-          label="Invite token"
-          required
-          value={token}
-          onChange={(e) => setToken(e.target.value)}
-          placeholder="Paste token"
-        />
-        <Button type="submit" disabled={submitting} className="w-fit">
-          {submitting ? "Joining…" : "Join organization"}
+    <Panel className="max-w-xl">
+      <form
+        className="flex flex-col gap-5"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void accept();
+        }}
+      >
+        <Input label="Invitation token" required value={token} onChange={(e) => setToken(e.target.value)} spellCheck={false} data-testid="invite-token" />
+        {error && (
+          <p role="alert" className="error-text !mt-0">
+            {error}
+          </p>
+        )}
+        <Button type="submit" variant="primary" loading={busy} disabled={!token.trim()} data-testid="invite-accept">
+          Accept invitation
         </Button>
       </form>
-    </div>
+    </Panel>
+  );
+}
+
+export default function AcceptInvitePage() {
+  return (
+    <>
+      <PageHeader title="Accept invitation" description="Join an organization using the token from your invite link. The invitation must have been sent to your account email." />
+      <Suspense>
+        <AcceptForm />
+      </Suspense>
+    </>
   );
 }

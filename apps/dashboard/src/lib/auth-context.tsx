@@ -1,124 +1,142 @@
 "use client";
 
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useState,
-  type ReactNode,
-} from "react";
-import { api } from "@/lib/api";
-import {
-  clearCurrentOrgId,
-  clearTokens,
-  getAccessToken,
-  setTokens,
-} from "@/lib/storage";
-import type { User } from "@/lib/types";
+import { createContext, useCallback, useContext, useEffect, useMemo, useSyncExternalStore } from "react";
+import { auth, isMfaChallenge, localTokenStore, onSessionExpired, type AuthResponse, type User } from "@/lib/api";
+
+/* Small external store so auth state never needs setState-in-effect. */
+type Status = "unknown" | "anon" | "authed";
+interface Snapshot {
+  status: Status;
+  user: User | null;
+}
+
+let snap: Snapshot = { status: "unknown", user: null };
+const SERVER: Snapshot = { status: "unknown", user: null };
+const subs = new Set<() => void>();
+let started = false;
+
+function set(next: Snapshot) {
+  snap = next;
+  subs.forEach((f) => f());
+}
+
+function start() {
+  if (started) return;
+  started = true;
+  if (!localTokenStore.getAccess() && !localTokenStore.getRefresh()) {
+    set({ status: "anon", user: null });
+    return;
+  }
+  auth
+    .me()
+    .then((user) => set({ status: "authed", user }))
+    .catch(() => {
+      // 401 already cleared tokens inside the client; network failures keep tokens but show login
+      set({ status: "anon", user: null });
+    });
+}
+
+/** test helper */
+export function __resetAuthStore() {
+  started = false;
+  snap = { status: "unknown", user: null };
+}
+
+export type LoginOutcome = { kind: "ok"; user: User } | { kind: "mfa"; mfaToken: string } | { kind: "pwchange"; user: User };
 
 interface AuthContextValue {
   user: User | null;
   loading: boolean;
-  login: (identifier: string, password: string) => Promise<void>;
-  register: (name: string, identifier: string, password: string) => Promise<void>;
-  bootstrap: (identifier: string, password: string) => Promise<void>;
+  login: (login: string, password: string) => Promise<LoginOutcome>;
+  completeMfa: (login: string, password: string, mfaToken: string, code: string) => Promise<User>;
+  register: (input: { email: string; password: string; name: string; invite_token?: string }) => Promise<User>;
+  bootstrap: (input: { email: string; password: string; name: string }) => Promise<User>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
 }
 
-function toEmail(identifier: string): string {
-  const clean = identifier.trim().toLowerCase();
-  if (clean.includes("@")) return clean;
-  return `${clean}@local`;
+const Ctx = createContext<AuthContextValue | null>(null);
+
+function accept(res: AuthResponse): User {
+  localTokenStore.set(res.access_token, res.refresh_token);
+  const user: User = res.must_change_password ? { ...res.user, must_change_password: true } : res.user;
+  set({ status: "authed", user });
+  return user;
 }
 
-const AuthContext = createContext<AuthContextValue | null>(null);
-
-export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  const refreshUser = useCallback(async () => {
-    const token = getAccessToken();
-    if (!token) {
-      setUser(null);
-      return;
-    }
-    try {
-      const me = await api.me();
-      setUser(me);
-    } catch {
-      clearTokens();
-      setUser(null);
-    }
-  }, []);
+export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const s = useSyncExternalStore(
+    (cb) => {
+      subs.add(cb);
+      return () => subs.delete(cb);
+    },
+    () => snap,
+    () => SERVER,
+  );
 
   useEffect(() => {
-    let mounted = true;
-    (async () => {
-      try {
-        await refreshUser();
-      } finally {
-        if (mounted) setLoading(false);
-      }
-    })();
-    return () => {
-      mounted = false;
-    };
-  }, [refreshUser]);
-
-  const login = useCallback(async (identifier: string, password: string) => {
-    const email = toEmail(identifier);
-    const res = await api.login({ email, password });
-    setTokens(res.access_token, res.refresh_token);
-    setUser(res.user);
+    start();
+    return onSessionExpired(() => {
+      localTokenStore.clear();
+      set({ status: "anon", user: null });
+    });
   }, []);
 
-  const register = useCallback(
-    async (name: string, identifier: string, password: string) => {
-      const email = toEmail(identifier);
-      const res = await api.register({ name: name || identifier, email, password });
-      setTokens(res.access_token, res.refresh_token);
-      setUser(res.user);
-    },
-    [],
-  );
+  const login = useCallback(async (loginName: string, password: string): Promise<LoginOutcome> => {
+    const res = await auth.login({ login: loginName, password });
+    if (isMfaChallenge(res)) return { kind: "mfa", mfaToken: res.mfa_token };
+    const user = accept(res);
+    return user.must_change_password ? { kind: "pwchange", user } : { kind: "ok", user };
+  }, []);
 
-  const bootstrap = useCallback(
-    async (identifier: string, password: string) => {
-      const email = toEmail(identifier);
-      const name = identifier.split("@")[0] || "Administrator";
-      const res = await api.bootstrap({ name, email, password });
-      setTokens(res.access_token, res.refresh_token);
-      setUser(res.user);
-    },
-    [],
-  );
+  const completeMfa = useCallback(async (loginName: string, password: string, mfaToken: string, code: string) => {
+    const res = await auth.login({ login: loginName, password, mfa_token: mfaToken, totp_code: code.trim() });
+    if (isMfaChallenge(res)) throw new Error("Verification failed. Try again.");
+    return accept(res);
+  }, []);
+
+  const register = useCallback(async (input: { email: string; password: string; name: string; invite_token?: string }) => {
+    return accept(await auth.register(input));
+  }, []);
+
+  const bootstrap = useCallback(async (input: { email: string; password: string; name: string }) => {
+    return accept(await auth.bootstrap(input));
+  }, []);
 
   const logout = useCallback(async () => {
     try {
-      await api.logout();
+      await auth.logout();
     } catch {
-      // ignore network errors on logout
-    } finally {
-      clearTokens();
-      clearCurrentOrgId();
-      setUser(null);
+      /* token may already be dead; local sign-out still happens */
     }
+    localTokenStore.clear();
+    set({ status: "anon", user: null });
   }, []);
 
-  const value = useMemo(
-    () => ({ user, loading, login, register, bootstrap, logout, refreshUser }),
-    [user, loading, login, register, bootstrap, logout, refreshUser],
+  const refreshUser = useCallback(async () => {
+    const user = await auth.me();
+    set({ status: "authed", user });
+  }, []);
+
+  const value = useMemo<AuthContextValue>(
+    () => ({
+      user: s.user,
+      loading: s.status === "unknown",
+      login,
+      completeMfa,
+      register,
+      bootstrap,
+      logout,
+      refreshUser,
+    }),
+    [s, login, completeMfa, register, bootstrap, logout, refreshUser],
   );
 
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 
-export function useAuth() {
-  const ctx = useContext(AuthContext);
-  if (!ctx) throw new Error("useAuth must be used within AuthProvider");
-  return ctx;
+export function useAuth(): AuthContextValue {
+  const v = useContext(Ctx);
+  if (!v) throw new Error("useAuth must be used inside AuthProvider");
+  return v;
 }

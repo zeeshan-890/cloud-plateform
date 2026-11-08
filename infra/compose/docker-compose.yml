@@ -1,266 +1,522 @@
-# jp Cloud Platform — Compose stack (resource-adaptive)
+# JP Cloud — production Compose stack (single node).
 #
-# Limits in this file are baseline defaults. Prefer:
-#   .\scripts\size-host.ps1   /  ./scripts/size-host.sh
-#   .\scripts\jp-up.ps1       /  ./scripts/jp-up.sh
-# which detect host RAM/CPU and apply infra/compose/sizing/{small,medium,large,xlarge}.yml
-# plus --scale worker=N. 4GB is the *small* tier, not the product ceiling.
+# This file contains NO development defaults: every secret/identity value is required and the stack refuses
+# to start without it (compose `:?` required-variable syntax). Installers (install.sh / install.ps1) generate a complete `.env`.
+# For local development use infra/compose/docker-compose.dev.yml together with infra/compose/dev.env
+# (scripts/jp-up.sh --dev does that for you).
 #
-# Profiles:
-#   (default / core)  traefik, gateway, identity, organization, project, notification, postgres, redis
-#   ui                Next.js dashboard (port 3000)
-#   platform          repository, deployment, build, worker, registry-api, registry:2,
-#                     runtime, scheduler, domain, certificate, secret, logging, metrics, ai, billing
-#   data              MinIO, storage, database
-#   monitoring        prometheus, grafana, loki, tempo, promtail
-#   dev               MailHog + extra tooling
+# Networks
+#   jp        platform network. Every platform container + Traefik. Tenant containers NEVER join it.
+#   socketproxy  internal-only network between docker-socket-proxy and its two read-only clients (traefik, promtail).
+#   (jp_p_<project> networks are created at runtime by the runtime service, one per project; Traefik is
+#    attached to each of them with `docker network connect`.)
 #
-# Usage (adaptive — recommended):
-#   .\scripts\jp-up.ps1 -Profiles platform,ui
-# Manual:
-#   docker compose -f infra/compose/docker-compose.yml -f infra/compose/sizing/medium.yml --env-file .env --profile platform up -d --build --scale worker=2
+# Docker socket (see docs/SECURITY.md):
+#   runtime ......... real socket (creates/stops tenant containers, networks, volumes)      -> root-equivalent on the host
+#   worker .......... real socket (docker build / push for tenant code)                     -> root-equivalent on the host
+#   docker-socket-proxy  read-only socket, CONTAINERS+NETWORKS only, for traefik and promtail
+#   Nothing else mounts the socket. Both socket users run as uid 10001 + the socket's group (DOCKER_GID).
+#
+# Profiles:  (default) full platform | monitoring | dev | e2e (see docker-compose.e2e.yml)
 
 name: jp
 
-x-service-defaults: &service-defaults
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-hardening: &hardening
   restart: unless-stopped
-  networks:
-    - jp
+  networks: [jp]
+  security_opt:
+    - no-new-privileges:true
+  cap_drop: [ALL]
+  logging: *logging
+
+# Go service defaults: non-root, read-only rootfs, writable /tmp only, graceful stop.
+x-go: &go
+  <<: *hardening
+  user: "10001:10001"
+  read_only: true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+  stop_grace_period: 20s
 
 x-go-build: &go-build
   context: ../..
   dockerfile: infra/docker/Dockerfile.service
+  args: &go-build-args
+    VERSION: ${JP_VERSION:-dev}
+    COMMIT: ${JP_COMMIT:-unknown}
+
+# Environment shared by every Go service.
+x-env-common: &env-common
+  JP_ENV: ${JP_ENV:-production}
+  JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
+  INTERNAL_TOKEN: ${INTERNAL_TOKEN:?INTERNAL_TOKEN is required (installer generates it)}
+  JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required, >= 32 random chars (installer generates it)}
+  JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-15m}
+  JWT_REFRESH_TTL: ${JWT_REFRESH_TTL:-168h}
+  ROOT_DOMAIN: ${ROOT_DOMAIN:?ROOT_DOMAIN is required (e.g. apps.example.com or <ip-dashes>.sslip.io)}
+  MANAGEMENT_DOMAIN: ${MANAGEMENT_DOMAIN:-}
+  TLS_ENABLED: ${TLS_ENABLED:-false}
+  PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?PUBLIC_BASE_URL is required (public URL of the panel, e.g. https://panel.example.com)}
+  PUBLIC_DASHBOARD_URL: ${PUBLIC_BASE_URL}
+  DASHBOARD_URL: ${PUBLIC_BASE_URL}
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+  MIGRATIONS_DIR: /app/migrations
+
+# Datastore connections (platform postgres/redis; never exposed outside the jp network).
+x-env-data: &env-data
+  DATABASE_URL: postgres://${POSTGRES_USER:-jp}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-jp}?sslmode=disable
+  REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
+
+# Internal service addresses (service-to-service calls carry X-Internal-Token).
+x-env-urls: &env-urls
+  IDENTITY_URL: http://identity:8001
+  ORGANIZATION_URL: http://organization:8002
+  PROJECT_URL: http://project:8003
+  NOTIFICATION_URL: http://notification:8004
+  REPOSITORY_URL: http://repository:8005
+  DEPLOYMENT_URL: http://deployment:8006
+  BUILD_URL: http://build:8007
+  REGISTRY_URL: http://registry-api:8009
+  RUNTIME_URL: http://runtime:8010
+  SCHEDULER_URL: http://scheduler:8011
+  DOMAIN_URL: http://domain:8012
+  CERTIFICATE_URL: http://certificate:8013
+  SECRET_URL: http://secret:8014
+  LOGGING_URL: http://logging:8015
+  METRICS_URL: http://metrics:8016
+  STORAGE_URL: http://storage:8017
+  DATABASE_SVC_URL: http://database:8018
+  AI_URL: http://ai:8019
+  ADDON_SVC_URL: http://addon:8021
+
+x-wait-data: &wait-data
+  postgres:
+    condition: service_healthy
+  redis:
+    condition: service_healthy
 
 services:
-  traefik:
-    <<: *service-defaults
-    image: traefik:v3.6
-    command:
-      - --api.dashboard=true
-      - --api.insecure=true
-      - --providers.docker=true
-      - --providers.docker.exposedbydefault=false
-      - --providers.file.directory=/etc/traefik/dynamic
-      - --providers.file.watch=true
-      - --entrypoints.web.address=:80
-      - --entrypoints.web.http.redirections.entrypoint.to=websecure
-      - --entrypoints.web.http.redirections.entrypoint.scheme=https
-      - --entrypoints.websecure.address=:443
-      - --certificatesresolvers.letsencrypt.acme.httpchallenge=true
-      - --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web
-      - --certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:-admin@zeeshanabbaskhan.me}
-      - --certificatesresolvers.letsencrypt.acme.storage=/etc/traefik/acme/acme.json
+  # ---------------------------------------------------------------------------------------------
+  # Edge
+  # ---------------------------------------------------------------------------------------------
+  # One-shot: make the shared Traefik dynamic-config volume writable by the services that generate
+  # routers (domain, certificate; uid 10001) while Traefik only reads it.
+  init-volumes:
+    image: busybox:1.37
+    restart: "no"
+    networks: [jp]
+    user: root
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    security_opt:
+      - no-new-privileges:true
+    command: ["sh", "-c", "mkdir -p /dynamic && chown -R 10001:10001 /dynamic && chmod 755 /dynamic"]
+    volumes:
+      - traefik_dynamic:/dynamic
+
+  # Read-only filtered view of the Docker API for Traefik and Promtail. Only containers + networks.
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:0.3.0
+    restart: unless-stopped
+    networks: [socketproxy]
+    security_opt:
+      - no-new-privileges:true
+    logging: *logging
     environment:
-      - DOCKER_API_VERSION=1.44
-    ports:
-      - "${HTTP_PORT:-80}:80"
-      - "${HTTPS_PORT:-443}:443"
-      - "${TRAEFIK_DASHBOARD_PORT:-8080}:8080"
+      CONTAINERS: "1"
+      NETWORKS: "1"
+      EVENTS: "1"
+      PING: "1"
+      VERSION: "1"
+      INFO: "0"
+      IMAGES: "0"
+      VOLUMES: "0"
+      SERVICES: "0"
+      TASKS: "0"
+      SWARM: "0"
+      NODES: "0"
+      SECRETS: "0"
+      CONFIGS: "0"
+      PLUGINS: "0"
+      SYSTEM: "0"
+      EXEC: "0"
+      BUILD: "0"
+      COMMIT: "0"
+      DISTRIBUTION: "0"
+      POST: "0"
+      AUTH: "0"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ../traefik/dynamic:/etc/traefik/dynamic
-      - ../traefik/acme:/etc/traefik/acme
-    deploy:
-      resources:
-        limits:
-          memory: 128M
-          cpus: "0.25"
-
-  postgres:
-    <<: *service-defaults
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-jp}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-jp_dev_password}
-      POSTGRES_DB: ${POSTGRES_DB:-jp}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-jp} -d ${POSTGRES_DB:-jp}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:2375/_ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
     deploy:
       resources:
         limits:
-          memory: 512M
+          memory: 64M
+          cpus: "0.20"
+
+  traefik:
+    <<: *hardening
+    image: traefik:v3.6.25
+    container_name: jp-traefik
+    read_only: true
+    cap_add: [NET_BIND_SERVICE]
+    networks: [jp, socketproxy]
+    # Static configuration is assembled in a tiny shell wrapper so that TLS/ACME flags exist ONLY when
+    # TLS_ENABLED=true (a static file cannot be conditional). `api.insecure` is never set: the dashboard is
+    # an ordinary router on the `traefik` entrypoint, bound to 127.0.0.1 and behind basic auth.
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        set -- \
+          --global.checknewversion=false --global.sendanonymoususage=false \
+          --log.level="$${TRAEFIK_LOG_LEVEL:-INFO}" \
+          --accesslog=true --accesslog.format=json --accesslog.fields.headers.defaultmode=drop \
+          --ping=true --ping.entrypoint=web \
+          --entrypoints.web.address=:80 \
+          --entrypoints.websecure.address=:443 \
+          --entrypoints.web.transport.respondingtimeouts.readtimeout=30m \
+          --entrypoints.web.transport.respondingtimeouts.writetimeout=0s \
+          --entrypoints.web.transport.respondingtimeouts.idletimeout=5m \
+          --entrypoints.websecure.transport.respondingtimeouts.readtimeout=30m \
+          --entrypoints.websecure.transport.respondingtimeouts.writetimeout=0s \
+          --entrypoints.websecure.transport.respondingtimeouts.idletimeout=5m \
+          --providers.providersthrottleduration=200ms \
+          --serverstransport.forwardingtimeouts.dialtimeout=2s \
+          --providers.docker=true \
+          --providers.docker.endpoint=tcp://docker-socket-proxy:2375 \
+          --providers.docker.exposedbydefault=false \
+          --providers.docker.network=jp \
+          --providers.file.directory=/etc/traefik/dynamic \
+          --providers.file.watch=true
+        # Traefik is attached to every tenant network (it must route to them), so anything it LISTENS on is reachable
+        # from tenant containers. The dashboard/API and metrics entrypoints are therefore OFF by default.
+        if [ "$${TRAEFIK_DASHBOARD:-false}" = "true" ]; then
+          set -- "$$@" --api.dashboard=true --entrypoints.traefik.address=:8080
+        fi
+        if [ "$${TRAEFIK_METRICS:-false}" = "true" ]; then
+          set -- "$$@" --entrypoints.metrics.address=:8082 --metrics.prometheus=true --metrics.prometheus.entrypoint=metrics
+        fi
+        if [ "$${TLS_ENABLED:-false}" = "true" ]; then
+          [ -n "$${ACME_EMAIL:-}" ] || { echo "FATAL: ACME_EMAIL is required when TLS_ENABLED=true" >&2; exit 1; }
+          [ -n "$${MANAGEMENT_DOMAIN:-}" ] || { echo "FATAL: MANAGEMENT_DOMAIN is required when TLS_ENABLED=true (a certificate cannot be issued for a bare IP)" >&2; exit 1; }
+          set -- "$$@" \
+            --entrypoints.web.http.redirections.entrypoint.to=websecure \
+            --entrypoints.web.http.redirections.entrypoint.scheme=https \
+            --entrypoints.websecure.http.tls=true \
+            --entrypoints.websecure.http.tls.certresolver=letsencrypt \
+            --certificatesresolvers.letsencrypt.acme.email="$$ACME_EMAIL" \
+            --certificatesresolvers.letsencrypt.acme.storage=/acme/acme.json \
+            --certificatesresolvers.letsencrypt.acme.httpchallenge=true \
+            --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web
+          if [ "$${ACME_STAGING:-false}" = "true" ]; then
+            set -- "$$@" --certificatesresolvers.letsencrypt.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory
+          fi
+        fi
+        exec traefik "$$@"
+    environment:
+      TLS_ENABLED: ${TLS_ENABLED:-false}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+      ACME_STAGING: ${ACME_STAGING:-false}
+      MANAGEMENT_DOMAIN: ${MANAGEMENT_DOMAIN:-}
+      TRAEFIK_LOG_LEVEL: ${TRAEFIK_LOG_LEVEL:-INFO}
+      TRAEFIK_DASHBOARD: ${TRAEFIK_DASHBOARD:-false}
+      TRAEFIK_METRICS: ${TRAEFIK_METRICS:-false}
+    ports:
+      - "${HTTP_BIND:-0.0.0.0}:${HTTP_PORT:-80}:80"
+      - "${HTTPS_BIND:-0.0.0.0}:${HTTPS_PORT:-443}:443"
+      - "127.0.0.1:${TRAEFIK_DASHBOARD_PORT:-8080}:8080"
+    volumes:
+      - traefik_dynamic:/etc/traefik/dynamic:ro
+      - traefik_acme:/acme
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.traefik-dashboard.rule=PathPrefix(`/api`) || PathPrefix(`/dashboard`)
+      - traefik.http.routers.traefik-dashboard.entrypoints=traefik
+      - traefik.http.routers.traefik-dashboard.service=api@internal
+      - traefik.http.routers.traefik-dashboard.middlewares=traefik-auth
+      - traefik.http.middlewares.traefik-auth.basicauth.users=${TRAEFIK_DASHBOARD_AUTH:?TRAEFIK_DASHBOARD_AUTH is required (htpasswd line; installer generates it)}
+    depends_on:
+      init-volumes:
+        condition: service_completed_successfully
+      docker-socket-proxy:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:80/ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 192M
           cpus: "0.50"
 
+  # ---------------------------------------------------------------------------------------------
+  # Datastores (never published outside 127.0.0.1; the dev override publishes them on loopback)
+  # ---------------------------------------------------------------------------------------------
+  postgres:
+    <<: *hardening
+    image: postgres:16.9-alpine3.21
+    # the stock entrypoint chowns the data dir and drops to the postgres user
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-jp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-jp}
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --auth-local=scram-sha-256"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+    shm_size: 128m
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+          cpus: "1.0"
+
   redis:
-    <<: *service-defaults
-    image: redis:7-alpine
-    command: ["redis-server", "--save", "60", "1", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
+    <<: *hardening
+    image: redis:7.4-alpine3.21
+    # run as the image's redis user (uid 999) directly: the compose command bypasses the image entrypoint that would chown+drop privileges
+    user: "999:1000"
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+      REDISCLI_AUTH: ${REDIS_PASSWORD}
+    command:
+      - sh
+      - -c
+      - exec redis-server --requirepass "$$REDIS_PASSWORD" --save 60 1 --appendonly yes --maxmemory "$${REDIS_MAXMEMORY:-192mb}" --maxmemory-policy noeviction
     volumes:
       - redis_data:/data
-    ports:
-      - "${REDIS_PORT:-6379}:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
       interval: 5s
       timeout: 3s
       retries: 10
     deploy:
       resources:
         limits:
-          memory: 160M
-          cpus: "0.25"
+          memory: 320M
+          cpus: "0.50"
 
-  gateway:
-    <<: *service-defaults
-    build:
-      <<: *go-build
-      args:
-        SERVICE: gateway
+  # Image registry for tenant builds. Published on loopback ONLY: the host Docker daemon (which the worker
+  # pushes through and the runtime pulls through) reaches it as 127.0.0.1:5000, which Docker treats as a
+  # trusted/insecure registry by default. Image names are always `127.0.0.1:5000/<org>/<project>:<tag>`.
+  registry:
+    <<: *hardening
+    image: registry:2.8.3
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
     environment:
-      PORT: "8000"
-      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
-      JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-15m}
-      JWT_REFRESH_TTL: ${JWT_REFRESH_TTL:-168h}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:5173}
-      IDENTITY_URL: http://identity:8001
-      ORGANIZATION_URL: http://organization:8002
-      PROJECT_URL: http://project:8003
-      NOTIFICATION_URL: http://notification:8004
-      REPOSITORY_URL: http://repository:8005
-      DEPLOYMENT_URL: http://deployment:8006
-      BUILD_URL: http://build:8007
-      REGISTRY_URL: http://registry-api:8009
-      RUNTIME_URL: http://runtime:8010
-      SCHEDULER_URL: http://scheduler:8011
-      DOMAIN_URL: http://domain:8012
-      CERTIFICATE_URL: http://certificate:8013
-      SECRET_URL: http://secret:8014
-      LOGGING_URL: http://logging:8015
-      METRICS_URL: http://metrics:8016
-      STORAGE_URL: http://storage:8017
-      DATABASE_SVC_URL: http://database:8018
-      ADDON_SVC_URL: http://addon:8021
-      AI_URL: http://ai:8019
-      BILLING_URL: http://billing:8020
-      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
-      OTEL_SERVICE_NAME: gateway
-      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"
+      REGISTRY_HTTP_ADDR: ":5000"
+      REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY: /var/lib/registry
+      REGISTRY_HTTP_SECRET: ${REGISTRY_HTTP_SECRET:?REGISTRY_HTTP_SECRET is required (installer generates it)}
     ports:
-      - "127.0.0.1:${GATEWAY_PORT:-8000}:8000"
-    depends_on:
-      identity:
-        condition: service_started
-      organization:
-        condition: service_started
-      project:
-        condition: service_started
-    labels:
-      - traefik.enable=true
-      - traefik.http.routers.gateway.rule=PathPrefix(`/api`)
-      - traefik.http.routers.gateway.entrypoints=web
-      - traefik.http.services.gateway.loadbalancer.server.port=8000
-    deploy:
-      resources:
-        limits:
-          memory: 128M
-          cpus: "0.25"
-  identity:
-    <<: *service-defaults
-    build:
-      <<: *go-build
-      args:
-        SERVICE: identity
-    environment:
-      PORT: "8001"
-      DATABASE_URL: ${DATABASE_URL:-postgres://jp:jp_dev_password@postgres:5432/jp?sslmode=disable}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
-      JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-15m}
-      JWT_REFRESH_TTL: ${JWT_REFRESH_TTL:-168h}
-      MIGRATIONS_DIR: /app/migrations
-      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+      - "127.0.0.1:${REGISTRY_PORT:-5000}:5000"
+      # Optional second binding so servers that join the cluster can pull tenant images over the private network
+      # (their node agent forwards 127.0.0.1:5000 here). Defaults to an unused loopback port = nothing exposed.
+      - "${REGISTRY_PRIVATE_BIND:-127.0.0.1}:${REGISTRY_PRIVATE_PORT:-5001}:5000"
+    volumes:
+      - registry_data:/var/lib/registry
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:5000/v2/"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
     deploy:
       resources:
         limits:
           memory: 192M
-          cpus: "0.35"
+          cpus: "0.30"
 
-  organization:
-    <<: *service-defaults
+  minio:
+    <<: *hardening
     build:
-      <<: *go-build
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.minio
       args:
-        SERVICE: organization
+        MINIO_VERSION: ${MINIO_VERSION:-RELEASE.2025-04-22T22-12-26Z}
+    image: jp-minio:${MINIO_VERSION:-RELEASE.2025-04-22T22-12-26Z}
+    command: ["server", "/data", "--console-address", ":9001"]
     environment:
-      PORT: "8002"
-      DATABASE_URL: ${DATABASE_URL:-postgres://jp:jp_dev_password@postgres:5432/jp?sslmode=disable}
-      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
-      JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-15m}
-      JWT_REFRESH_TTL: ${JWT_REFRESH_TTL:-168h}
-      IDENTITY_URL: http://identity:8001
-      NOTIFICATION_URL: http://notification:8004
-      MIGRATIONS_DIR: /app/migrations
-      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
-    depends_on:
-      postgres:
-        condition: service_healthy
-      identity:
-        condition: service_started
-      notification:
-        condition: service_started
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required (installer generates it)}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required (installer generates it)}
+      MINIO_BROWSER: ${MINIO_BROWSER:-on}
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
     deploy:
       resources:
         limits:
-          memory: 160M
-          cpus: "0.30"
+          memory: 384M
+          cpus: "0.50"
 
-  project:
-    <<: *service-defaults
+  # ---------------------------------------------------------------------------------------------
+  # Control plane
+  # ---------------------------------------------------------------------------------------------
+  gateway:
+    <<: *go
     build:
       <<: *go-build
-      args:
-        SERVICE: project
+      args: {<<: *go-build-args, SERVICE: gateway}
     environment:
-      PORT: "8003"
-      DATABASE_URL: ${DATABASE_URL:-postgres://jp:jp_dev_password@postgres:5432/jp?sslmode=disable}
-      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
-      JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-15m}
-      JWT_REFRESH_TTL: ${JWT_REFRESH_TTL:-168h}
-      ORGANIZATION_URL: http://organization:8002
-      MIGRATIONS_DIR: /app/migrations
-      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
+      <<: [*env-common, *env-data, *env-urls]
+      PORT: "8000"
+      GOMEMLIMIT: 150MiB
+      # read by the security report: asserts databases/queues listen on loopback only (see `ports:` of each service)
+      INFRA_BIND_ADDR: 127.0.0.1
+      JP_VERSION: ${JP_VERSION:-dev}
+      CORS_ORIGINS: ${CORS_ORIGINS:-${PUBLIC_BASE_URL}}
+      REGISTRATION_MODE: ${REGISTRATION_MODE:-invite}
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-172.16.0.0/12,10.0.0.0/8,192.168.0.0/16}
+      DOMAIN_CNAME_TARGET: ${DOMAIN_CNAME_TARGET:-}
+      # multi-server: what joining servers use to pull images (host:port) and the control plane's private address
+      NODE_REGISTRY_UPSTREAM: ${NODE_REGISTRY_UPSTREAM:-}
+      CONTROL_PLANE_PRIVATE_IP: ${CONTROL_PLANE_PRIVATE_IP:-}
+      PREVIEW_BASE_DOMAIN: ${PREVIEW_BASE_DOMAIN:-}
+      BUILD_MODE: ${BUILD_MODE:-docker}
+      RUNTIME_MODE: ${RUNTIME_MODE:-docker}
+      TRIVY_ENABLED: ${TRIVY_ENABLED:-true}
+      GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_TLS: ${SMTP_TLS:-starttls}
+    ports:
+      - "127.0.0.1:${GATEWAY_PORT:-8000}:8000"
     depends_on:
-      postgres:
+      <<: *wait-data
+      identity:
         condition: service_healthy
       organization:
-        condition: service_started
+        condition: service_healthy
+      project:
+        condition: service_healthy
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=jp
+      # Management hostname (only matches when MANAGEMENT_DOMAIN is set; `.invalid` never resolves)
+      - traefik.http.routers.jp-gw-host.rule=Host(`${MANAGEMENT_DOMAIN:-mgmt.invalid}`) && PathPrefix(`/api`)
+      - traefik.http.routers.jp-gw-host.entrypoints=web,websecure
+      - traefik.http.routers.jp-gw-host.priority=200
+      - traefik.http.routers.jp-gw-host.service=jp-gateway
+      # Bare-IP / localhost access (IP installs): catch-all for IP-literal Host headers only, so an
+      # unknown or unverified hostname never lands on the panel
+      - traefik.http.routers.jp-gw-ip.rule=(HostRegexp(`^(\d{1,3}\.){3}\d{1,3}$$`) || Host(`localhost`)) && PathPrefix(`/api`)
+      - traefik.http.routers.jp-gw-ip.entrypoints=web,websecure
+      - traefik.http.routers.jp-gw-ip.priority=150
+      - traefik.http.routers.jp-gw-ip.service=jp-gateway
+      - traefik.http.services.jp-gateway.loadbalancer.server.port=8000
     deploy:
       resources:
         limits:
-          memory: 160M
-          cpus: "0.30"
+          memory: 192M
+          cpus: "0.75"
 
-  notification:
-    <<: *service-defaults
+  identity:
+    <<: *go
     build:
       <<: *go-build
-      args:
-        SERVICE: notification
+      args: {<<: *go-build-args, SERVICE: identity}
     environment:
+      <<: [*env-common, *env-data, *env-urls]
+      PORT: "8001"
+      GOMEMLIMIT: 150MiB
+      REGISTRATION_MODE: ${REGISTRATION_MODE:-invite}
+      # encrypts TOTP seeds and persisted settings (SMTP password, ...); base64 of 32 random bytes
+      IDENTITY_ENC_KEY: "${IDENTITY_ENC_KEY:?IDENTITY_ENC_KEY is required: base64 of 32 random bytes (installer generates it)}"
+      # optional: when set, POST /auth/bootstrap (first admin) must carry it
+      BOOTSTRAP_TOKEN: ${BOOTSTRAP_TOKEN:-}
+    depends_on: *wait-data
+    deploy:
+      resources:
+        limits:
+          memory: 192M
+          cpus: "0.75"
+
+  organization:
+    <<: *go
+    build:
+      <<: *go-build
+      args: {<<: *go-build-args, SERVICE: organization}
+    environment:
+      <<: [*env-common, *env-data, *env-urls]
+      PORT: "8002"
+      GOMEMLIMIT: 100MiB
+      REGISTRATION_MODE: ${REGISTRATION_MODE:-invite}
+    depends_on: *wait-data
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.50"
+
+  project:
+    <<: *go
+    build:
+      <<: *go-build
+      args: {<<: *go-build-args, SERVICE: project}
+    environment:
+      <<: [*env-common, *env-data, *env-urls]
+      PORT: "8003"
+      GOMEMLIMIT: 100MiB
+    depends_on: *wait-data
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.50"
+
+  notification:
+    <<: *go
+    build:
+      <<: *go-build
+      args: {<<: *go-build-args, SERVICE: notification}
+    environment:
+      <<: [*env-common, *env-urls]
       PORT: "8004"
-      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
+      GOMEMLIMIT: 50MiB
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_TLS: ${SMTP_TLS:-starttls}
     deploy:
       resources:
         limits:
           memory: 64M
           cpus: "0.15"
 
-  # --- UI profile (dashboard) ---
   dashboard:
-    <<: *service-defaults
-    profiles: ["ui"]
+    <<: *hardening
+    # The dashboard image runs nginx; nginx's master process needs a few capabilities, so no cap_drop here.
+    cap_drop: []
     build:
       context: ../../apps/dashboard
       dockerfile: Dockerfile
@@ -268,439 +524,325 @@ services:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-/api/v1}
     environment:
       PORT: "3000"
-      HOSTNAME: "0.0.0.0"
     ports:
-      - "${DASHBOARD_PORT:-3000}:3000"
+      - "${DASHBOARD_BIND:-127.0.0.1}:${DASHBOARD_PORT:-3000}:3000"
     depends_on:
       gateway:
-        condition: service_started
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:3000/"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
     labels:
       - traefik.enable=true
-      - traefik.http.routers.dashboard.rule=PathPrefix(`/`)
-      - traefik.http.routers.dashboard.priority=1
-      - traefik.http.routers.dashboard.entrypoints=web
-      - traefik.http.services.dashboard.loadbalancer.server.port=3000
-    deploy:
-      resources:
-        limits:
-          memory: 256M
-          cpus: "0.35"
-
-  # --- Dev profile ---
-  mailhog:
-    <<: *service-defaults
-    image: mailhog/mailhog:v1.0.1
-    profiles: ["dev"]
-    ports:
-      - "1025:1025"
-      - "8025:8025"
-    deploy:
-      resources:
-        limits:
-          memory: 64M
-          cpus: "0.10"
-
-  # --- Monitoring profile (optional; keep off on small VPS unless needed) ---
-  prometheus:
-    <<: *service-defaults
-    image: prom/prometheus:v2.54.1
-    profiles: ["monitoring"]
-    command:
-      - --config.file=/etc/prometheus/prometheus.yml
-      - --storage.tsdb.path=/prometheus
-      - --storage.tsdb.retention.time=24h
-      - --web.enable-lifecycle
-    volumes:
-      - ../monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus_data:/prometheus
-    ports:
-      - "9090:9090"
-    deploy:
-      resources:
-        limits:
-          memory: 256M
-          cpus: "0.25"
-
-  grafana:
-    <<: *service-defaults
-    image: grafana/grafana:11.2.0
-    profiles: ["monitoring"]
-    environment:
-      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
-      GF_AUTH_ANONYMOUS_ENABLED: "true"
-      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
-      GF_USERS_DEFAULT_THEME: light
-      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
-    volumes:
-      - ../monitoring/grafana:/etc/grafana/provisioning/datasources:ro
-      - grafana_data:/var/lib/grafana
-    ports:
-      - "3001:3000"
-    depends_on:
-      - prometheus
-      - loki
-      - tempo
-    deploy:
-      resources:
-        limits:
-          memory: 192M
-          cpus: "0.20"
-
-  loki:
-    <<: *service-defaults
-    image: grafana/loki:3.1.1
-    profiles: ["monitoring"]
-    command: ["-config.file=/etc/loki/loki-config.yml"]
-    volumes:
-      - ../monitoring/loki-config.yml:/etc/loki/loki-config.yml:ro
-      - loki_data:/loki
-    ports:
-      - "3100:3100"
-    deploy:
-      resources:
-        limits:
-          memory: 256M
-          cpus: "0.25"
-
-  tempo:
-    <<: *service-defaults
-    image: grafana/tempo:2.6.0
-    profiles: ["monitoring"]
-    command: ["-config.file=/etc/tempo/tempo.yml"]
-    volumes:
-      - ../monitoring/tempo.yml:/etc/tempo/tempo.yml:ro
-      - tempo_data:/tmp/tempo
-    ports:
-      - "3200:3200"
-      - "4317:4317"
-      - "4318:4318"
-    deploy:
-      resources:
-        limits:
-          memory: 256M
-          cpus: "0.25"
-
-  promtail:
-    <<: *service-defaults
-    image: grafana/promtail:3.1.1
-    profiles: ["monitoring"]
-    command: ["-config.file=/etc/promtail/promtail-config.yml"]
-    volumes:
-      - ../monitoring/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    depends_on:
-      - loki
+      - traefik.docker.network=jp
+      - traefik.http.routers.jp-ui-host.rule=Host(`${MANAGEMENT_DOMAIN:-mgmt.invalid}`)
+      - traefik.http.routers.jp-ui-host.entrypoints=web,websecure
+      - traefik.http.routers.jp-ui-host.priority=100
+      - traefik.http.routers.jp-ui-host.service=jp-dashboard
+      - traefik.http.routers.jp-ui-host.middlewares=jp-secure-headers
+      - traefik.http.routers.jp-ui-ip.rule=HostRegexp(`^(\d{1,3}\.){3}\d{1,3}$$`) || Host(`localhost`)
+      - traefik.http.routers.jp-ui-ip.entrypoints=web,websecure
+      - traefik.http.routers.jp-ui-ip.priority=50
+      - traefik.http.routers.jp-ui-ip.service=jp-dashboard
+      - traefik.http.routers.jp-ui-ip.middlewares=jp-secure-headers
+      - traefik.http.services.jp-dashboard.loadbalancer.server.port=3000
+      - traefik.http.middlewares.jp-secure-headers.headers.contenttypenosniff=true
+      - traefik.http.middlewares.jp-secure-headers.headers.frameDeny=true
+      - traefik.http.middlewares.jp-secure-headers.headers.referrerPolicy=strict-origin-when-cross-origin
+      - traefik.http.middlewares.jp-secure-headers.headers.stsSeconds=${HSTS_SECONDS:-0}
     deploy:
       resources:
         limits:
           memory: 128M
-          cpus: "0.15"
+          cpus: "0.35"
 
-  # --- Platform profile (Phase 2/3 delivery pipeline) ---
+  # ---------------------------------------------------------------------------------------------
+  # Delivery pipeline
+  # ---------------------------------------------------------------------------------------------
   repository:
-    <<: *service-defaults
-    profiles: ["platform"]
+    <<: *go
     build:
       <<: *go-build
-      args:
-        SERVICE: repository
+      args: {<<: *go-build-args, SERVICE: repository}
     environment:
+      <<: [*env-common, *env-data, *env-urls]
       PORT: "8005"
-      DATABASE_URL: ${DATABASE_URL:-postgres://jp:jp_dev_password@postgres:5432/jp?sslmode=disable}
-      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
-      ORGANIZATION_URL: http://organization:8002
-      DEPLOYMENT_URL: http://deployment:8006
-      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8000}
-      DASHBOARD_URL: ${DASHBOARD_URL:-http://localhost:3000}
-      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-dev-webhook-secret}
+      GOMEMLIMIT: 100MiB
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
+      # encrypts stored repository tokens / deploy keys (base64 or hex of 32 bytes)
+      REPO_ENC_KEY: "${REPO_ENC_KEY:?REPO_ENC_KEY is required: base64 of 32 random bytes (installer generates it)}"
+      GITHUB_MODE: ${GITHUB_MODE:-}
       GITHUB_APP_ID: ${GITHUB_APP_ID:-}
       GITHUB_APP_SLUG: ${GITHUB_APP_SLUG:-}
       GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY:-}
       GITHUB_APP_PRIVATE_KEY_PATH: ${GITHUB_APP_PRIVATE_KEY_PATH:-}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      MIGRATIONS_DIR: /app/migrations
-      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      organization:
-        condition: service_started
+    depends_on: *wait-data
     deploy:
       resources:
         limits:
           memory: 128M
-          cpus: "0.25"
+          cpus: "0.30"
 
   deployment:
-    <<: *service-defaults
-    profiles: ["platform"]
+    <<: *go
     build:
       <<: *go-build
-      args:
-        SERVICE: deployment
+      args: {<<: *go-build-args, SERVICE: deployment}
     environment:
+      <<: [*env-common, *env-data, *env-urls]
       PORT: "8006"
-      DATABASE_URL: ${DATABASE_URL:-postgres://jp:jp_dev_password@postgres:5432/jp?sslmode=disable}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
-      ORGANIZATION_URL: http://organization:8002
-      BUILD_URL: http://build:8007
-      REPOSITORY_URL: http://repository:8005
-      RUNTIME_URL: http://runtime:8010
-      DOMAIN_URL: http://domain:8012
-      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8000}
-      MIGRATIONS_DIR: /app/migrations
-      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      build:
-        condition: service_started
+      GOMEMLIMIT: 100MiB
+      PREVIEW_BASE_DOMAIN: ${PREVIEW_BASE_DOMAIN:-}
+      TRIVY_ENABLED: ${TRIVY_ENABLED:-true}
+    depends_on: *wait-data
     deploy:
       resources:
         limits:
           memory: 128M
-          cpus: "0.25"
+          cpus: "0.30"
 
   build:
-    <<: *service-defaults
-    profiles: ["platform"]
+    <<: *go
     build:
       <<: *go-build
-      args:
-        SERVICE: build
+      args: {<<: *go-build-args, SERVICE: build}
     environment:
+      <<: [*env-common, *env-data, *env-urls]
       PORT: "8007"
-      DATABASE_URL: ${DATABASE_URL:-postgres://jp:jp_dev_password@postgres:5432/jp?sslmode=disable}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
-      ORGANIZATION_URL: http://organization:8002
-      MIGRATIONS_DIR: /app/migrations
-      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+      GOMEMLIMIT: 100MiB
+    depends_on: *wait-data
     deploy:
       resources:
         limits:
           memory: 128M
-          cpus: "0.25"
+          cpus: "0.30"
 
+  # Build worker: git + docker CLI + buildx + trivy. Runs as uid 10001 with the docker socket's group.
+  # Customer code is built by the HOST daemon (docker build), never executed in this container.
   worker:
-    <<: *service-defaults
-    profiles: ["platform"]
+    <<: *hardening
     build:
       context: ../..
       dockerfile: infra/docker/Dockerfile.worker
+      args:
+        <<: *go-build-args
+    user: "10001:10001"
+    group_add:
+      - "${DOCKER_GID:?DOCKER_GID is required: group id owning /var/run/docker.sock (installer sets it; `stat -c %g /var/run/docker.sock`)}"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,size=128m,uid=10001,gid=10001
+      - /home/jp:rw,nosuid,size=16m,uid=10001,gid=10001
+    stop_grace_period: 150s
     environment:
+      <<: [*env-common, *env-data, *env-urls]
       PORT: "8008"
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      BUILD_URL: http://build:8007
-      DEPLOYMENT_URL: http://deployment:8006
-      REGISTRY_URL: http://registry-api:8009
-      REPOSITORY_URL: http://repository:8005
+      GOMEMLIMIT: 560MiB
       BUILD_MODE: ${BUILD_MODE:-docker}
-      SIMULATE_BUILD: ${SIMULATE_BUILD:-false}
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-1}
       WORKER_NAME: ${WORKER_NAME:-}
-      WORK_DIR: /tmp/jp-builds
-      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
-      DOCKER_HOST: ${DOCKER_HOST:-unix:///var/run/docker.sock}
-      # Host Docker daemon must reach the published registry port
-      REGISTRY_PUSH_URL: ${REGISTRY_PUSH_URL:-127.0.0.1:5000}
-      REGISTRY_HOST: ${REGISTRY_HOST:-127.0.0.1:5000}
+      WORK_DIR: /work
+      DOCKER_HOST: unix:///var/run/docker.sock
+      DOCKER_CONFIG: /tmp/.docker
+      HOME: /home/jp
+      TRIVY_ENABLED: ${TRIVY_ENABLED:-true}
+      TRIVY_CACHE_DIR: /cache/trivy
+      # Pushed with the HOST daemon -> must be an address the host can reach: the loopback-published registry.
+      REGISTRY_PUSH_URL: 127.0.0.1:${REGISTRY_PORT:-5000}
+      REGISTRY_HOST: 127.0.0.1:${REGISTRY_PORT:-5000}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      REGISTRY_CHECK_URL: http://registry:5000
+      REGISTRY_PASSWORD: ${REGISTRY_PASSWORD:-}
+      GIT_ALLOWED_HOSTS: ${GIT_ALLOWED_HOSTS:-}
+      TRIVY_TIMEOUT: ${TRIVY_TIMEOUT:-}
+      WORKER_BUILD_MEMORY: ${WORKER_BUILD_MEMORY:-}
+      WORKER_BUILD_TIMEOUT: ${WORKER_BUILD_TIMEOUT:-}
+      WORKER_CLONE_TIMEOUT: ${WORKER_CLONE_TIMEOUT:-}
+      WORKER_PUSH_TIMEOUT: ${WORKER_PUSH_TIMEOUT:-}
+      WORKER_CLAIM_IDLE: ${WORKER_CLAIM_IDLE:-}
+      WORKER_MAX_ATTEMPTS: ${WORKER_MAX_ATTEMPTS:-}
+      WORKER_MAX_REPO_MB: ${WORKER_MAX_REPO_MB:-}
+      WORKER_MIN_FREE_MB: ${WORKER_MIN_FREE_MB:-}
+      WORKER_DRAIN_TIMEOUT: ${WORKER_DRAIN_TIMEOUT:-120s}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - worker_build_cache:/tmp/jp-builds
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - worker_builds:/work
+      - worker_trivy_cache:/cache
     depends_on:
       redis:
         condition: service_healthy
       build:
-        condition: service_started
+        condition: service_healthy
       deployment:
-        condition: service_started
+        condition: service_healthy
       registry-api:
-        condition: service_started
+        condition: service_healthy
       registry:
-        condition: service_started
-    deploy:
-      resources:
-        limits:
-          memory: ${WORKER_MEM_LIMIT:-512M}
-          cpus: "${WORKER_CPU_LIMIT:-0.75}"
-
-  registry-api:
-    <<: *service-defaults
-    profiles: ["platform"]
-    build:
-      <<: *go-build
-      args:
-        SERVICE: registry
-    environment:
-      PORT: "8009"
-      DATABASE_URL: ${DATABASE_URL:-postgres://jp:jp_dev_password@postgres:5432/jp?sslmode=disable}
-      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
-      ORGANIZATION_URL: http://organization:8002
-      MIGRATIONS_DIR: /app/migrations
-      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
-    depends_on:
-      postgres:
         condition: service_healthy
     deploy:
       resources:
         limits:
-          memory: 96M
-          cpus: "0.20"
+          memory: 768M
+          cpus: "1.0"
 
-  registry:
-    <<: *service-defaults
-    profiles: ["platform"]
-    image: registry:2
-    ports:
-      - "${REGISTRY_PORT:-5000}:5000"
-    volumes:
-      - registry_data:/var/lib/registry
+  registry-api:
+    <<: *go
+    build:
+      <<: *go-build
+      args: {<<: *go-build-args, SERVICE: registry}
+    environment:
+      <<: [*env-common, *env-data, *env-urls]
+      PORT: "8009"
+      GOMEMLIMIT: 100MiB
+      REGISTRY_HOST: 127.0.0.1:${REGISTRY_PORT:-5000}
+      REGISTRY_API_URL: http://registry:5000
+      REGISTRY_REF_HOSTS: 127.0.0.1:${REGISTRY_PORT:-5000}
+      REGISTRY_USER: ${REGISTRY_USER:-}
+      REGISTRY_PASSWORD: ${REGISTRY_PASSWORD:-}
+    depends_on:
+      <<: *wait-data
+      registry:
+        condition: service_healthy
     deploy:
       resources:
         limits:
           memory: 128M
           cpus: "0.20"
 
+  # Runtime: creates tenant containers/networks on the host daemon. Runs as uid 10001 + docker group.
+  # This is the most privileged service in the stack (docs/SECURITY.md).
   runtime:
-    <<: *service-defaults
-    user: root
-    profiles: ["platform"]
+    <<: *go
     build:
       <<: *go-build
-      args:
-        SERVICE: runtime
+      args: {<<: *go-build-args, SERVICE: runtime}
+    group_add:
+      - "${DOCKER_GID:?DOCKER_GID is required: group id owning /var/run/docker.sock (installer sets it)}"
     environment:
+      <<: [*env-common, *env-data, *env-urls]
       PORT: "8010"
-      DATABASE_URL: ${DATABASE_URL:-postgres://jp:jp_dev_password@postgres:5432/jp?sslmode=disable}
-      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
-      ORGANIZATION_URL: http://organization:8002
+      GOMEMLIMIT: 200MiB
       RUNTIME_MODE: ${RUNTIME_MODE:-docker}
-      DOCKER_HOST: ${DOCKER_HOST:-unix:///var/run/docker.sock}
-      ROOT_DOMAIN: ${ROOT_DOMAIN:-zeeshanabbaskhan.me}
-      MIGRATIONS_DIR: /app/migrations
-      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
+      DOCKER_HOST: unix:///var/run/docker.sock
+      TRAEFIK_CONTAINER: jp-traefik
+      RUNTIME_PROBER_CONTAINER: jp-prober
+      METRICS_SAMPLE_INTERVAL: ${METRICS_SAMPLE_INTERVAL:-}
+      RUNTIME_ALLOWED_IMAGE_PREFIXES: ${RUNTIME_ALLOWED_IMAGE_PREFIXES:-}
+      RUNTIME_RECONCILE_INTERVAL: ${RUNTIME_RECONCILE_INTERVAL:-}
+      RUNTIME_DRAIN_TIME: ${RUNTIME_DRAIN_TIME:-}
+      RUNTIME_STOP_TIMEOUT: ${RUNTIME_STOP_TIMEOUT:-}
+      RUNTIME_HEALTH_TIMEOUT: ${RUNTIME_HEALTH_TIMEOUT:-}
+      RUNTIME_HEALTH_INTERVAL: ${RUNTIME_HEALTH_INTERVAL:-}
+      RUNTIME_MAX_MEMORY_MB: ${RUNTIME_MAX_MEMORY_MB:-}
+      RUNTIME_MAX_CPUS: ${RUNTIME_MAX_CPUS:-}
+      RUNTIME_MAX_JOBS: ${RUNTIME_MAX_JOBS:-}
+      RUNTIME_JOB_TIMEOUT: ${RUNTIME_JOB_TIMEOUT:-}
+      RUNTIME_JOB_MAX_TIMEOUT: ${RUNTIME_JOB_MAX_TIMEOUT:-}
+      REGISTRY_HOST: 127.0.0.1:${REGISTRY_PORT:-5000}
+      PREVIEW_BASE_DOMAIN: ${PREVIEW_BASE_DOMAIN:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
-      postgres:
+      <<: *wait-data
+      traefik:
         condition: service_healthy
-      organization:
+      prober:
         condition: service_started
     deploy:
       resources:
         limits:
-          memory: 96M
-          cpus: "0.20"
+          memory: 256M
+          cpus: "0.50"
+
+  # Probe sidecar: the runtime runs health probes inside this container (docker exec wget/nc). The runtime docker-network-connects it
+  # to each project network, so the runtime service itself never joins (and is never reachable from) tenant networks.
+  prober:
+    <<: *hardening
+    image: busybox:1.37
+    container_name: jp-prober
+    command: ["sleep", "2147483647"]
+    user: "65534:65534"
+    read_only: true
+    deploy:
+      resources:
+        limits:
+          memory: 16M
+          cpus: "0.10"
 
   scheduler:
-    <<: *service-defaults
-    profiles: ["platform"]
+    <<: *go
     build:
       <<: *go-build
-      args:
-        SERVICE: scheduler
+      args: {<<: *go-build-args, SERVICE: scheduler}
     environment:
+      <<: [*env-common, *env-data, *env-urls]
       PORT: "8011"
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      RUNTIME_URL: http://runtime:8010
-      REGISTRY_URL: http://registry-api:8009
-      DEPLOYMENT_URL: http://deployment:8006
-      DOMAIN_URL: http://domain:8012
-      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
-      SCHEDULER_SLOT: ${SCHEDULER_SLOT:-node-1}
-      NODE_IP: ${PUBLIC_IP:-161.118.168.6}
-      NODE_HOSTNAME: ${NODE_HOSTNAME:-oracle-2nd}
+      GOMEMLIMIT: 50MiB
       CLEANUP_INTERVAL: ${CLEANUP_INTERVAL:-1h}
       PREVIEW_TTL: ${PREVIEW_TTL:-72h}
-      PREVIEW_BASE_DOMAIN: ${PREVIEW_BASE_DOMAIN:-preview.jp.localhost}
+      PREVIEW_BASE_DOMAIN: ${PREVIEW_BASE_DOMAIN:-}
       ORPHAN_IMAGE_TTL: ${ORPHAN_IMAGE_TTL:-168h}
-      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
     depends_on:
       redis:
         condition: service_healthy
-      runtime:
-        condition: service_started
     deploy:
       resources:
         limits:
           memory: 64M
           cpus: "0.15"
 
+  # Domain service: owns every Traefik router (file provider). Writes the dynamic dir; Traefik mounts it read-only.
   domain:
-    <<: *service-defaults
-    user: root
-    profiles: ["platform"]
+    <<: *go
     build:
       <<: *go-build
-      args:
-        SERVICE: domain
+      args: {<<: *go-build-args, SERVICE: domain}
     environment:
+      <<: [*env-common, *env-data, *env-urls]
       PORT: "8012"
-      DATABASE_URL: ${DATABASE_URL:-postgres://jp:jp_dev_password@postgres:5432/jp?sslmode=disable}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
-      ORGANIZATION_URL: http://organization:8002
-      CERTIFICATE_URL: http://certificate:8013
-      DOMAIN_DNS_STUB: ${DOMAIN_DNS_STUB:-false}
-      DOMAIN_CNAME_TARGET: ${DOMAIN_CNAME_TARGET:-cname.jp.localhost}
-      ROOT_DOMAIN: ${ROOT_DOMAIN:-zeeshanabbaskhan.me}
+      GOMEMLIMIT: 100MiB
+      DOMAIN_CNAME_TARGET: ${DOMAIN_CNAME_TARGET:-}
+      DOMAIN_A_TARGETS: ${DOMAIN_A_TARGETS:-${PUBLIC_IP:-}}
+      PREVIEW_BASE_DOMAIN: ${PREVIEW_BASE_DOMAIN:-}
       TRAEFIK_DYNAMIC_DIR: /etc/traefik/dynamic
-      TRAEFIK_BACKEND_URL: ${TRAEFIK_BACKEND_URL:-http://gateway:8000}
-      TRAEFIK_CERT_RESOLVER: ${TRAEFIK_CERT_RESOLVER:-letsencrypt}
-      MIGRATIONS_DIR: /app/migrations
-      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
+      TRAEFIK_CERT_RESOLVER: letsencrypt
+      DNS_RESOLVER: ${DNS_RESOLVER:-}
+      DOMAIN_ALLOW_INTERNAL_TLDS: ${DOMAIN_ALLOW_INTERNAL_TLDS:-false}
+      PREVIEW_TLS: ${PREVIEW_TLS:-${TLS_ENABLED:-false}}
     volumes:
-      - ../traefik/dynamic:/etc/traefik/dynamic
+      - traefik_dynamic:/etc/traefik/dynamic
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      certificate:
-        condition: service_started
+      <<: *wait-data
+      init-volumes:
+        condition: service_completed_successfully
     deploy:
       resources:
         limits:
-          memory: 96M
-          cpus: "0.20"
+          memory: 128M
+          cpus: "0.30"
 
   certificate:
-    <<: *service-defaults
-    profiles: ["platform"]
+    <<: *go
     build:
       <<: *go-build
-      args:
-        SERVICE: certificate
+      args: {<<: *go-build-args, SERVICE: certificate}
     environment:
+      <<: [*env-common, *env-data, *env-urls]
       PORT: "8013"
-      DATABASE_URL: ${DATABASE_URL:-postgres://jp:jp_dev_password@postgres:5432/jp?sslmode=disable}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
-      ORGANIZATION_URL: http://organization:8002
-      CERT_SIMULATE: ${CERT_SIMULATE:-false}
-      TRAEFIK_CERT_RESOLVER: ${TRAEFIK_CERT_RESOLVER:-letsencrypt}
-      MIGRATIONS_DIR: /app/migrations
-      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
+      GOMEMLIMIT: 50MiB
+      TRAEFIK_CERT_RESOLVER: letsencrypt
+      TRAEFIK_DYNAMIC_DIR: /etc/traefik/dynamic
+      TLS_PROBE_ADDR: ${TLS_PROBE_ADDR:-traefik:443}
+      ACME_STAGING: ${ACME_STAGING:-false}
+    volumes:
+      - traefik_dynamic:/etc/traefik/dynamic
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+      <<: *wait-data
+      init-volumes:
+        condition: service_completed_successfully
     deploy:
       resources:
         limits:
@@ -708,399 +850,296 @@ services:
           cpus: "0.15"
 
   secret:
-    <<: *service-defaults
-    profiles: ["platform"]
+    <<: *go
     build:
       <<: *go-build
-      args:
-        SERVICE: secret
+      args: {<<: *go-build-args, SERVICE: secret}
     environment:
+      <<: [*env-common, *env-data, *env-urls]
       PORT: "8014"
-      DATABASE_URL: ${DATABASE_URL:-postgres://jp:jp_dev_password@postgres:5432/jp?sslmode=disable}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
-      ORGANIZATION_URL: http://organization:8002
-      SECRETS_MASTER_KEY: ${SECRETS_MASTER_KEY:-}
-      MIGRATIONS_DIR: /app/migrations
-      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+      GOMEMLIMIT: 100MiB
+      # base64 of 32 random bytes. Losing or changing this key makes every stored secret unreadable.
+      SECRETS_MASTER_KEY: "${SECRETS_MASTER_KEY:?SECRETS_MASTER_KEY is required: base64 of 32 random bytes (installer generates it)}"
+      # key rotation: set SECRETS_KEY_VERSION=2, move the old key to SECRETS_MASTER_KEY_PREVIOUS, then POST /internal/rotate-master-key
+      SECRETS_KEY_VERSION: ${SECRETS_KEY_VERSION:-}
+      SECRETS_MASTER_KEY_PREVIOUS: ${SECRETS_MASTER_KEY_PREVIOUS:-}
+      SECRETS_KEY_VERSION_PREVIOUS: ${SECRETS_KEY_VERSION_PREVIOUS:-}
+    depends_on: *wait-data
     deploy:
       resources:
         limits:
-          memory: 96M
-          cpus: "0.15"
+          memory: 128M
+          cpus: "0.20"
 
   logging:
-    <<: *service-defaults
-    profiles: ["platform"]
+    <<: *go
     build:
       <<: *go-build
-      args:
-        SERVICE: logging
+      args: {<<: *go-build-args, SERVICE: logging}
     environment:
+      <<: [*env-common, *env-data, *env-urls]
       PORT: "8015"
-      DATABASE_URL: ${DATABASE_URL:-postgres://jp:jp_dev_password@postgres:5432/jp?sslmode=disable}
-      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
-      ORGANIZATION_URL: http://organization:8002
-      BUILD_URL: http://build:8007
+      GOMEMLIMIT: 100MiB
       LOKI_URL: ${LOKI_URL:-}
-      MIGRATIONS_DIR: /app/migrations
-      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
-    depends_on:
-      postgres:
-        condition: service_healthy
+      LOG_RETENTION_DAYS: ${LOG_RETENTION_DAYS:-14}
+    depends_on: *wait-data
     deploy:
       resources:
         limits:
-          memory: 96M
-          cpus: "0.15"
+          memory: 128M
+          cpus: "0.20"
 
   metrics:
-    <<: *service-defaults
-    profiles: ["platform"]
+    <<: *go
     build:
       <<: *go-build
-      args:
-        SERVICE: metrics
+      args: {<<: *go-build-args, SERVICE: metrics}
     environment:
+      <<: [*env-common, *env-data, *env-urls]
       PORT: "8016"
-      DATABASE_URL: ${DATABASE_URL:-postgres://jp:jp_dev_password@postgres:5432/jp?sslmode=disable}
-      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
-      ORGANIZATION_URL: http://organization:8002
+      GOMEMLIMIT: 50MiB
       METRICS_MODE: ${METRICS_MODE:-live}
-      PROMETHEUS_URL: ${PROMETHEUS_URL:-http://prometheus:9090}
-      MIGRATIONS_DIR: /app/migrations
-      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
-    depends_on:
-      postgres:
-        condition: service_healthy
+      METRICS_RETENTION_DAYS: ${METRICS_RETENTION_DAYS:-}
+    depends_on: *wait-data
     deploy:
       resources:
         limits:
           memory: 64M
           cpus: "0.15"
 
-  # --- Platform profile (empty control-plane stub removed; use services above) ---
-  platform-stub:
-    <<: *service-defaults
-    image: alpine:3.20
-    profiles: ["platform-legacy"]
-    command: ["sh", "-c", "echo platform services stub; sleep infinity"]
-    deploy:
-      resources:
-        limits:
-          memory: 32M
-
-  # --- Data profile: MinIO + storage + database ---
-  minio:
-    <<: *service-defaults
-    profiles: ["data"]
-    image: quay.io/minio/minio:latest
-    command: ["server", "/data", "--console-address", ":9001"]
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
-    ports:
-      - "${MINIO_PORT:-9000}:9000"
-      - "${MINIO_CONSOLE_PORT:-9001}:9001"
-    volumes:
-      - minio_data:/data
-    deploy:
-      resources:
-        limits:
-          memory: 192M
-          cpus: "0.25"
-
+  # ---------------------------------------------------------------------------------------------
+  # Data services
+  # ---------------------------------------------------------------------------------------------
   storage:
-    <<: *service-defaults
-    profiles: ["data"]
+    <<: *go
     build:
       <<: *go-build
-      args:
-        SERVICE: storage
+      args: {<<: *go-build-args, SERVICE: storage}
     environment:
+      <<: [*env-common, *env-data, *env-urls]
       PORT: "8017"
-      DATABASE_URL: ${DATABASE_URL:-postgres://jp:jp_dev_password@postgres:5432/jp?sslmode=disable}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
-      ORGANIZATION_URL: http://organization:8002
-      STORAGE_MODE: ${STORAGE_MODE:-minio}
-      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
-      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      GOMEMLIMIT: 100MiB
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
       MINIO_USE_SSL: "false"
-      MINIO_PUBLIC_URL: ${MINIO_PUBLIC_URL:-http://localhost:9000}
-      MIGRATIONS_DIR: /app/migrations
-      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
+      STORAGE_PUBLIC_URL: ${STORAGE_PUBLIC_URL:-${PUBLIC_BASE_URL}}
+      STORAGE_QUOTA_MB: ${STORAGE_QUOTA_MB:-1024}
+      STORAGE_MAX_OBJECT_MB: ${STORAGE_MAX_OBJECT_MB:-}
+      STORAGE_MAX_UPLOAD_MB: ${STORAGE_MAX_UPLOAD_MB:-16}
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+      <<: *wait-data
       minio:
-        condition: service_started
+        condition: service_healthy
     deploy:
       resources:
         limits:
-          memory: 96M
-          cpus: "0.15"
+          memory: 128M
+          cpus: "0.20"
 
   database:
-    <<: *service-defaults
-    profiles: ["data"]
+    <<: *go
     build:
       <<: *go-build
-      args:
-        SERVICE: database
+      args: {<<: *go-build-args, SERVICE: database}
     environment:
+      <<: [*env-common, *env-data, *env-urls]
       PORT: "8018"
-      DATABASE_URL: ${DATABASE_URL:-postgres://jp:jp_dev_password@postgres:5432/jp?sslmode=disable}
-      DATABASE_PROVISION_URL: ${DATABASE_URL:-postgres://jp:jp_dev_password@postgres:5432/jp?sslmode=disable}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
-      ORGANIZATION_URL: http://organization:8002
-      SECRET_URL: http://secret:8014
-      DB_MODE: ${DB_MODE:-schema}
-      MIGRATIONS_DIR: /app/migrations
-      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+      GOMEMLIMIT: 100MiB
+    depends_on: *wait-data
     deploy:
       resources:
         limits:
-          memory: 96M
-          cpus: "0.15"
+          memory: 128M
+          cpus: "0.20"
 
   addon:
-    <<: *service-defaults
+    <<: *go
     build:
       <<: *go-build
-      args:
-        SERVICE: addon
+      args: {<<: *go-build-args, SERVICE: addon}
     environment:
+      <<: [*env-common, *env-data, *env-urls]
       PORT: "8021"
-      DATABASE_URL: ${DATABASE_URL:-postgres://jp:jp_dev_password@postgres:5432/jp?sslmode=disable}
-      DATABASE_PROVISION_URL: ${DATABASE_URL:-postgres://jp:jp_dev_password@postgres:5432/jp?sslmode=disable}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
-      ORGANIZATION_URL: http://organization:8002
-      SECRET_URL: http://secret:8014
-      ADDON_MODE: ${ADDON_MODE:-simulate}
-      MYSQL_PROVISION_URL: ${MYSQL_PROVISION_URL:-}
-      MONGO_PROVISION_URL: ${MONGO_PROVISION_URL:-}
-      REDIS_ADDON_URL: ${REDIS_ADDON_URL:-}
-      RABBITMQ_MANAGEMENT_URL: ${RABBITMQ_MANAGEMENT_URL:-}
-      RABBITMQ_AMQP_HOST: ${RABBITMQ_AMQP_HOST:-rabbitmq:5672}
-      RABBITMQ_ADMIN_USER: ${RABBITMQ_ADMIN_USER:-jp}
-      RABBITMQ_ADMIN_PASSWORD: ${RABBITMQ_ADMIN_PASSWORD:-jp_dev_password}
-      KAFKA_BROKERS: ${KAFKA_BROKERS:-}
-      ADDON_SQLITE_DIR: ${ADDON_SQLITE_DIR:-/var/jp/addons/sqlite}
-      MIGRATIONS_DIR: /app/migrations
-      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
-    volumes:
-      - addon_sqlite:/var/jp/addons/sqlite
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+      GOMEMLIMIT: 100MiB
+      ADDON_CATALOG_DIR: ${ADDON_CATALOG_DIR:-}
+    depends_on: *wait-data
     deploy:
       resources:
         limits:
-          memory: 96M
-          cpus: "0.15"
+          memory: 128M
+          cpus: "0.20"
 
-  # Shared tenant brokers for ADDON_MODE=shared (optional profile)
-  mysql:
-    image: mysql:8.4
-    profiles: ["addons"]
+  ai:
+    <<: *go
+    build:
+      <<: *go-build
+      args: {<<: *go-build-args, SERVICE: ai}
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-jp_dev_password}
-      MYSQL_DATABASE: jp
-    ports:
-      - "3306:3306"
-    volumes:
-      - mysql_data:/var/lib/mysql
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-jp_dev_password}"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
+      <<: [*env-common, *env-data, *env-urls]
+      PORT: "8019"
+      GOMEMLIMIT: 100MiB
+      # Encrypts per-organization provider API keys at rest.
+      AI_PLATFORM_PROVIDER: ${AI_PLATFORM_PROVIDER:-}
+      AI_PLATFORM_MODEL: ${AI_PLATFORM_MODEL:-}
+      AI_PLATFORM_KEY: ${AI_PLATFORM_KEY:-}
+      AI_MODEL: ${AI_MODEL:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      AI_RATE_PER_MIN: ${AI_RATE_PER_MIN:-}
+      AI_ALLOW_PRIVATE_BASE_URL: ${AI_ALLOW_PRIVATE_BASE_URL:-false}
+      AI_ENC_KEY: "${AI_ENC_KEY:?AI_ENC_KEY is required: base64 of 32 random bytes (installer generates it)}"
+      AI_BASE_URL: ${AI_BASE_URL:-}
+    depends_on: *wait-data
     deploy:
       resources:
         limits:
-          memory: 512M
-          cpus: "0.50"
+          memory: 128M
+          cpus: "0.20"
 
-  mongo:
-    image: mongo:7
-    profiles: ["addons"]
-    environment:
-      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-jp}
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-jp_dev_password}
-    ports:
-      - "27017:27017"
+  # ---------------------------------------------------------------------------------------------
+  # Monitoring profile (optional). Everything is loopback-only; Grafana is the only thing that can be
+  # routed through Traefik (GRAFANA_DOMAIN), protected by its own login (anonymous access is OFF).
+  # ---------------------------------------------------------------------------------------------
+  prometheus:
+    <<: *hardening
+    image: prom/prometheus:v2.54.1
+    profiles: [monitoring]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-7d}
+      - --web.enable-lifecycle
     volumes:
-      - mongo_data:/data/db
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-          cpus: "0.50"
-
-  redis-addon:
-    image: redis:7-alpine
-    profiles: ["addons"]
-    command: ["redis-server", "--appendonly", "yes"]
+      - ../monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
     ports:
-      - "6380:6379"
-    volumes:
-      - redis_addon_data:/data
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:9090/-/healthy"]
+      interval: 15s
       timeout: 3s
-      retries: 10
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+          cpus: "0.30"
+
+  grafana:
+    <<: *hardening
+    image: grafana/grafana:11.2.0
+    profiles: [monitoring]
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is required when the monitoring profile is enabled}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-http://localhost:3001/}
+    volumes:
+      - ../monitoring/grafana:/etc/grafana/provisioning/datasources:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3001}:3000"
+    depends_on:
+      - prometheus
+      - loki
+      - tempo
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=jp
+      - traefik.http.routers.jp-grafana.rule=Host(`${GRAFANA_DOMAIN:-grafana.invalid}`)
+      - traefik.http.routers.jp-grafana.entrypoints=web,websecure
+      - traefik.http.routers.jp-grafana.middlewares=jp-secure-headers@docker
+      - traefik.http.services.jp-grafana.loadbalancer.server.port=3000
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:3000/api/health"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.30"
+
+  loki:
+    <<: *hardening
+    image: grafana/loki:3.1.1
+    profiles: [monitoring]
+    command: ["-config.file=/etc/loki/loki-config.yml"]
+    volumes:
+      - ../monitoring/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki_data:/loki
+    ports:
+      - "127.0.0.1:${LOKI_PORT:-3100}:3100"
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+          cpus: "0.30"
+
+  tempo:
+    <<: *hardening
+    image: grafana/tempo:2.6.0
+    profiles: [monitoring]
+    command: ["-config.file=/etc/tempo/tempo.yml"]
+    volumes:
+      - ../monitoring/tempo.yml:/etc/tempo/tempo.yml:ro
+      - tempo_data:/var/tempo
+    ports:
+      - "127.0.0.1:${TEMPO_PORT:-3200}:3200"
+      - "127.0.0.1:4317:4317"
+      - "127.0.0.1:4318:4318"
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+          cpus: "0.30"
+
+  # Container logs -> Loki, discovered through the READ-ONLY socket proxy (no raw docker.sock mount).
+  promtail:
+    <<: *hardening
+    image: grafana/promtail:3.1.1
+    profiles: [monitoring]
+    networks: [jp, socketproxy]
+    command: ["-config.file=/etc/promtail/promtail-config.yml"]
+    volumes:
+      - ../monitoring/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
+      - promtail_positions:/positions
+    depends_on:
+      docker-socket-proxy:
+        condition: service_healthy
+      loki:
+        condition: service_started
     deploy:
       resources:
         limits:
           memory: 128M
           cpus: "0.15"
 
-  rabbitmq:
-    image: rabbitmq:3.13-management-alpine
-    profiles: ["addons"]
-    environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_ADMIN_USER:-jp}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_ADMIN_PASSWORD:-jp_dev_password}
-    ports:
-      - "5672:5672"
-      - "15672:15672"
-    volumes:
-      - rabbitmq_data:/var/lib/rabbitmq
-    healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-    deploy:
-      resources:
-        limits:
-          memory: 384M
-          cpus: "0.35"
-
-  redpanda:
-    image: docker.redpanda.com/redpandadata/redpanda:v24.2.4
-    profiles: ["addons"]
-    command:
-      - redpanda
-      - start
-      - --overprovisioned
-      - --smp
-      - "1"
-      - --memory
-      - 512M
-      - --reserve-memory
-      - 0M
-      - --node-id
-      - "0"
-      - --check=false
-      - --kafka-addr
-      - internal://0.0.0.0:9092,external://0.0.0.0:19092
-      - --advertise-kafka-addr
-      - internal://redpanda:9092,external://localhost:19092
-    ports:
-      - "19092:19092"
-    volumes:
-      - redpanda_data:/var/lib/redpanda/data
-    deploy:
-      resources:
-        limits:
-          memory: 768M
-          cpus: "0.50"
-
-  ai:
-    <<: *service-defaults
-    profiles: ["platform"]
-    build:
-      <<: *go-build
-      args:
-        SERVICE: ai
-    environment:
-      PORT: "8019"
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
-      ORGANIZATION_URL: http://organization:8002
-      BUILD_URL: http://build:8007
-      LOGGING_URL: http://logging:8015
-      DEPLOYMENT_URL: http://deployment:8006
-      RUNTIME_URL: http://runtime:8010
-      GEMINI_API_KEYS: ${GEMINI_API_KEYS:-}
-      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.5-flash-lite}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-      AI_BASE_URL: ${AI_BASE_URL:-https://api.openai.com/v1}
-      AI_MODEL: ${AI_MODEL:-gemini-3.5-flash-lite}
-      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
-    depends_on:
-      redis:
-        condition: service_healthy
-    deploy:
-      resources:
-        limits:
-          memory: 96M
-          cpus: "0.15"
-
-  billing:
-    <<: *service-defaults
-    profiles: ["platform"]
-    build:
-      <<: *go-build
-      args:
-        SERVICE: billing
-    environment:
-      PORT: "8020"
-      DATABASE_URL: ${DATABASE_URL:-postgres://jp:jp_dev_password@postgres:5432/jp?sslmode=disable}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
-      ORGANIZATION_URL: http://organization:8002
-      MIGRATIONS_DIR: /app/migrations
-      JP_LOG_LEVEL: ${JP_LOG_LEVEL:-info}
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    deploy:
-      resources:
-        limits:
-          memory: 96M
-          cpus: "0.15"
-
 networks:
   jp:
+    name: jp
     driver: bridge
+  socketproxy:
+    name: jp_socketproxy
+    driver: bridge
+    internal: true
 
 volumes:
   postgres_data:
   redis_data:
   registry_data:
-  worker_build_cache:
+  minio_data:
+  worker_builds:
+  worker_trivy_cache:
+  traefik_acme:
+  traefik_dynamic:
   prometheus_data:
   grafana_data:
   loki_data:
   tempo_data:
-  minio_data:
-  addon_sqlite:
-  mysql_data:
-  mongo_data:
-  redis_addon_data:
-  rabbitmq_data:
-  redpanda_data:
+  promtail_positions:
